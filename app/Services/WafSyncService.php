@@ -95,7 +95,11 @@ class WafSyncService
         }
 
         try {
+            // Use INSTALL_TOKEN if set, otherwise fall back to AGENT_TOKEN
             $installToken = config('ids.install_token') ?? env('INSTALL_TOKEN', '');
+            if (empty($installToken)) {
+                $installToken = $this->agentToken;
+            }
             // Fallback: parse .env directly if install_token is empty
             if (empty($installToken)) {
                 $envFile = base_path('.env');

@@ -452,10 +452,6 @@ if [ -z "$WAF_HUB_URL" ]; then
     read -p "Enter WAF Hub URL (e.g., https://waf.example.com): " WAF_HUB_URL
 fi
 
-if [ -z "$INSTALL_TOKEN" ]; then
-    read -p "Enter Install Token (from WAF Hub admin panel): " INSTALL_TOKEN
-fi
-
 if [ -z "$AGENT_TOKEN" ]; then
     read -p "Enter Agent Token: " AGENT_TOKEN
 fi

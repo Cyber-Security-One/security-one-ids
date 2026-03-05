@@ -522,9 +522,6 @@ if ((Test-Path $ExistingEnvPath) -and (-not $WafHubUrl) -and (-not $AgentToken))
 if (-not $WafHubUrl) {
     $WafHubUrl = Read-Host "Enter WAF Hub URL (e.g., https://waf.example.com)"
 }
-if (-not $InstallToken) {
-    $InstallToken = Read-Host "Enter Install Token (from WAF Hub admin panel)"
-}
 if (-not $AgentToken) {
     $AgentToken = Read-Host "Enter Agent Token"
 }
