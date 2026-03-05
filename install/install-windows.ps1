@@ -4,6 +4,7 @@
 
 param(
     [string]$WafHubUrl = $env:WAF_HUB_URL,
+    [string]$InstallToken = $env:INSTALL_TOKEN,
     [string]$AgentToken = $env:AGENT_TOKEN,
     [string]$AgentName = $(if ($env:AGENT_NAME) { $env:AGENT_NAME } else { $env:COMPUTERNAME })
 )
@@ -482,6 +483,9 @@ if ((Test-Path $ExistingEnvPath) -and (-not $WafHubUrl) -and (-not $AgentToken))
         if ($line -match '^WAF_URL="(.+)"') {
             $ExistingWafUrl = $matches[1]
         }
+        if ($line -match '^INSTALL_TOKEN="(.+)"') {
+            $ExistingInstallToken = $matches[1]
+        }
         if ($line -match '^AGENT_TOKEN="(.+)"') {
             $ExistingToken = $matches[1]
         }
@@ -494,6 +498,11 @@ if ((Test-Path $ExistingEnvPath) -and (-not $WafHubUrl) -and (-not $AgentToken))
     if ($ExistingWafUrl) {
         $WafHubUrl = $ExistingWafUrl
         Write-Host "  WAF Hub URL: $WafHubUrl" -ForegroundColor Green
+    }
+    
+    if ($ExistingInstallToken) {
+        $InstallToken = $ExistingInstallToken
+        Write-Host "  Install Token: (using existing token)" -ForegroundColor Green
     }
     
     if ($ExistingToken) {
@@ -513,6 +522,9 @@ if ((Test-Path $ExistingEnvPath) -and (-not $WafHubUrl) -and (-not $AgentToken))
 if (-not $WafHubUrl) {
     $WafHubUrl = Read-Host "Enter WAF Hub URL (e.g., https://waf.example.com)"
 }
+if (-not $InstallToken) {
+    $InstallToken = Read-Host "Enter Install Token (from WAF Hub admin panel)"
+}
 if (-not $AgentToken) {
     $AgentToken = Read-Host "Enter Agent Token"
 }
@@ -523,6 +535,7 @@ APP_ENV=production
 APP_DEBUG=false
 
 WAF_URL="$WafHubUrl"
+INSTALL_TOKEN="$InstallToken"
 AGENT_TOKEN="$AgentToken"
 AGENT_NAME="$AgentName"
 
