@@ -856,11 +856,16 @@ class WafSyncService
     /**
      * Install Suricata on Windows (MSI + WinDivert)
      *
+     * Detects system architecture (x64/x86) and installs the correct version.
      * WinDivert driver is EV code-signed — no KMCI/Secure Boot issues.
      */
     private function installSuricataWindows(): array
     {
         Log::info('[Suricata] Installing on Windows with WinDivert...');
+
+        // Detect system architecture
+        $arch = $this->detectWindowsArchitecture();
+        Log::info("[Suricata] Detected Windows architecture: {$arch}");
 
         // Set CYGWIN env var system-wide BEFORE installation to prevent TP_NUM_C_BUFS crash
         try {
@@ -870,14 +875,20 @@ class WafSyncService
             Log::warning('[Suricata] Failed to set CYGWIN env var: ' . $e->getMessage());
         }
 
+        // Clean up broken 32-bit install on 64-bit system (0xc000007b fix)
+        if ($arch === 'x64') {
+            $this->cleanupBrokenSuricataInstall();
+        }
+
         try {
-            // Strategy 1: Try WinGet
-            $result = Process::timeout(600)->run('winget install OISF.Suricata --silent --accept-source-agreements 2>&1');
-            if ($result->successful()) {
-                Log::info('[Suricata] Installed via WinGet');
+            // Strategy 1: Try WinGet with correct architecture
+            $archFlag = $arch === 'x64' ? ' --architecture x64' : '';
+            $result = Process::timeout(600)->run("winget install OISF.Suricata --silent --accept-source-agreements{$archFlag} 2>&1");
+            if ($result->successful() && !str_contains($result->output(), 'No applicable upgrade found')) {
+                Log::info("[Suricata] Installed via WinGet ({$arch})");
                 return ['success' => true, 'method' => 'winget'];
             }
-            Log::debug('[Suricata] WinGet install failed, trying Chocolatey...');
+            Log::debug('[Suricata] WinGet install result: ' . substr($result->output(), -300));
 
             // Strategy 2: Try Chocolatey
             $chocoPath = '';
@@ -895,71 +906,190 @@ class WafSyncService
                 }
             }
 
-            // Strategy 3: Download official MSI
+            // Strategy 3: Download official MSI (dynamically detect latest version)
             Log::info('[Suricata] Trying direct MSI download...');
-            $script = "\$ErrorActionPreference='SilentlyContinue'\r\n" .
-                "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12\r\n" .
-                "\$msiUrl='https://www.openinfosecfoundation.org/download/windows/Suricata-7.0.8-1-64bit.msi'\r\n" .
-                "\$msiPath=\"\$env:TEMP\\suricata.msi\"\r\n" .
-                "\r\n" .
-                "# Download MSI\r\n" .
-                "Write-Output 'Downloading Suricata MSI...'\r\n" .
-                "try {\r\n" .
-                "    (New-Object Net.WebClient).DownloadFile(\$msiUrl, \$msiPath)\r\n" .
-                "} catch {\r\n" .
-                "    Write-Output \"Download failed: \$_\"\r\n" .
-                "    exit 1\r\n" .
-                "}\r\n" .
-                "\r\n" .
-                "if (!(Test-Path \$msiPath)) {\r\n" .
-                "    Write-Output 'MSI download failed'\r\n" .
-                "    exit 1\r\n" .
-                "}\r\n" .
-                "\r\n" .
-                "# Install MSI silently\r\n" .
-                "Write-Output 'Installing Suricata MSI...'\r\n" .
-                "\$p = Start-Process msiexec -ArgumentList '/i',\$msiPath,'/quiet','/norestart' -Wait -PassThru\r\n" .
-                "Write-Output \"MSI exit code: \$(\$p.ExitCode)\"\r\n" .
-                "\r\n" .
-                "if (\$p.ExitCode -eq 0) {\r\n" .
-                "    Write-Output 'SURICATA_INSTALL_OK'\r\n" .
-                "\r\n" .
-                "    # Deploy WinDivert (EV signed driver — no KMCI issues)\r\n" .
-                "    # WinDivert is typically bundled with the Suricata Windows installer\r\n" .
-                "    # Verify it's available\r\n" .
-                "    \$windivert = Get-ChildItem -Path 'C:\\Program Files\\Suricata' -Recurse -Filter 'WinDivert.dll' -ErrorAction SilentlyContinue\r\n" .
-                "    if (\$windivert) {\r\n" .
-                "        Write-Output \"WinDivert found: \$(\$windivert.FullName)\"\r\n" .
-                "    } else {\r\n" .
-                "        Write-Output 'WinDivert not bundled, downloading...'\r\n" .
-                "        \$wdUrl='https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip'\r\n" .
-                "        \$wdZip=\"\$env:TEMP\\WinDivert.zip\"\r\n" .
-                "        \$wdDir='C:\\Program Files\\Suricata'\r\n" .
-                "        try {\r\n" .
-                "            (New-Object Net.WebClient).DownloadFile(\$wdUrl, \$wdZip)\r\n" .
-                "            Expand-Archive -Path \$wdZip -DestinationPath \$wdDir -Force\r\n" .
-                "            Write-Output 'WinDivert deployed successfully'\r\n" .
-                "        } catch {\r\n" .
-                "            Write-Output \"WinDivert download failed: \$_\"\r\n" .
-                "        }\r\n" .
-                "    }\r\n" .
-                "} else {\r\n" .
-                "    Write-Output 'SURICATA_INSTALL_FAIL'\r\n" .
-                "}\r\n";
-
-            $r = Process::timeout(600)->run("powershell -NonInteractive -ExecutionPolicy Bypass -Command \"{$script}\"");
-            $out = $r->output();
-            Log::info('[Suricata] MSI install output: ' . substr($out, 0, 2000));
-
-            if (str_contains($out, 'SURICATA_INSTALL_OK')) {
-                return ['success' => true, 'method' => 'msi'];
-            }
-
-            return ['success' => false, 'error' => 'All Windows install methods failed. Output: ' . substr($out, -500)];
+            return $this->installSuricataViaMsi($arch);
 
         } catch (\Exception $e) {
+            Log::error('[Suricata] Windows install failed: ' . $e->getMessage());
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    /**
+     * Detect Windows system architecture (x64 or x86)
+     */
+    private function detectWindowsArchitecture(): string
+    {
+        // Method 1: Check PROCESSOR_ARCHITECTURE env var
+        $procArch = getenv('PROCESSOR_ARCHITECTURE');
+        if ($procArch === 'AMD64' || $procArch === 'ARM64') {
+            return 'x64';
+        }
+
+        // Method 2: Check if Program Files (x86) exists (only on 64-bit Windows)
+        if (is_dir('C:\\Program Files (x86)')) {
+            return 'x64';
+        }
+
+        // Method 3: Use PowerShell
+        try {
+            $result = Process::timeout(10)->run('powershell -Command "[Environment]::Is64BitOperatingSystem" 2>&1');
+            if (str_contains(strtolower(trim($result->output())), 'true')) {
+                return 'x64';
+            }
+        } catch (\Exception $e) {
+            // Ignore
+        }
+
+        return 'x86';
+    }
+
+    /**
+     * Clean up broken Suricata installs (e.g. 32-bit on 64-bit Windows causing 0xc000007b)
+     */
+    private function cleanupBrokenSuricataInstall(): void
+    {
+        $x86Path = 'C:\\Program Files (x86)\\Suricata\\suricata.exe';
+        $x64Path = 'C:\\Program Files\\Suricata\\suricata.exe';
+
+        if (file_exists($x86Path) && !file_exists($x64Path)) {
+            Log::warning('[Suricata] Found 32-bit Suricata on 64-bit Windows — uninstalling to fix 0xc000007b...');
+            try {
+                // Try to uninstall via winget first
+                Process::timeout(120)->run('winget uninstall OISF.Suricata --silent 2>&1');
+                Log::info('[Suricata] Uninstalled 32-bit Suricata via winget');
+            } catch (\Exception $e) {
+                // Try MSI uninstall
+                try {
+                    Process::timeout(120)->run('powershell -Command "Get-WmiObject Win32_Product | Where-Object { $_.Name -like \'*Suricata*\' } | ForEach-Object { $_.Uninstall() }" 2>&1');
+                } catch (\Exception $e2) {
+                    Log::warning('[Suricata] Could not auto-uninstall 32-bit Suricata: ' . $e2->getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * Install Suricata via direct MSI download with architecture detection
+     */
+    private function installSuricataViaMsi(string $arch): array
+    {
+        $bitSuffix = $arch === 'x64' ? '64bit' : '32bit';
+        $installDir = $arch === 'x64' ? 'C:\\Program Files\\Suricata' : 'C:\\Program Files (x86)\\Suricata';
+
+        // Build PowerShell script that discovers the latest MSI URL dynamically
+        $script = "\$ErrorActionPreference='SilentlyContinue'\r\n" .
+            "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12\r\n" .
+            "\$arch='{$bitSuffix}'\r\n" .
+            "\$msiPath=\"\$env:TEMP\\suricata.msi\"\r\n" .
+            "\r\n" .
+            "# Try to find latest MSI from Suricata downloads page\r\n" .
+            "\$downloadUrls = @(\r\n" .
+            "    'https://www.openinfosecfoundation.org/download/windows/',\r\n" .
+            "    'https://suricata.io/download/'\r\n" .
+            ")\r\n" .
+            "\$msiUrl = ''\r\n" .
+            "foreach (\$baseUrl in \$downloadUrls) {\r\n" .
+            "    try {\r\n" .
+            "        \$page = (New-Object Net.WebClient).DownloadString(\$baseUrl)\r\n" .
+            "        # Match MSI links for our architecture: Suricata-X.Y.Z-N-{64bit|32bit}.msi\r\n" .
+            "        \$pattern = 'href=\"([^\"]*Suricata-[\\d.]+-\\d+-' + \$arch + '\\.msi)'\r\n" .
+            "        if (\$page -match \$pattern) {\r\n" .
+            "            \$msiUrl = \$matches[1]\r\n" .
+            "            if (\$msiUrl -notmatch '^http') { \$msiUrl = \$baseUrl.TrimEnd('/') + '/' + \$msiUrl }\r\n" .
+            "            Write-Output \"Found MSI: \$msiUrl\"\r\n" .
+            "            break\r\n" .
+            "        }\r\n" .
+            "    } catch {\r\n" .
+            "        Write-Output \"Could not fetch \$baseUrl\"\r\n" .
+            "    }\r\n" .
+            "}\r\n" .
+            "\r\n" .
+            "# Fallback: try known recent versions\r\n" .
+            "if ([string]::IsNullOrEmpty(\$msiUrl)) {\r\n" .
+            "    \$versions = @('8.0.3', '8.0.2', '8.0.1', '8.0.0', '7.0.10', '7.0.8', '7.0.7', '7.0.6')\r\n" .
+            "    foreach (\$v in \$versions) {\r\n" .
+            "        \$tryUrl = \"https://www.openinfosecfoundation.org/download/windows/Suricata-\$v-1-\$arch.msi\"\r\n" .
+            "        try {\r\n" .
+            "            \$req = [System.Net.WebRequest]::Create(\$tryUrl)\r\n" .
+            "            \$req.Method = 'HEAD'\r\n" .
+            "            \$req.Timeout = 10000\r\n" .
+            "            \$resp = \$req.GetResponse()\r\n" .
+            "            \$resp.Close()\r\n" .
+            "            \$msiUrl = \$tryUrl\r\n" .
+            "            Write-Output \"Found working MSI URL: \$msiUrl\"\r\n" .
+            "            break\r\n" .
+            "        } catch {\r\n" .
+            "            continue\r\n" .
+            "        }\r\n" .
+            "    }\r\n" .
+            "}\r\n" .
+            "\r\n" .
+            "if ([string]::IsNullOrEmpty(\$msiUrl)) {\r\n" .
+            "    Write-Output 'SURICATA_NO_MSI_FOUND'\r\n" .
+            "    exit 1\r\n" .
+            "}\r\n" .
+            "\r\n" .
+            "# Download MSI\r\n" .
+            "Write-Output 'Downloading Suricata MSI...'\r\n" .
+            "try {\r\n" .
+            "    (New-Object Net.WebClient).DownloadFile(\$msiUrl, \$msiPath)\r\n" .
+            "} catch {\r\n" .
+            "    Write-Output \"Download failed: \$_\"\r\n" .
+            "    exit 1\r\n" .
+            "}\r\n" .
+            "\r\n" .
+            "if (!(Test-Path \$msiPath)) {\r\n" .
+            "    Write-Output 'MSI download failed'\r\n" .
+            "    exit 1\r\n" .
+            "}\r\n" .
+            "\r\n" .
+            "# Install MSI silently\r\n" .
+            "Write-Output 'Installing Suricata MSI...'\r\n" .
+            "\$p = Start-Process msiexec -ArgumentList '/i',\$msiPath,'/quiet','/norestart' -Wait -PassThru\r\n" .
+            "Write-Output \"MSI exit code: \$(\$p.ExitCode)\"\r\n" .
+            "\r\n" .
+            "if (\$p.ExitCode -eq 0) {\r\n" .
+            "    Write-Output 'SURICATA_INSTALL_OK'\r\n" .
+            "\r\n" .
+            "    # Check for WinDivert in both possible install locations\r\n" .
+            "    \$searchPaths = @('C:\\Program Files\\Suricata', 'C:\\Program Files (x86)\\Suricata')\r\n" .
+            "    \$windivert = \$null\r\n" .
+            "    foreach (\$sp in \$searchPaths) {\r\n" .
+            "        if (Test-Path \$sp) {\r\n" .
+            "            \$windivert = Get-ChildItem -Path \$sp -Recurse -Filter 'WinDivert.dll' -ErrorAction SilentlyContinue\r\n" .
+            "            if (\$windivert) { break }\r\n" .
+            "        }\r\n" .
+            "    }\r\n" .
+            "    if (\$windivert) {\r\n" .
+            "        Write-Output \"WinDivert found: \$(\$windivert.FullName)\"\r\n" .
+            "    } else {\r\n" .
+            "        Write-Output 'WinDivert not bundled, downloading...'\r\n" .
+            "        \$wdUrl='https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip'\r\n" .
+            "        \$wdZip=\"\$env:TEMP\\WinDivert.zip\"\r\n" .
+            "        \$wdDir='{$installDir}'\r\n" .
+            "        try {\r\n" .
+            "            (New-Object Net.WebClient).DownloadFile(\$wdUrl, \$wdZip)\r\n" .
+            "            Expand-Archive -Path \$wdZip -DestinationPath \$wdDir -Force\r\n" .
+            "            Write-Output 'WinDivert deployed successfully'\r\n" .
+            "        } catch {\r\n" .
+            "            Write-Output \"WinDivert download failed: \$_\"\r\n" .
+            "        }\r\n" .
+            "    }\r\n" .
+            "} else {\r\n" .
+            "    Write-Output 'SURICATA_INSTALL_FAIL'\r\n" .
+            "}\r\n";
+
+        $r = Process::timeout(600)->run("powershell -NonInteractive -ExecutionPolicy Bypass -Command \"{$script}\"");
+        $out = $r->output();
+        Log::info('[Suricata] MSI install output: ' . substr($out, 0, 2000));
+
+        if (str_contains($out, 'SURICATA_INSTALL_OK')) {
+            return ['success' => true, 'method' => 'msi'];
+        }
+
+        return ['success' => false, 'error' => 'All Windows install methods failed. Output: ' . substr($out, -500)];
     }
 
     /**
