@@ -310,7 +310,7 @@ class LogDiscoveryService
         if (!in_array($path, $customPaths)) {
             $customPaths[] = $path;
             // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+            cache()->forever('ids.custom_log_paths', $customPaths);
         }
 
         return true;
@@ -321,7 +321,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
