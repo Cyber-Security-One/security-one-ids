@@ -15,6 +15,12 @@ class LogDiscoveryServiceTest extends TestCase
         $this->service = new LogDiscoveryService();
     }
 
+    protected function tearDown(): void
+    {
+        cache()->forget('ids.custom_log_paths');
+        parent::tearDown();
+    }
+
     public function test_add_custom_path_fails_when_path_not_readable(): void
     {
         $path = '/path/to/non/existent/file.log';
@@ -25,10 +31,17 @@ class LogDiscoveryServiceTest extends TestCase
         $result = $this->service->addCustomPath($path);
 
         $this->assertFalse($result);
+
+        // ensure cache was not written
+        $this->assertFalse(cache()->has('ids.custom_log_paths'));
     }
 
     public function test_add_custom_path_adds_path_and_caches_when_valid_and_not_in_config(): void
     {
+        if (!is_writable(sys_get_temp_dir())) {
+            $this->markTestSkipped('System temp directory is not writable.');
+        }
+
         // Create a temporary readable file
         $tempPath = tempnam(sys_get_temp_dir(), uniqid('test_log_', true));
         file_put_contents($tempPath, 'test log content');
@@ -53,6 +66,10 @@ class LogDiscoveryServiceTest extends TestCase
 
     public function test_add_custom_path_returns_true_without_caching_when_path_already_in_config(): void
     {
+        if (!is_writable(sys_get_temp_dir())) {
+            $this->markTestSkipped('System temp directory is not writable.');
+        }
+
         // Create a temporary readable file
         $tempPath = tempnam(sys_get_temp_dir(), uniqid('test_log_', true));
         file_put_contents($tempPath, 'test log content');
@@ -68,8 +85,8 @@ class LogDiscoveryServiceTest extends TestCase
 
             $this->assertTrue($result);
 
-            // Verify cache is still null since it was already in config
-            $this->assertNull(cache()->get('ids.custom_log_paths'));
+            // Verify cache was not written since it was already in config
+            $this->assertFalse(cache()->has('ids.custom_log_paths'));
         } finally {
             // Clean up
             if (file_exists($tempPath)) {
