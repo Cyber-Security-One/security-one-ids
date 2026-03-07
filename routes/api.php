@@ -8,7 +8,11 @@ Route::prefix('api')->middleware(function ($request, $next) {
     $token = $request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken();
     $agentToken = env('AGENT_TOKEN');
 
-    if (!$token || $token !== $agentToken) {
+    if (empty($agentToken)) {
+        return response()->json(['error' => 'Server Configuration Error: AGENT_TOKEN is not set.'], 500);
+    }
+
+    if (empty($token) || !hash_equals((string) $agentToken, (string) $token)) {
         return response()->json(['error' => 'Unauthorized'], 401);
     }
 
