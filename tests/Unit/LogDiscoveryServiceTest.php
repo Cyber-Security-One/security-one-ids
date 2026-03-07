@@ -18,8 +18,8 @@ class LogDiscoveryServiceTest extends TestCase
 
     public function test_add_custom_path_fails_when_path_not_readable(): void
     {
-        $path = tempnam(sys_get_temp_dir(), 'not_readable_log_');
-        unlink($path);
+        // Use a path in a directory that is guaranteed not to exist
+        $path = sys_get_temp_dir() . '/' . uniqid('non_existent_dir_', true) . '/not_readable_log.log';
 
         // ensure the file actually does not exist
         $this->assertFalse(is_readable($path));
