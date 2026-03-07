@@ -4,7 +4,6 @@ namespace Tests\Unit;
 
 use App\Services\LogDiscoveryService;
 use Tests\TestCase;
-use Illuminate\Support\Facades\Cache;
 
 class LogDiscoveryServiceTest extends TestCase
 {
@@ -38,15 +37,12 @@ class LogDiscoveryServiceTest extends TestCase
             // Setup config with empty paths initially
             config(['ids.custom_log_paths' => []]);
 
-            // Mock the Cache facade to verify 'forever' is called
-            Cache::shouldReceive('forever')
-                ->once()
-                ->with('ids.custom_log_paths', [$tempPath])
-                ->andReturn(true);
-
             $result = $this->service->addCustomPath($tempPath);
 
             $this->assertTrue($result);
+
+            // Verify the actual cache state
+            $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
         } finally {
             // Clean up
             if (file_exists($tempPath)) {
@@ -65,12 +61,15 @@ class LogDiscoveryServiceTest extends TestCase
             // Setup config with the path already in it
             config(['ids.custom_log_paths' => [$tempPath]]);
 
-            // Mock the Cache facade to verify 'forever' is NOT called
-            Cache::shouldReceive('forever')->never();
+            // Clear cache to ensure it's not set
+            cache()->forget('ids.custom_log_paths');
 
             $result = $this->service->addCustomPath($tempPath);
 
             $this->assertTrue($result);
+
+            // Verify cache is still null since it was already in config
+            $this->assertNull(cache()->get('ids.custom_log_paths'));
         } finally {
             // Clean up
             if (file_exists($tempPath)) {
