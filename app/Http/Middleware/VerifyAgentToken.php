@@ -10,13 +10,13 @@ class VerifyAgentToken
     public function handle(Request $request, Closure $next)
     {
         $token = $request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken();
-        $agentToken = config('ids.agent_token', env('AGENT_TOKEN'));
+        $agentToken = (string) config('ids.agent_token', env('AGENT_TOKEN'));
 
-        if (empty($agentToken)) {
+        if ($agentToken === '') {
             return response()->json(['error' => 'Agent token not configured'], 500);
         }
 
-        if (empty($token) || !hash_equals((string)$agentToken, (string)$token)) {
+        if ($token === null || $token === '' || !hash_equals($agentToken, (string)$token)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
