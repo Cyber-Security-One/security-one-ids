@@ -8,7 +8,7 @@ return [
     */
 
     'waf_url' => env('WAF_URL', ''),
-    'agent_token' => env('AGENT_TOKEN', ''),
+    'agent_token' => env('AGENT_TOKEN', null),
     'agent_name' => env('AGENT_NAME', gethostname()),
     'install_token' => env('INSTALL_TOKEN', ''),
 
