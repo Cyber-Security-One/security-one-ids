@@ -2,36 +2,46 @@
 
 namespace Tests\Feature;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Foundation\Testing\WithFaker;
 use Tests\TestCase;
-use Illuminate\Support\Facades\Config;
 
 class ApiAuthTest extends TestCase
 {
     protected function setUp(): void
     {
         parent::setUp();
-        // Set a known token for testing
-        putenv('AGENT_TOKEN=test-agent-token');
-
-        // Let's test the hash_equals logic directly since routing is tricky in this setup
+        config(['ids.agent_token' => 'test-agent-token']);
     }
 
-    public function test_hash_equals_works_as_expected()
+    public function test_api_routes_require_valid_agent_token()
     {
-        $agentToken = 'test-agent-token';
+        // 1. No token provided
+        $this->postJson('/api/rules/update')->assertStatus(401);
 
-        // Valid comparisons
-        $this->assertTrue(hash_equals((string) $agentToken, (string) 'test-agent-token'));
+        // 2. Invalid token provided via header
+        $this->withHeaders(['X-Agent-Token' => 'invalid-token'])
+            ->postJson('/api/rules/update')
+            ->assertStatus(401);
 
-        // Invalid comparisons
-        $this->assertFalse(hash_equals((string) $agentToken, (string) 'invalid-token'));
-        $this->assertFalse(hash_equals((string) $agentToken, (string) 'test-agent-toke'));
-        $this->assertFalse(hash_equals((string) $agentToken, (string) 'est-agent-token'));
+        // 3. Valid token provided via header
+        $this->withHeaders(['X-Agent-Token' => 'test-agent-token'])
+            ->postJson('/api/rules/update', [
+                'global_rules' => [],
+                'agent_rules' => [],
+            ])
+            ->assertStatus(200);
 
-        // Null or empty comparisons
-        $this->assertFalse(hash_equals((string) $agentToken, (string) null));
-        $this->assertFalse(hash_equals((string) $agentToken, (string) ''));
+        // 4. Valid token provided via body
+        $this->postJson('/api/rules/update', [
+            'token' => 'test-agent-token',
+            'global_rules' => [],
+            'agent_rules' => [],
+        ])->assertStatus(200);
+
+        // 5. Valid bearer token provided
+        $this->withToken('test-agent-token')
+            ->postJson('/api/rules/update', [
+                'global_rules' => [],
+                'agent_rules' => [],
+            ])->assertStatus(200);
     }
 }
