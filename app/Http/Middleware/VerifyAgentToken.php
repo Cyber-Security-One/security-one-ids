@@ -10,7 +10,7 @@ class VerifyAgentToken
     public function handle(Request $request, Closure $next)
     {
         $token = $request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken();
-        $agentToken = (string) config('ids.agent_token', env('AGENT_TOKEN'));
+        $agentToken = (string) config('ids.agent_token', '');
 
         if ($agentToken === '') {
             return response()->json(['error' => 'Agent token not configured'], 401);
