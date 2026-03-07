@@ -8,7 +8,7 @@ Route::prefix('api')->middleware(function ($request, $next) {
     $token = $request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken();
     $agentToken = env('AGENT_TOKEN');
 
-    if (!$token || $token !== $agentToken) {
+    if (!$token || !$agentToken || !hash_equals((string) $agentToken, (string) $token)) {
         return response()->json(['error' => 'Unauthorized'], 401);
     }
 
