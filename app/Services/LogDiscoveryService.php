@@ -13,6 +13,11 @@ use Illuminate\Support\Facades\Log;
 class LogDiscoveryService
 {
     /**
+     * Flag to avoid re-migrating custom log paths multiple times per request lifecycle
+     */
+    public static bool $migrated = false;
+
+    /**
      * Common web server log file locations to scan
      */
     private const LOG_PATHS = [
@@ -306,11 +311,11 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
+        $customPaths = $this->getCustomPaths();
         if (!in_array($path, $customPaths)) {
             $customPaths[] = $path;
             // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+            cache()->forever('ids.custom_log_paths', $customPaths);
         }
 
         return true;
@@ -321,7 +326,48 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        if (!self::$migrated && !cache()->has('ids.custom_log_paths_migrated')) {
+            try {
+                $lock = cache()->lock('migrate_custom_log_paths', 10);
+
+                try {
+                    $lockAcquired = $lock->block(5);
+
+                    if ($lockAcquired) {
+                        try {
+                            // Double check in case another process migrated it
+                            $legacyKeyExists = cache()->has('ids_custom_log_paths');
+                            if ($legacyKeyExists) {
+                                $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                                $currentPaths = cache()->get('ids.custom_log_paths', []);
+
+                                $mergedPaths = array_unique(array_merge(is_array($legacyPaths) ? $legacyPaths : [], is_array($currentPaths) ? $currentPaths : []));
+                                cache()->forever('ids.custom_log_paths', array_values($mergedPaths));
+
+                                cache()->forget('ids_custom_log_paths');
+
+                                // Only write persistent marker if we actually migrated the legacy key
+                                cache()->forever('ids.custom_log_paths_migrated', true);
+                            }
+
+                            // Mark as checked in the current process lifecycle
+                            self::$migrated = true;
+                        } finally {
+                            $lock->release();
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    // Fall through on lock timeout or other driver errors
+                    \Illuminate\Support\Facades\Log::warning("Could not acquire lock or error during migration: " . $e->getMessage());
+                }
+            } catch (\Throwable $e) {
+                // cache()->lock() itself failed
+                \Illuminate\Support\Facades\Log::warning("Cache lock creation failed: " . $e->getMessage());
+            }
+        }
+
+        $paths = cache()->get('ids.custom_log_paths', []);
+        return is_array($paths) ? $paths : [];
     }
 
     /**
