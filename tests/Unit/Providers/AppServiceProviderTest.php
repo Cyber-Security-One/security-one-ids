@@ -21,6 +21,7 @@ class AppServiceProviderTest extends TestCase
         // Mock application running in console true
         $app = \Mockery::mock($this->app)->makePartial();
         $app->shouldReceive('runningInConsole')->andReturn(true);
+        $app->shouldReceive('isDownForMaintenance')->andReturn(false);
 
         Config::set('ids.agent_token', '');
         $app['env'] = 'production';
