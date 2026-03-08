@@ -306,11 +306,20 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
+        $configPaths = config('ids.custom_log_paths', []);
+
+        // If it's already in the config, no need to cache
+        if (in_array($path, $configPaths, true)) {
+            return true;
+        }
+
+        $cachedPaths = $this->getCustomPaths();
+
+        if (!in_array($path, $cachedPaths, true)) {
+            $cachedPaths[] = $path;
+
             // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+            cache()->forever('ids.custom_log_paths', array_values(array_unique($cachedPaths)));
         }
 
         return true;
@@ -321,7 +330,33 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        // Migrate legacy cache key to new dot notation using double-checked locking
+        if (cache()->has('ids_custom_log_paths')) {
+            $lock = cache()->lock('ids_custom_log_paths_migration', 10);
+
+            try {
+                $lock->block(5);
+                try {
+                    if (cache()->has('ids_custom_log_paths')) {
+                        $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                        $currentPaths = cache()->get('ids.custom_log_paths', []);
+
+                        if (is_array($legacyPaths)) {
+                            $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
+                            cache()->forever('ids.custom_log_paths', $mergedPaths);
+                        }
+
+                        cache()->forget('ids_custom_log_paths');
+                    }
+                } finally {
+                    $lock->release();
+                }
+            } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+                // Lock timed out, another process is likely migrating
+            }
+        }
+
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
