@@ -309,9 +309,8 @@ class LogDiscoveryService
         $configPaths = config('ids.custom_log_paths', []);
         $cachePaths = $this->getCustomPaths();
 
-        if (!in_array($path, $configPaths) && !in_array($path, $cachePaths)) {
+        if (!in_array($path, $cachePaths)) {
             $cachePaths[] = $path;
-            // Store in cache for persistence
             cache()->forever('ids.custom_log_paths', $cachePaths);
         }
 
@@ -346,6 +345,8 @@ class LogDiscoveryService
                         } finally {
                             $lock->release();
                         }
+                    } else {
+                        Log::warning("Failed to acquire lock for cache migration of key: {$legacyKey}");
                     }
                 } catch (\BadMethodCallException $e) {
                     // Store does not support locks, fallback to best-effort migration
@@ -359,7 +360,7 @@ class LogDiscoveryService
                         $migrated = true;
                     }
                 } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-                    // Lock not acquired, continue
+                    Log::warning("Lock timeout during cache migration of key: {$legacyKey}", ['exception' => $e->getMessage()]);
                 }
             }
         }

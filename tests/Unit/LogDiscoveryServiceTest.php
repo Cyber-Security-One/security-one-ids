@@ -14,6 +14,7 @@ class LogDiscoveryServiceTest extends TestCase
         parent::setUp();
         // Configure array cache driver to isolate test state and prevent side effects
         config(['cache.default' => 'array']);
+        cache()->forget('ids.custom_log_paths');
 
         $this->service = new LogDiscoveryService();
     }
@@ -43,6 +44,7 @@ class LogDiscoveryServiceTest extends TestCase
 
         try {
             $this->app['config']->set('ids.custom_log_paths', []);
+            cache()->forget('ids.custom_log_paths');
 
             $result = $this->service->addCustomPath($tempPath);
 
@@ -71,7 +73,8 @@ class LogDiscoveryServiceTest extends TestCase
             $result = $this->service->addCustomPath($tempPath);
 
             $this->assertTrue($result);
-            $this->assertFalse(cache()->has('ids.custom_log_paths'));
+            $this->assertTrue(cache()->has('ids.custom_log_paths'));
+            $this->assertContains($tempPath, cache()->get('ids.custom_log_paths'));
         } finally {
             if (file_exists($tempPath)) {
                 unlink($tempPath);
@@ -86,6 +89,7 @@ class LogDiscoveryServiceTest extends TestCase
 
         try {
             $this->app['config']->set('ids.custom_log_paths', []);
+            cache()->forget('ids.custom_log_paths');
             cache()->forever('ids.custom_log_paths', [$tempPath]);
 
             $result = $this->service->addCustomPath($tempPath);
