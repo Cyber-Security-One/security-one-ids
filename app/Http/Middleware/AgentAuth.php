@@ -15,9 +15,14 @@ class AgentAuth
      */
     public function handle(Request $request, Closure $next): Response
     {
-        $token = $request->bearerToken()
-            ?? $request->header('X-Agent-Token')
-            ?? $request->input('token');
+        // Prioritize non-empty tokens. If one is empty, fallback to the next.
+        $token = $request->bearerToken();
+        if ($token === null || $token === '') {
+            $token = $request->header('X-Agent-Token');
+        }
+        if ($token === null || $token === '') {
+            $token = $request->input('token');
+        }
 
         $agentTokenEnv = env('AGENT_TOKEN');
         // If env('AGENT_TOKEN') is explicitly set to an empty string, it won't be strictly null,
