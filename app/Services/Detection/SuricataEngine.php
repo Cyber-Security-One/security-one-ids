@@ -2,6 +2,7 @@
 
 namespace App\Services\Detection;
 
+use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 
@@ -14,6 +15,8 @@ use Illuminate\Support\Facades\Process;
  */
 class SuricataEngine
 {
+    use DetectsPlatform;
+
     private string $suricataPath;
     private string $configPath;
     private string $alertLogPath;
@@ -1030,10 +1033,7 @@ YAML;
         };
     }
 
-    private function isWindows(): bool
-    {
-        return PHP_OS_FAMILY === 'Windows';
-    }
+
 
     private function detectLinuxDistro(): string
     {
