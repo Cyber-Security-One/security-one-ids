@@ -20,11 +20,13 @@ class AgentAuth
         if ($token === null || $token === '') {
             $token = $request->header('X-Agent-Token');
         }
-        if ($token === null || $token === '') {
-            $token = $request->input('token');
+        $inputToken = $request->input('token');
+        if (($token === null || $token === '') && $inputToken !== null && $inputToken !== '') {
+            $token = $inputToken;
         }
 
-        $agentToken = (string) (env('AGENT_TOKEN') ?? config('ids.agent_token') ?? '');
+        $envAgentToken = env('AGENT_TOKEN');
+        $agentToken = (string) (($envAgentToken === null || $envAgentToken === '') ? config('ids.agent_token', '') : $envAgentToken);
 
         if ($agentToken === '') {
             return response()->json(['error' => 'Server misconfiguration'], 503);
@@ -36,7 +38,7 @@ class AgentAuth
 
         $token = (string) $token;
 
-        if ($token === '' || strlen($token) !== strlen($agentToken) || !hash_equals($agentToken, $token)) {
+        if ($token === '' || !hash_equals($agentToken, $token)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
