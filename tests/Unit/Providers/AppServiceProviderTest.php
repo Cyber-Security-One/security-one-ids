@@ -15,14 +15,6 @@ class AppServiceProviderTest extends TestCase
         Config::set('ids.agent_token', 'token');
     }
 
-    protected function tearDown(): void
-    {
-        // Clean up maintenance mode if set
-        if (file_exists(storage_path('framework/down'))) {
-            unlink(storage_path('framework/down'));
-        }
-        parent::tearDown();
-    }
 
     public function test_it_throws_exception_in_production_without_token()
     {
@@ -45,15 +37,10 @@ class AppServiceProviderTest extends TestCase
     {
         $app = \Mockery::mock($this->app)->makePartial();
         $app->shouldReceive('runningInConsole')->andReturn(true);
+        $app->shouldReceive('isDownForMaintenance')->andReturn(true);
 
         Config::set('ids.agent_token', '');
         $app['env'] = 'production';
-
-        // Simulate maintenance mode
-        if (!file_exists(storage_path('framework'))) {
-            mkdir(storage_path('framework'), 0777, true);
-        }
-        file_put_contents(storage_path('framework/down'), json_encode([]));
 
         $provider = new AppServiceProvider($app);
 
