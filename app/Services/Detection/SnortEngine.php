@@ -1736,10 +1736,7 @@ LUA;
         return null;
     }
 
-    private function isWindows(): bool
-    {
-        return PHP_OS_FAMILY === 'Windows';
-    }
+    use \App\Traits\DetectsPlatform;
 
     /**
      * Fix log directory permissions so non-root PHP agent can read alert files.

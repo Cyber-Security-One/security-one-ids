@@ -1030,10 +1030,7 @@ YAML;
         };
     }
 
-    private function isWindows(): bool
-    {
-        return PHP_OS_FAMILY === 'Windows';
-    }
+    use \App\Traits\DetectsPlatform;
 
     private function detectLinuxDistro(): string
     {
