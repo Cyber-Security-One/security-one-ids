@@ -14,11 +14,12 @@ class LogDiscoveryServiceTest extends TestCase
     {
         parent::setUp();
         $this->service = new LogDiscoveryService();
+        cache()->forget('ids_custom_log_paths');
     }
 
     protected function tearDown(): void
     {
-        cache()->forget('ids.custom_log_paths');
+        cache()->forget('ids_custom_log_paths');
         config(['ids.custom_log_paths' => []]);
 
         foreach ($this->tempFiles as $tempFile) {
@@ -40,7 +41,7 @@ class LogDiscoveryServiceTest extends TestCase
         $result = $this->service->addCustomPath($path);
 
         $this->assertFalse($result);
-        $this->assertFalse(cache()->has('ids.custom_log_paths'));
+        $this->assertFalse(cache()->has('ids_custom_log_paths'));
     }
 
     public function test_add_custom_path_adds_path_and_caches_when_valid_and_not_in_config(): void
@@ -54,22 +55,18 @@ class LogDiscoveryServiceTest extends TestCase
         $this->tempFiles[] = $tempPath;
         file_put_contents($tempPath, 'test log content');
 
-        try {
-            // Setup config with empty paths initially
-            config(['ids.custom_log_paths' => []]);
+        // Setup config with empty paths initially
+        config(['ids.custom_log_paths' => []]);
 
-            $result = $this->service->addCustomPath($tempPath);
+        $result = $this->service->addCustomPath($tempPath);
 
-            $this->assertTrue($result);
+        $this->assertTrue($result);
 
-            // Verify the actual cache state
-            $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
-        } finally {
-            // Clean up
-            if (file_exists($tempPath)) {
-                unlink($tempPath);
-            }
-        }
+        // Verify the actual cache state
+        $this->assertEquals([$tempPath], cache()->get('ids_custom_log_paths'));
+
+        // Verify config updated
+        $this->assertEquals([$tempPath], config('ids.custom_log_paths'));
     }
 
     public function test_add_custom_path_returns_true_without_caching_when_path_already_in_config(): void
@@ -83,24 +80,14 @@ class LogDiscoveryServiceTest extends TestCase
         $this->tempFiles[] = $tempPath;
         file_put_contents($tempPath, 'test log content');
 
-        try {
-            // Setup config with the path already in it
-            config(['ids.custom_log_paths' => [$tempPath]]);
+        // Setup config with the path already in it
+        config(['ids.custom_log_paths' => [$tempPath]]);
 
-            // Clear cache to ensure it's not set
-            cache()->forget('ids.custom_log_paths');
+        $result = $this->service->addCustomPath($tempPath);
 
-            $result = $this->service->addCustomPath($tempPath);
+        $this->assertTrue($result);
 
-            $this->assertTrue($result);
-
-            // Verify cache is not set since it was already in config
-            $this->assertFalse(cache()->has('ids.custom_log_paths'));
-        } finally {
-            // Clean up
-            if (file_exists($tempPath)) {
-                unlink($tempPath);
-            }
-        }
+        // Verify cache is not set since it was already in config
+        $this->assertFalse(cache()->has('ids_custom_log_paths'));
     }
 }
