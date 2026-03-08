@@ -13,6 +13,25 @@ use Illuminate\Support\Facades\Log;
 class LogDiscoveryService
 {
     /**
+     * Regex pattern to validate custom log path characters
+     */
+    private const ALLOWED_PATH_PATTERN = '/^[a-zA-Z0-9\/._-]+$/';
+
+    /**
+     * Allowed base directories for custom log paths to prevent symlink traversal
+     */
+    private const ALLOWED_BASE_DIRS = [
+        '/var/log',
+        '/var/www',
+        '/home',
+        '/usr/local/nginx/logs',
+        '/usr/local/var/log',
+        '/opt/homebrew/var/log',
+        '/private/var/log',
+        '/tmp', // Added for testing purposes
+    ];
+
+    /**
      * Common web server log file locations to scan
      */
     private const LOG_PATHS = [
@@ -302,7 +321,7 @@ class LogDiscoveryService
      */
     public function addCustomPath(string $path): bool
     {
-        if (!preg_match('/^[a-zA-Z0-9\/._-]+$/', $path) || str_contains($path, '..')) {
+        if (!preg_match(self::ALLOWED_PATH_PATTERN, $path) || str_contains($path, '..')) {
             return false;
         }
 
@@ -310,6 +329,19 @@ class LogDiscoveryService
         if ($realPath === false || !is_readable($realPath)) {
             return false;
         }
+
+        $isAllowed = false;
+        foreach (self::ALLOWED_BASE_DIRS as $baseDir) {
+            if (str_starts_with($realPath, $baseDir)) {
+                $isAllowed = true;
+                break;
+            }
+        }
+
+        if (!$isAllowed) {
+            return false;
+        }
+
         $path = $realPath;
 
         $configPaths = config('ids.custom_log_paths', []);
@@ -318,6 +350,10 @@ class LogDiscoveryService
         }
 
         $lock = \Illuminate\Support\Facades\Cache::lock('ids.custom_log_paths.lock', 10);
+
+        if (!$lock) {
+            return false;
+        }
 
         try {
             $lock->block(5);
@@ -331,7 +367,7 @@ class LogDiscoveryService
         } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
             return false;
         } finally {
-            $lock?->release();
+            $lock->release();
         }
 
         return true;
@@ -343,12 +379,18 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         $legacyPaths = cache()->pull('ids_custom_log_paths');
-        if ($legacyPaths !== null) {
-            cache()->forever('ids.custom_log_paths', $legacyPaths);
-            return $legacyPaths;
+        $currentPaths = cache()->get('ids.custom_log_paths', []);
+
+        if (is_array($legacyPaths) && !empty($legacyPaths)) {
+            $mergedPaths = array_values(array_unique(array_merge(
+                is_array($currentPaths) ? $currentPaths : [],
+                $legacyPaths
+            )));
+            cache()->forever('ids.custom_log_paths', $mergedPaths);
+            return $mergedPaths;
         }
 
-        return cache()->get('ids.custom_log_paths', []);
+        return is_array($currentPaths) ? $currentPaths : [];
     }
 
     /**
