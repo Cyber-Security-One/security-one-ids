@@ -10,6 +10,7 @@ use Tests\TestCase;
 class LogDiscoveryServiceTest extends TestCase
 {
     private LogDiscoveryService $service;
+    protected array $tempFiles = [];
 
     protected function setUp(): void
     {
@@ -33,10 +34,10 @@ class LogDiscoveryServiceTest extends TestCase
         Cache::forever('ids_custom_log_paths', ['/legacy/path/1']);
         Cache::forever('ids.custom_log_paths', ['/legacy/path/2']);
 
+        Config::partialMock();
         Config::shouldReceive('get')
             ->with('ids.custom_log_paths', [])
             ->andReturn([]);
-        Config::makePartial();
 
         $paths = $this->service->getCustomPaths();
 
@@ -58,11 +59,14 @@ class LogDiscoveryServiceTest extends TestCase
     {
         Cache::forever('ids_custom_log_paths', ['/legacy/path', '/config/path']);
 
+        // Ensure static flag is reset for test isolation
+        LogDiscoveryService::$migrated = false;
+
         // Explicitly set the config
+        Config::partialMock();
         Config::shouldReceive('get')
             ->with('ids.custom_log_paths', [])
             ->andReturn(['/config/path']);
-        Config::makePartial();
 
         $paths = $this->service->getCustomPaths();
 
@@ -82,10 +86,10 @@ class LogDiscoveryServiceTest extends TestCase
         touch($file);
         $this->tempFiles[] = $file; // if we had a proper tearDown, but let's just use it
 
+        Config::partialMock();
         Config::shouldReceive('get')
             ->with('ids.custom_log_paths', [])
             ->andReturn(['/config/path']);
-        Config::makePartial();
 
         // Initially empty cache
         $this->assertFalse(Cache::has('ids::custom_log_paths'));
@@ -119,8 +123,6 @@ class LogDiscoveryServiceTest extends TestCase
         $this->assertFalse($result);
         $this->assertFalse(Cache::has('ids::custom_log_paths'));
     }
-
-    protected array $tempFiles = [];
 
     protected function tearDown(): void
     {

@@ -12,6 +12,12 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    private const LOCK_TIMEOUT = 30;
+    private const LOCK_MAX_RETRIES = 10;
+    private const LOCK_INITIAL_DELAY = 10000;
+
+    public static bool $migrated = false;
+
     /**
      * Common web server log file locations to scan
      */
@@ -300,23 +306,41 @@ class LogDiscoveryService
     /**
      * Add a custom log path to monitor
      */
+    /**
+     * Attempts to acquire a lock with exponential backoff
+     */
+    private function acquireLock(string $lockKey, int $timeout, int $maxRetries, int $initialDelay, &$lock)
+    {
+        $lock = cache()->lock($lockKey, $timeout);
+        $acquired = false;
+        $delay = $initialDelay;
+
+        for ($i = 0; $i < $maxRetries; $i++) {
+            try {
+                if ($acquired = $lock->get()) {
+                    break;
+                }
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::warning("Failed lock attempt for {$lockKey}: " . $e->getMessage());
+            }
+            usleep($delay);
+            $delay = (int) min($delay * 2, 500000); // Max delay 500ms
+        }
+
+        return $acquired;
+    }
+
+    /**
+     * Add a custom log path to monitor
+     */
     public function addCustomPath(string $path): bool
     {
         if (!is_readable($path)) {
             return false;
         }
 
-        $lock = cache()->lock('lock::ids::custom_log_paths_add', 30);
-        $acquired = false;
-        $delay = 10000;
-
-        for ($i = 0; $i < 10; $i++) {
-            if ($acquired = $lock->get()) {
-                break;
-            }
-            usleep($delay);
-            $delay *= 2;
-        }
+        $lock = null;
+        $acquired = $this->acquireLock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT, self::LOCK_MAX_RETRIES, self::LOCK_INITIAL_DELAY, $lock);
 
         try {
             if ($acquired) {
@@ -351,68 +375,66 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         $newKey = 'ids::custom_log_paths';
-        $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
 
-        $needsMigration = false;
-        foreach ($legacyKeys as $legacyKey) {
-            if (cache()->has($legacyKey)) {
-                $needsMigration = true;
-                break;
-            }
-        }
+        if (!self::$migrated) {
+            $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
+            $needsMigration = false;
 
-        if ($needsMigration) {
-            $lock = cache()->lock('lock::ids::custom_log_paths_migrate', 10);
-            $acquired = false;
-            $delay = 10000;
-
-            for ($i = 0; $i < 10; $i++) {
-                if ($acquired = $lock->get()) {
+            foreach ($legacyKeys as $legacyKey) {
+                if (cache()->has($legacyKey)) {
+                    $needsMigration = true;
                     break;
                 }
-                usleep($delay);
-                $delay *= 2;
             }
 
-            try {
-                if ($acquired) {
-                    // Double check
-                    $needsMigration = false;
-                    foreach ($legacyKeys as $legacyKey) {
-                        if (cache()->has($legacyKey)) {
-                            $needsMigration = true;
-                            break;
-                        }
-                    }
+            if ($needsMigration) {
+                $lock = null;
+                $acquired = $this->acquireLock('lock::ids::custom_log_paths_migrate', self::LOCK_TIMEOUT, self::LOCK_MAX_RETRIES, self::LOCK_INITIAL_DELAY, $lock);
 
-                    if ($needsMigration) {
-                        $merged = cache()->get($newKey, []);
-
+                try {
+                    if ($acquired) {
+                        // Double check
+                        $needsMigration = false;
                         foreach ($legacyKeys as $legacyKey) {
                             if (cache()->has($legacyKey)) {
-                                $legacyData = cache()->get($legacyKey, []);
-                                if (is_array($legacyData)) {
-                                    $merged = array_merge($merged, $legacyData);
-                                }
+                                $needsMigration = true;
+                                break;
                             }
                         }
 
-                        // Remove static config values from cache
-                        $configPaths = config('ids.custom_log_paths', []);
-                        $merged = array_diff($merged, $configPaths);
+                        if ($needsMigration) {
+                            $merged = cache()->get($newKey, []);
 
-                        $merged = array_values(array_unique($merged));
-                        cache()->forever($newKey, $merged);
+                            foreach ($legacyKeys as $legacyKey) {
+                                if (cache()->has($legacyKey)) {
+                                    $legacyData = cache()->get($legacyKey, []);
+                                    if (is_array($legacyData)) {
+                                        $merged = array_merge($merged, $legacyData);
+                                    }
+                                }
+                            }
 
-                        foreach ($legacyKeys as $legacyKey) {
-                            cache()->forget($legacyKey);
+                            // Remove static config values from cache
+                            $configPaths = config('ids.custom_log_paths', []);
+                            $merged = array_diff($merged, $configPaths);
+
+                            $merged = array_values(array_unique($merged));
+                            cache()->forever($newKey, $merged);
+
+                            foreach ($legacyKeys as $legacyKey) {
+                                cache()->forget($legacyKey);
+                            }
+
+                            self::$migrated = true;
                         }
                     }
+                } finally {
+                    if ($acquired && $lock) {
+                        $lock->release();
+                    }
                 }
-            } finally {
-                if ($acquired) {
-                    $lock->release();
-                }
+            } else {
+                self::$migrated = true; // Fallback to avoid constant loops if we can't lock
             }
         }
 
