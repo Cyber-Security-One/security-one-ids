@@ -387,9 +387,10 @@ class LogDiscoveryService
             }
         }
 
+        $paths = array_values(array_unique($paths));
+        cache()->forever('ids.custom_log_paths', $paths);
+
         if ($migrated) {
-            $paths = array_values(array_unique($paths));
-            cache()->forever('ids.custom_log_paths', $paths);
             foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
                 cache()->forget($legacyKey);
             }

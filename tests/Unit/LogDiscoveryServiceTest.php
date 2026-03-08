@@ -79,7 +79,11 @@ class LogDiscoveryServiceTest extends TestCase
         $result = $this->service->addCustomPath($tempPath);
 
         $this->assertTrue($result);
-        $this->assertFalse(cache()->has('ids.custom_log_paths'));
+        // We now initialize an empty array cache key if no old keys were present,
+        // to prevent repeated migration logic calls when reading.
+        // So the cache WILL have the key, but it shouldn't contain the config path.
+        $this->assertTrue(cache()->has('ids.custom_log_paths'));
+        $this->assertEmpty(cache()->get('ids.custom_log_paths'));
     }
 
     public function test_add_custom_path_returns_true_without_caching_when_path_already_in_cache(): void
