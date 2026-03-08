@@ -326,20 +326,23 @@ class LogDiscoveryService
             $lock = cache()->lock('migrate_custom_log_paths', 10);
 
             try {
-                if ($lock->block(5)) {
-                    // Double check in case another process migrated it
-                    if (cache()->has('ids_custom_log_paths')) {
-                        $legacyPaths = cache()->get('ids_custom_log_paths', []);
-                        $currentPaths = cache()->get('ids.custom_log_paths', []);
-
-                        $mergedPaths = array_unique(array_merge($legacyPaths, $currentPaths));
-                        cache()->forever('ids.custom_log_paths', $mergedPaths);
-
-                        cache()->forget('ids_custom_log_paths');
-                    }
-                }
+                $lock->block(5);
             } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
                 // If we can't get the lock, just fall through to read the current paths
+                return cache()->get('ids.custom_log_paths', []);
+            }
+
+            try {
+                // Double check in case another process migrated it
+                if (cache()->has('ids_custom_log_paths')) {
+                    $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                    $currentPaths = cache()->get('ids.custom_log_paths', []);
+
+                    $mergedPaths = array_unique(array_merge($legacyPaths, $currentPaths));
+                    cache()->forever('ids.custom_log_paths', $mergedPaths);
+
+                    cache()->forget('ids_custom_log_paths');
+                }
             } finally {
                 optional($lock)->release();
             }
