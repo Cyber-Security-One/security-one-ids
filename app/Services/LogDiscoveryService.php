@@ -331,12 +331,6 @@ class LogDiscoveryService
             return false;
         }
 
-        // Additionally verify that basename of realpath matches basename of path
-        // to prevent linking an allowed file to an unexpected name in the symlink attacks where the target is outside
-        if (basename($path) !== basename($realPath)) {
-            return false;
-        }
-
         if (!$this->isAllowedPath($realPath)) {
             return false;
         }
@@ -370,8 +364,9 @@ class LogDiscoveryService
             }
 
             // At this point, it is NOT in the cache.
-            // We must add it to the persistent cache if it's missing from there.
-            $cachedPaths[] = $realPath;
+            // We store the input path rather than $realPath to remain consistent with config values
+            // and previous cache entries, which generally contain the user-input path.
+            $cachedPaths[] = $path;
             $merged = array_values(array_unique($cachedPaths));
             cache()->forever('ids.custom_log_paths', $merged);
         } finally {
