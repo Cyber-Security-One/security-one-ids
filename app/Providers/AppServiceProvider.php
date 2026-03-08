@@ -19,6 +19,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        $token = config('ids.agent_token');
+        if (app()->environment('production') && ($token === null || $token === '') && !app()->runningInConsole()) {
+            throw new \RuntimeException('AGENT_TOKEN must be set in production environment.');
+        }
     }
 }
