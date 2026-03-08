@@ -319,7 +319,12 @@ class LogDiscoveryService
      */
     public function addCustomPath(string $path): bool
     {
-        $path = urldecode($path);
+        // Decode repeatedly to handle double or multiple encodings
+        $decodedPath = urldecode($path);
+        while ($decodedPath !== $path) {
+            $path = $decodedPath;
+            $decodedPath = urldecode($path);
+        }
 
         // Ensure that any encoded traversal sequences are decoded before checking for '..'
         $segments = explode('/', str_replace('\\', '/', $path));
@@ -389,8 +394,12 @@ class LogDiscoveryService
             }
         }
 
+        // Ensure consistent path comparison for directory boundaries
+        $realPathNormalized = rtrim($realPath, DIRECTORY_SEPARATOR);
+
         foreach (self::$resolvedBaseDirs as $realDir) {
-            if ($realPath === $realDir || str_starts_with($realPath, $realDir . DIRECTORY_SEPARATOR)) {
+            $realDirNormalized = rtrim($realDir, DIRECTORY_SEPARATOR);
+            if ($realPathNormalized === $realDirNormalized || str_starts_with($realPathNormalized, $realDirNormalized . DIRECTORY_SEPARATOR)) {
                 return true;
             }
         }
