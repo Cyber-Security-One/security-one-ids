@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Process;
  * Manages Suricata process lifecycle, parses EVE JSON alerts, and provides status.
  * Supports IDS (passive) and IPS (inline) modes across Linux, macOS, and Windows.
  * On Windows, uses WinDivert (EV code-signed) instead of Npcap.
+ * Relies on DetectsPlatform trait for shared OS detection logic.
  */
 class SuricataEngine
 {

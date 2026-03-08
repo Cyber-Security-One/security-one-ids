@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Process;
  *
  * Manages Snort 3 process lifecycle, parses alerts, and provides status information.
  * Supports IDS (passive) and IPS (inline) modes across Linux, macOS, and Windows.
+ * Relies on DetectsPlatform trait for shared OS detection logic.
  */
 class SnortEngine
 {
