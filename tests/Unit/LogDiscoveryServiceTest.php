@@ -13,6 +13,10 @@ class LogDiscoveryServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        if (!is_writable(sys_get_temp_dir())) {
+            $this->markTestSkipped('System temporary directory is not writable.');
+        }
+
         $this->service = app(LogDiscoveryService::class);
         // Ensure we start with a clean state without modifying global config across tests
         Cache::forget('ids_custom_log_paths');
@@ -41,7 +45,9 @@ class LogDiscoveryServiceTest extends TestCase
     {
         // Create a temporary readable file
         $tempPath = tempnam(sys_get_temp_dir(), 'test_log');
-        $this->assertNotEmpty($tempPath);
+        if (!$tempPath) {
+            $this->fail('Failed to create temporary file');
+        }
         $this->assertFileExists($tempPath);
 
         try {
@@ -65,7 +71,9 @@ class LogDiscoveryServiceTest extends TestCase
     {
         // Create a temporary readable file
         $tempPath = tempnam(sys_get_temp_dir(), 'test_log');
-        $this->assertNotEmpty($tempPath);
+        if (!$tempPath) {
+            $this->fail('Failed to create temporary file');
+        }
         $this->assertFileExists($tempPath);
 
         try {
