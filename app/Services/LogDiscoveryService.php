@@ -328,7 +328,7 @@ class LogDiscoveryService
         }
 
         // Validate that path does not contain path traversal vectors
-        $segments = explode('/', str_replace('\\', '/', $path));
+        $segments = explode('/', str_replace('\\', '/', urldecode($path)));
         if (in_array('..', $segments, true)) {
             return false;
         }
@@ -381,19 +381,9 @@ class LogDiscoveryService
             $cachedPaths = $this->getCustomPaths();
 
             // If it's already in the cache, we're good.
-            $resolvedCachedPaths = [];
-            foreach ($cachedPaths as $cachedPath) {
-                if (!is_string($cachedPath)) {
-                    continue;
-                }
-
-                $resolvedCachedPath = realpath($cachedPath);
-                if ($resolvedCachedPath !== false) {
-                    $resolvedCachedPaths[] = strtolower($resolvedCachedPath);
-                }
-            }
-
-            if (in_array(strtolower($realPath), $resolvedCachedPaths, true)) {
+            // Cached paths are already resolved during adding, so we only need to lowercase them
+            $lowercaseCachedPaths = array_map('strtolower', $cachedPaths);
+            if (in_array(strtolower($realPath), $lowercaseCachedPaths, true)) {
                 return true;
             }
 
@@ -401,7 +391,9 @@ class LogDiscoveryService
             // Store in cache for persistence
             cache()->forever('ids.custom_log_paths', $cachedPaths);
         } finally {
-            $lock->release();
+            if ($acquired) {
+                $lock->release();
+            }
         }
 
         return true;

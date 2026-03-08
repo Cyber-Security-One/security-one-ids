@@ -57,7 +57,7 @@ class LogDiscoveryServiceTest extends TestCase
             $this->assertTrue($result);
 
             // Verify the actual cache state
-            $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
+            $this->assertEqualsCanonicalizing([$tempPath], cache()->get('ids.custom_log_paths'));
         } finally {
             // Clean up
             if (file_exists($tempPath)) {
@@ -118,11 +118,11 @@ class LogDiscoveryServiceTest extends TestCase
 
             $paths = $this->service->getCustomPaths();
 
-            $this->assertEquals($expectedPaths, $paths);
+            $this->assertEqualsCanonicalizing($expectedPaths, $paths);
 
             // Verify migration only kept valid paths
             $this->assertTrue(cache()->has('ids.custom_log_paths'));
-            $this->assertEquals($expectedPaths, cache()->get('ids.custom_log_paths'));
+            $this->assertEqualsCanonicalizing($expectedPaths, cache()->get('ids.custom_log_paths'));
             $this->assertFalse(cache()->has('ids_custom_log_paths'));
         } finally {
             if (file_exists($tempPath1)) unlink($tempPath1);
