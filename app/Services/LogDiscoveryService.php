@@ -389,6 +389,13 @@ class LogDiscoveryService
                     }
                 }
             }
+
+            // Fallback: Return merged state if lock acquisition failed but legacies exist
+            $legacyPaths1 = $hasLegacy1 ? cache()->get('ids_custom_log_paths', []) : [];
+            $legacyPaths2 = $hasLegacy2 ? cache()->get('ids.custom_log_paths', []) : [];
+            $currentPaths = cache()->get('ids::custom_log_paths', []);
+
+            return array_values(array_unique(array_merge($legacyPaths1, $legacyPaths2, $currentPaths)));
         }
 
         return cache()->get('ids::custom_log_paths', []);
