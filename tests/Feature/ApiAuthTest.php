@@ -21,6 +21,7 @@ class ApiAuthTest extends TestCase
     protected function tearDown(): void
     {
         putenv('AGENT_TOKEN');
+        Config::set('ids.agent_token', null);
         parent::tearDown();
     }
 
