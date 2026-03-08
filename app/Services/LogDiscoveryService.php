@@ -298,6 +298,11 @@ class LogDiscoveryService
     }
 
     /**
+     * Static flag to track if cache migration has been performed this request lifecycle
+     */
+    public static bool $migrated = false;
+
+    /**
      * Add a custom log path to monitor
      */
     public function addCustomPath(string $path): bool
@@ -306,14 +311,36 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
-        }
+        try {
+            $lock = cache()->lock('add_custom_log_path', 10);
 
-        return true;
+            // Wait up to 5 seconds to acquire the lock
+            if ($lock->block(5)) {
+                try {
+                    $cachedPaths = cache()->get('ids::custom_log_paths', []);
+                    $configPaths = config('ids.custom_log_paths', []);
+
+                    $allPaths = array_values(array_unique(array_merge($cachedPaths, $configPaths)));
+
+                    if (!in_array($path, $allPaths, true)) {
+                        $cachedPaths[] = $path;
+                        cache()->forever('ids::custom_log_paths', array_values(array_unique($cachedPaths)));
+                    }
+                } finally {
+                    $lock->release();
+                }
+
+                return true;
+            }
+
+            return false;
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            Log::warning('Timeout while trying to acquire lock for adding custom log path.', ['path' => $path]);
+            return false;
+        } catch (\Throwable $e) {
+            Log::error('Cache error while adding custom log path: ' . $e->getMessage(), ['path' => $path]);
+            return false;
+        }
     }
 
     /**
@@ -321,7 +348,55 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        if (!self::$migrated && cache()->has('ids_custom_log_paths')) {
+            try {
+                $lock = cache()->lock('migrate_custom_log_paths', 10);
+
+                if ($lock->block(5)) {
+                    try {
+                        if (cache()->has('ids_custom_log_paths')) {
+                            $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                            $currentPaths = cache()->get('ids::custom_log_paths', []);
+
+                            $merged = array_values(array_unique(array_merge($legacyPaths, $currentPaths)));
+
+                            cache()->forever('ids::custom_log_paths', $merged);
+                            cache()->forget('ids_custom_log_paths');
+
+                            self::$migrated = true;
+                            return $merged;
+                        }
+                    } finally {
+                        $lock->release();
+                    }
+                }
+            } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+                Log::warning('Timeout acquiring lock to migrate legacy custom log paths.');
+                // Review request: ensure legacy keys are cleared if lock fails to prevent future confusion
+                try {
+                    $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                    $currentPaths = cache()->get('ids::custom_log_paths', []);
+                    $merged = array_values(array_unique(array_merge($legacyPaths, $currentPaths)));
+                    cache()->forever('ids::custom_log_paths', $merged);
+                    cache()->forget('ids_custom_log_paths');
+                    return $merged;
+                } catch (\Throwable $innerEx) {
+                    Log::error('Cache error while executing fallback migration: ' . $innerEx->getMessage());
+                    return [];
+                }
+            } catch (\Throwable $e) {
+                Log::error('Cache error migrating legacy custom log paths: ' . $e->getMessage());
+                return [];
+            }
+        }
+
+        self::$migrated = true;
+        try {
+            return cache()->get('ids::custom_log_paths', []);
+        } catch (\Throwable $e) {
+            Log::error('Cache error getting custom log paths: ' . $e->getMessage());
+            return [];
+        }
     }
 
     /**
