@@ -331,7 +331,10 @@ class LogDiscoveryService
         // Migrating from legacy key if it exists
         if (cache()->has($this->legacyCacheKey)) {
             $legacyPaths = cache()->get($this->legacyCacheKey, []);
-            cache()->forever($this->cacheKey, $legacyPaths);
+            $currentPaths = cache()->get($this->cacheKey, []);
+
+            $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
+            cache()->forever($this->cacheKey, $mergedPaths);
             cache()->forget($this->legacyCacheKey);
         }
 
