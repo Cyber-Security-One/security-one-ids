@@ -23,14 +23,14 @@ class AppServiceProvider extends ServiceProvider
             // Only register CLI event listeners if we are running in the console
             if ($this->app->runningInConsole()) {
                 // Catch queue workers universally
-                $this->app['events']->listen(\Illuminate\Queue\Events\WorkerStarting::class, function () {
-                    throw new \RuntimeException('AGENT_TOKEN must be set in production environment.');
+                $this->app['events']->listen(\Illuminate\Queue\Events\WorkerStarting::class, function (\Illuminate\Queue\Events\WorkerStarting $event) {
+                    throw new \App\Exceptions\MissingAgentTokenException();
                 });
 
                 // Catch custom background IDS commands before they execute
-                $this->app['events']->listen(\Illuminate\Console\Events\CommandStarting::class, function ($event) {
+                $this->app['events']->listen(\Illuminate\Console\Events\CommandStarting::class, function (\Illuminate\Console\Events\CommandStarting $event) {
                     if ($event->command && str_starts_with($event->command, 'ids:')) {
-                        throw new \RuntimeException('AGENT_TOKEN must be set in production environment.');
+                        throw new \App\Exceptions\MissingAgentTokenException();
                     }
                 });
             }
