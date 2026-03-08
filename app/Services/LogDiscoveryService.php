@@ -306,11 +306,34 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $configPaths = config('ids.custom_log_paths', []);
+
+        // If the path is already in the config, we don't need to cache it
+        if (in_array($path, $configPaths, true)) {
+            return true;
+        }
+
+        $lock = cache()->lock('ids.custom_log_paths.lock', 10);
+
+        try {
+            $lock->block(5); // Wait up to 5 seconds to acquire lock
+
+            $cachedPaths = $this->getCustomPaths();
+
+            // If the path is not in the config and not in the cache, add to cache
+            if (!in_array($path, $cachedPaths, true)) {
+                $cachedPaths[] = $path;
+                // Store in cache for persistence
+                cache()->forever('ids.custom_log_paths', $cachedPaths);
+            }
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            // Handle lock timeout: re-check if path was added, otherwise fail gracefully
+            $cachedPaths = $this->getCustomPaths();
+            if (!in_array($path, $cachedPaths, true)) {
+                return false;
+            }
+        } finally {
+            $lock->release();
         }
 
         return true;
@@ -321,7 +344,15 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        // Atomically pull legacy paths to prevent race conditions during migration
+        $legacyPaths = cache()->pull('ids_custom_log_paths');
+        if ($legacyPaths !== null) {
+            $currentPaths = cache()->get('ids.custom_log_paths', []);
+            $merged = array_unique(array_merge($currentPaths, is_array($legacyPaths) ? $legacyPaths : []));
+            cache()->forever('ids.custom_log_paths', $merged);
+        }
+
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
