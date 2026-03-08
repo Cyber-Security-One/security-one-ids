@@ -306,15 +306,23 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = array_values(array_unique(array_merge(
-            config('ids.custom_log_paths', []),
-            $this->getCustomPaths()
-        )));
+        $configPaths = config('ids.custom_log_paths', []);
 
-        if (!in_array($path, $customPaths, true)) {
-            $customPaths[] = $path;
+        // If it's already in the config, no need to cache
+        if (in_array($path, $configPaths, true)) {
+            return true;
+        }
+
+        $cachedPaths = $this->getCustomPaths();
+
+        if (!in_array($path, $cachedPaths, true)) {
+            $cachedPaths[] = $path;
+
+            // Clean up array keys just in case and remove any potential duplicates with config
+            $pathsToCache = array_values(array_unique(array_diff($cachedPaths, $configPaths)));
+
             // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $customPaths);
+            cache()->forever('ids.custom_log_paths', $pathsToCache);
         }
 
         return true;
