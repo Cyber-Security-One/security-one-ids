@@ -306,22 +306,81 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
+        $cachedPaths = $this->getCustomPaths();
+        $configPaths = config('ids.custom_log_paths', []);
+
+        $allPaths = array_values(array_unique(array_merge($cachedPaths, $configPaths)));
+
+        if (!in_array($path, $allPaths)) {
+            $cachedPaths[] = $path;
             // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+            cache()->forever('ids.custom_log_paths', array_values(array_unique($cachedPaths)));
         }
 
         return true;
     }
 
     /**
+     * Track if legacy cache has been migrated during this lifecycle
+     */
+    public static bool $migrated = false;
+
+    /**
      * Get custom paths from cache
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $this->migrateLegacyCacheKeys();
+
+        return cache()->get('ids.custom_log_paths', []);
+    }
+
+    /**
+     * Migrate legacy custom log path cache keys to the new standard safely.
+     */
+    private function migrateLegacyCacheKeys(): void
+    {
+        if (self::$migrated || !cache()->has('ids_custom_log_paths')) {
+            return;
+        }
+
+        $lock = cache()->lock('ids.custom_log_paths_migration_lock', 10);
+        $acquired = false;
+
+        try {
+            // Implement simple retry backoff if the lock is held
+            for ($i = 0; $i < 3; $i++) {
+                if ($acquired = $lock->get()) {
+                    break;
+                }
+                usleep(100000); // Wait 100ms
+            }
+
+            if (!$acquired) {
+                return; // Let concurrent requests pass, the one holding the lock will migrate
+            }
+
+            // Re-verify inside the lock
+            if (cache()->has('ids_custom_log_paths')) {
+                $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                $currentPaths = cache()->get('ids.custom_log_paths', []);
+
+                if (is_array($legacyPaths)) {
+                    $merged = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
+                    cache()->forever('ids.custom_log_paths', $merged);
+                }
+
+                cache()->forget('ids_custom_log_paths');
+            }
+
+            self::$migrated = true;
+        } catch (\Throwable $e) {
+            Log::warning("Failed to migrate legacy log paths cache: " . $e->getMessage());
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
+        }
     }
 
     /**
