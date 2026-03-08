@@ -15,12 +15,16 @@ class ApiAuthTest extends TestCase
         // Set a known token for testing. We rely on Config::set to cleanly reset between tests.
         // Unset the env variable just in case the testing environment had it populated.
         putenv('AGENT_TOKEN');
+        unset($_ENV['AGENT_TOKEN']);
+        unset($_SERVER['AGENT_TOKEN']);
         Config::set('ids.agent_token', 'test-agent-token');
     }
 
     protected function tearDown(): void
     {
         putenv('AGENT_TOKEN');
+        unset($_ENV['AGENT_TOKEN']);
+        unset($_SERVER['AGENT_TOKEN']);
         Config::set('ids.agent_token', null);
         parent::tearDown();
     }

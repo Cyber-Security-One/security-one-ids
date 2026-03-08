@@ -19,7 +19,7 @@ class AgentAuth
             ?? $request->header('X-Agent-Token')
             ?? $request->input('token');
 
-        $agentToken = (string) (env('AGENT_TOKEN') ?: config('ids.agent_token', ''));
+        $agentToken = (string) (env('AGENT_TOKEN') ?? config('ids.agent_token', ''));
 
         if (!is_scalar($token)) {
             return response()->json(['error' => 'Unauthorized'], 401);
