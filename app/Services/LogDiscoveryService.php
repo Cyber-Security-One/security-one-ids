@@ -306,6 +306,11 @@ class LogDiscoveryService
             return false;
         }
 
+        $configPaths = config('ids.custom_log_paths', []);
+        if (in_array($path, $configPaths, true)) {
+            return true;
+        }
+
         $cachedPaths = $this->getCustomPaths();
 
         if (!in_array($path, $cachedPaths, true)) {
