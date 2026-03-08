@@ -306,11 +306,44 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $cachedPaths = $this->getCustomPaths();
+
+        if (in_array($path, $cachedPaths, true)) {
+            // Ensure config is also updated for current lifecycle even if cached
+            $configPaths = config('ids.custom_log_paths', []);
+            if (!in_array($path, $configPaths, true)) {
+                $configPaths[] = $path;
+                config(['ids.custom_log_paths' => $configPaths]);
+            }
+            return true;
+        }
+
+        // Use a lock to prevent race conditions during concurrent additions
+        $lock = cache()->lock('ids.custom_log_paths.lock', 10);
+
+        try {
+            if ($lock->block(5)) {
+                try {
+                    // Double check after acquiring lock
+                    $cachedPaths = $this->getCustomPaths();
+
+                    if (!in_array($path, $cachedPaths, true)) {
+                        $cachedPaths[] = $path;
+                        cache()->forever('ids.custom_log_paths', $cachedPaths);
+                    }
+
+                    $configPaths = config('ids.custom_log_paths', []);
+                    if (!in_array($path, $configPaths, true)) {
+                        $configPaths[] = $path;
+                        config(['ids.custom_log_paths' => $configPaths]);
+                    }
+                } finally {
+                    $lock->release();
+                }
+            }
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            // Lock timeout, cannot safely add path
+            return false;
         }
 
         return true;
@@ -321,7 +354,29 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        // Migrate legacy key with double-checked locking
+        if (cache()->has('ids_custom_log_paths')) {
+            $lock = cache()->lock('ids.custom_log_paths.migration.lock', 10);
+            try {
+                if ($lock->block(5)) {
+                    try {
+                        if (cache()->has('ids_custom_log_paths')) {
+                            $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                            $newPaths = cache()->get('ids.custom_log_paths', []);
+                            $mergedPaths = array_values(array_unique(array_merge($legacyPaths, $newPaths)));
+                            cache()->forever('ids.custom_log_paths', $mergedPaths);
+                            cache()->forget('ids_custom_log_paths');
+                        }
+                    } finally {
+                        $lock->release();
+                    }
+                }
+            } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+                // Ignore timeout during migration
+            }
+        }
+
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
