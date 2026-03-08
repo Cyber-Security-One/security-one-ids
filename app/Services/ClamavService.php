@@ -50,7 +50,9 @@ class ClamavService
     protected function getCaCertPath(): ?string
     {
         // Check common locations for cacert.pem on Windows
-        $possiblePaths = [];
+        $possiblePaths = [
+            base_path('resources/certs/cacert.pem')
+        ];
 
         // Get PHP directory
         $phpBinary = PHP_BINARY;
@@ -76,29 +78,7 @@ class ClamavService
             }
         }
 
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                // Ignore
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
-        }
-
-        return null;
+        throw new \RuntimeException('Bundled CA certificate not found. Ensure resources/certs/cacert.pem exists.');
     }
 
     /**
