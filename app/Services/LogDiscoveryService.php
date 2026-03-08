@@ -307,10 +307,9 @@ class LogDiscoveryService
         }
 
         $configPaths = config('ids.custom_log_paths', []);
-        $cachedPaths = $this->getCustomPaths();
 
-        // Write logic needs to migrate old keys and handle locks
-        $lock = cache()->lock('migrate_custom_log_paths', 10);
+        // Use a single lock for the entire read-modify-write operation
+        $lock = cache()->lock('ids.custom_log_paths.lock', 10);
         $acquired = false;
 
         try {
@@ -329,54 +328,53 @@ class LogDiscoveryService
             }
 
             if ($acquired) {
+                // Read current state entirely within the lock
+                $cachedPaths = cache()->get('ids.custom_log_paths', []);
+
                 $hasLegacy1 = cache()->has('ids_custom_log_paths');
                 $hasLegacy2 = cache()->has('ids::custom_log_paths');
 
-                if ($hasLegacy1 || $hasLegacy2) {
-                    $legacyPaths1 = $hasLegacy1 ? cache()->get('ids_custom_log_paths', []) : [];
-                    $legacyPaths2 = $hasLegacy2 ? cache()->get('ids::custom_log_paths', []) : [];
-                    $currentPaths = cache()->get('ids.custom_log_paths', []);
+                $legacyPaths1 = $hasLegacy1 ? cache()->get('ids_custom_log_paths', []) : [];
+                $legacyPaths2 = $hasLegacy2 ? cache()->get('ids::custom_log_paths', []) : [];
 
-                    $mergedPaths = array_values(array_unique(array_merge(
-                        is_array($legacyPaths1) ? $legacyPaths1 : [],
-                        is_array($legacyPaths2) ? $legacyPaths2 : [],
-                        is_array($currentPaths) ? $currentPaths : []
-                    )));
+                $mergedPaths = array_values(array_unique(array_merge(
+                    is_array($legacyPaths1) ? $legacyPaths1 : [],
+                    is_array($legacyPaths2) ? $legacyPaths2 : [],
+                    is_array($cachedPaths) ? $cachedPaths : []
+                )));
 
-                    cache()->forever('ids.custom_log_paths', $mergedPaths);
+                // Check and add new path
+                $unifiedList = array_values(array_unique(array_merge($configPaths, $mergedPaths)));
 
-                    if ($hasLegacy1) {
-                        cache()->forget('ids_custom_log_paths');
-                    }
-                    if ($hasLegacy2) {
-                        cache()->forget('ids::custom_log_paths');
-                    }
+                if (!in_array($path, $unifiedList, true)) {
+                    $mergedPaths[] = $path;
+                }
 
-                    $cachedPaths = $mergedPaths; // Update $cachedPaths with migrated state
+                // Final definitive write
+                $finalPaths = array_values(array_unique($mergedPaths));
+                cache()->forever('ids.custom_log_paths', $finalPaths);
+
+                // Cleanup legacy keys
+                if ($hasLegacy1) {
+                    cache()->forget('ids_custom_log_paths');
+                }
+                if ($hasLegacy2) {
+                    cache()->forget('ids::custom_log_paths');
                 }
             } else {
                 Log::warning('Failed to acquire cache lock for custom log paths migration within retry limit in addCustomPath.');
+                return false; // Return false since we couldn't safely add the path due to contention
             }
         } catch (\Throwable $e) {
-            Log::error('Exception during custom log paths migration in addCustomPath.', [
+            Log::error('Exception during custom log paths operation in addCustomPath.', [
                 'exception' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+            return false;
         } finally {
             if ($acquired) {
                 $lock->release();
             }
-        }
-
-        $unifiedList = array_values(array_unique(array_merge($configPaths, $cachedPaths)));
-
-        if (!in_array($path, $unifiedList, true)) {
-            $cachedPaths[] = $path;
-            // Store only dynamically added items in the cache
-            cache()->forever('ids.custom_log_paths', array_values(array_unique($cachedPaths)));
-        } else {
-            // Unconditionally save again to ensure cache is populated if not already
-            cache()->forever('ids.custom_log_paths', array_values(array_unique($cachedPaths)));
         }
 
         return true;
