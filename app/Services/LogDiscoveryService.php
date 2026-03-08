@@ -306,15 +306,25 @@ class LogDiscoveryService
             return false;
         }
 
+        // Validate that path does not contain path traversal vectors
+        if (str_contains($path, '..')) {
+            return false;
+        }
+
         $configPaths = config('ids.custom_log_paths', []);
         $cachedPaths = $this->getCustomPaths();
+
+        // We shouldn't redundantly merge and write to cache if not needed.
+        // First check if it's already in config or cache separately.
+        if (in_array($path, $configPaths, true) || in_array($path, $cachedPaths, true)) {
+            return true;
+        }
+
         $customPaths = array_values(array_unique(array_merge($configPaths, $cachedPaths)));
 
-        if (!in_array($path, $customPaths, true)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $customPaths);
-        }
+        $customPaths[] = $path;
+        // Store in cache for persistence
+        cache()->forever('ids.custom_log_paths', $customPaths);
 
         return true;
     }
