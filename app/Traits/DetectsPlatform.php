@@ -9,8 +9,8 @@ trait DetectsPlatform
      *
      * @return bool
      */
-    public function isWindows(): bool
+    protected function isWindows(): bool
     {
-        return PHP_OS_FAMILY === 'Windows';
+        return defined('PHP_OS_FAMILY') ? PHP_OS_FAMILY === 'Windows' : DIRECTORY_SEPARATOR === '\\';
     }
 }
