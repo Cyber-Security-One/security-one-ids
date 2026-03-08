@@ -334,13 +334,17 @@ class LogDiscoveryService
 
         // Blockingly attempt to acquire the lock for up to 5 seconds instead of failing immediately.
         $lock = cache()->lock('ids.custom_log_paths_lock', 5);
-        $acquired = false;
 
         try {
             $lock->block(5);
-            $acquired = true;
         } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-            // Fall through to handle the logic without the lock
+            // Only after blocking for 5 seconds and failing, check if it was added concurrently
+            $cachedPaths = $this->getCustomPaths();
+            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+                return true;
+            }
+            Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
+            return false;
         }
 
         try {
@@ -351,19 +355,13 @@ class LogDiscoveryService
                 return true;
             }
 
-            if (!$acquired) {
-                Log::warning("Could not acquire lock to add custom log path after 5 seconds, proceeding to cache anyway", ['path' => $path]);
-            }
-
             $cachedPaths[] = $realPath;
             // Store in cache for persistence
             cache()->forever('ids.custom_log_paths', $cachedPaths);
 
-            return $acquired; // Return false if lock contention occurred but path was still added
+            return true;
         } finally {
-            if ($acquired) {
-                $lock->release();
-            }
+            $lock->release();
         }
     }
 
