@@ -332,13 +332,29 @@ class LogDiscoveryService
             return true;
         }
 
-        // Blockingly attempt to acquire the lock for up to 5 seconds instead of failing immediately.
+        // Attempt to acquire the lock for up to 5 seconds using a polling loop instead of blocking indefinitely
         $lock = cache()->lock('ids.custom_log_paths_lock', 5);
+        $acquired = false;
+        $attempts = 0;
+        $delayMicroseconds = 100000; // 100ms
 
-        try {
-            $lock->block(5);
-        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-            // Only after blocking for 5 seconds and failing, check if it was added concurrently
+        while ($attempts < 50) { // 50 * 100ms = 5 seconds
+            try {
+                if ($lock->get()) {
+                    $acquired = true;
+                    break;
+                }
+            } catch (\Exception $e) {
+                // If cache driver fails completely (e.g. redis connection issue), break out
+                break;
+            }
+
+            usleep($delayMicroseconds);
+            $attempts++;
+        }
+
+        if (!$acquired) {
+            // Only after failing to acquire, check if it was added concurrently
             $cachedPaths = $this->getCustomPaths();
             if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
                 return true;
@@ -379,8 +395,9 @@ class LogDiscoveryService
             $realDir = realpath($dir);
             if ($realDir !== false && is_dir($realDir)) {
                 // Ensure the base dir trailing slash to prevent partial matches (e.g. /var/log2 matching /var/log)
+                // but allow exact matches to the base dir itself
                 $basePrefix = rtrim($realDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-                if (str_starts_with($realPath, $basePrefix)) {
+                if ($realPath === rtrim($realDir, DIRECTORY_SEPARATOR) || str_starts_with($realPath, $basePrefix)) {
                     return true;
                 }
             }
