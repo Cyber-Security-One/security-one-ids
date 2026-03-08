@@ -306,11 +306,37 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $lock = cache()->lock('lock::ids::custom_log_paths_add', 10);
+        $acquired = false;
+        $delay = 10000;
+
+        for ($i = 0; $i < 10; $i++) {
+            if ($acquired = $lock->get()) {
+                break;
+            }
+            usleep($delay);
+            $delay *= 2;
+        }
+
+        try {
+            if ($acquired) {
+                $cachedPaths = $this->getCustomPaths();
+                $configPaths = config('ids.custom_log_paths', []);
+
+                $allPaths = array_values(array_unique(array_merge($cachedPaths, $configPaths)));
+
+                if (!in_array($path, $allPaths)) {
+                    $cachedPaths[] = $path;
+                    $cachedPaths = array_values(array_unique($cachedPaths));
+                    cache()->forever('ids::custom_log_paths', $cachedPaths);
+                }
+            } else {
+                return false;
+            }
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
         }
 
         return true;
@@ -321,7 +347,73 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $newKey = 'ids::custom_log_paths';
+        $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
+
+        $needsMigration = false;
+        foreach ($legacyKeys as $legacyKey) {
+            if (cache()->has($legacyKey)) {
+                $needsMigration = true;
+                break;
+            }
+        }
+
+        if ($needsMigration) {
+            $lock = cache()->lock('lock::ids::custom_log_paths_migrate', 10);
+            $acquired = false;
+            $delay = 10000;
+
+            for ($i = 0; $i < 10; $i++) {
+                if ($acquired = $lock->get()) {
+                    break;
+                }
+                usleep($delay);
+                $delay *= 2;
+            }
+
+            try {
+                if ($acquired) {
+                    // Double check
+                    $needsMigration = false;
+                    foreach ($legacyKeys as $legacyKey) {
+                        if (cache()->has($legacyKey)) {
+                            $needsMigration = true;
+                            break;
+                        }
+                    }
+
+                    if ($needsMigration) {
+                        $merged = cache()->get($newKey, []);
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $legacyData = cache()->get($legacyKey, []);
+                                if (is_array($legacyData)) {
+                                    $merged = array_merge($merged, $legacyData);
+                                }
+                            }
+                        }
+
+                        // Remove static config values from cache
+                        $configPaths = config('ids.custom_log_paths', []);
+                        $merged = array_diff($merged, $configPaths);
+
+                        $merged = array_values(array_unique($merged));
+                        cache()->forever($newKey, $merged);
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            cache()->forget($legacyKey);
+                        }
+                    }
+                }
+            } finally {
+                if ($acquired) {
+                    $lock->release();
+                }
+            }
+        }
+
+        return cache()->get($newKey, []);
     }
 
     /**
