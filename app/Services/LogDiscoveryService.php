@@ -13,6 +13,13 @@ use Illuminate\Support\Facades\Log;
 class LogDiscoveryService
 {
     /**
+     * Cache and config keys
+     */
+    protected string $cacheKey = 'ids.custom_log_paths';
+    protected string $legacyCacheKey = 'ids_custom_log_paths';
+    protected string $configKey = 'ids.custom_log_paths';
+
+    /**
      * Common web server log file locations to scan
      */
     private const LOG_PATHS = [
@@ -147,7 +154,7 @@ class LogDiscoveryService
         }
 
         // Also check custom paths from config
-        $customPaths = config('ids.custom_log_paths', []);
+        $customPaths = config($this->configKey, []);
         foreach ($customPaths as $path) {
             if (is_readable($path) && is_file($path)) {
                 $info = $this->getLogInfo($path);
@@ -306,11 +313,11 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
+        $customPaths = config($this->configKey, []);
         if (!in_array($path, $customPaths)) {
             $customPaths[] = $path;
             // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+            cache()->forever($this->cacheKey, $customPaths);
         }
 
         return true;
@@ -321,7 +328,41 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        // Migrating from legacy key if it exists
+        if (cache()->has($this->legacyCacheKey)) {
+            $legacyPaths = cache()->get($this->legacyCacheKey, []);
+            cache()->forever($this->cacheKey, $legacyPaths);
+            cache()->forget($this->legacyCacheKey);
+        }
+
+        return cache()->get($this->cacheKey, []);
+    }
+
+    /**
+     * Set the cache key used for custom log paths.
+     */
+    public function setCacheKey(string $key): self
+    {
+        $this->cacheKey = $key;
+        return $this;
+    }
+
+    /**
+     * Set the legacy cache key used for custom log paths.
+     */
+    public function setLegacyCacheKey(string $key): self
+    {
+        $this->legacyCacheKey = $key;
+        return $this;
+    }
+
+    /**
+     * Set the configuration key used for custom log paths.
+     */
+    public function setConfigKey(string $key): self
+    {
+        $this->configKey = $key;
+        return $this;
     }
 
     /**
