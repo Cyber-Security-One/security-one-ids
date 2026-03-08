@@ -306,12 +306,21 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $configPaths = config('ids.custom_log_paths', []);
+        $cachePaths = $this->getCustomPaths();
+
+        // Merge config and cache paths to check against the entire known state
+        $allPaths = array_values(array_unique(array_merge($configPaths, $cachePaths)));
+
+        if (!in_array($path, $allPaths)) {
+            $cachePaths[] = $path;
         }
+
+        // Store in cache for persistence using dot notation.
+        // It's important to merge config paths here to prevent config-only paths
+        // from being lost during persistent storage overwrite or app restarts.
+        $pathsToCache = array_values(array_unique(array_merge($configPaths, $cachePaths)));
+        cache()->forever('ids.custom_log_paths', $pathsToCache);
 
         return true;
     }
@@ -321,7 +330,61 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        if (!cache()->has('ids.custom_log_paths')) {
+            try {
+                $lock = cache()->lock('migrate_custom_log_paths', 10);
+                $acquired = false;
+
+                try {
+                    $acquired = $lock->get();
+                    if ($acquired) {
+                        $paths = [];
+                        $migrated = false;
+
+                        foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $legacyPaths = cache()->get($legacyKey);
+                                if (is_array($legacyPaths)) {
+                                    $paths = array_merge($paths, $legacyPaths);
+                                }
+                                $migrated = true;
+                            }
+                        }
+
+                        if ($migrated) {
+                            $paths = array_values(array_unique($paths));
+                            cache()->forever('ids.custom_log_paths', $paths);
+                            foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
+                                cache()->forget($legacyKey);
+                            }
+                        }
+                    } elseif (!cache()->has('ids.custom_log_paths')) {
+                        $legacyPaths = array_merge(
+                            (array) cache()->get('ids_custom_log_paths', []),
+                            (array) cache()->get('ids::custom_log_paths', [])
+                        );
+                        return array_values(array_unique($legacyPaths));
+                    }
+                } finally {
+                    if ($acquired) {
+                        $lock->release();
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::error('Failed to migrate custom log paths: ' . $e->getMessage());
+                // If lock mechanism fails (e.g. unsupported driver), fallback to reading legacy keys
+                // directly so we don't break the application.
+                if (!cache()->has('ids.custom_log_paths')) {
+                    $legacyPaths = array_merge(
+                        (array) cache()->get('ids_custom_log_paths', []),
+                        (array) cache()->get('ids::custom_log_paths', [])
+                    );
+                    return array_values(array_unique($legacyPaths));
+                }
+            }
+        }
+
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
