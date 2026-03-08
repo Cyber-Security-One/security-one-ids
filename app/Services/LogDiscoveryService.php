@@ -312,7 +312,7 @@ class LogDiscoveryService
         if (!in_array($path, $configPaths) && !in_array($path, $cachePaths)) {
             $cachePaths[] = $path;
             // Store in cache for persistence
-            cache()->forever('ids::custom_log_paths', $cachePaths);
+            cache()->forever('ids.custom_log_paths', $cachePaths);
         }
 
         return true;
@@ -323,20 +323,32 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        $paths = cache()->get('ids::custom_log_paths', []);
+        $paths = cache()->get('ids.custom_log_paths', []);
         $migrated = false;
 
-        foreach (['ids_custom_log_paths', 'ids.custom_log_paths'] as $legacyKey) {
+        foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
             if (cache()->has($legacyKey)) {
-                $legacyPaths = cache()->get($legacyKey, []);
-                $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
-                cache()->forget($legacyKey);
-                $migrated = true;
-            }
-        }
+                $lock = cache()->lock('ids.custom_log_paths_migration_lock', 5);
 
-        if ($migrated) {
-            cache()->forever('ids::custom_log_paths', $paths);
+                try {
+                    if ($lock->get()) {
+                        // Double check existence after acquiring lock
+                        if (cache()->has($legacyKey)) {
+                            $legacyPaths = cache()->get($legacyKey, []);
+                            // Always fetch latest paths inside lock
+                            $paths = cache()->get('ids.custom_log_paths', []);
+                            $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                            cache()->forever('ids.custom_log_paths', $paths);
+                            cache()->forget($legacyKey);
+                        }
+                    }
+                } finally {
+                    $lock->release();
+                }
+
+                // Re-fetch in case another process migrated it while we were waiting or it was already migrated
+                $paths = cache()->get('ids.custom_log_paths', []);
+            }
         }
 
         return $paths;

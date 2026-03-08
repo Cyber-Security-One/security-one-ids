@@ -18,14 +18,6 @@ class LogDiscoveryServiceTest extends TestCase
         cache()->forget('ids.custom_log_paths');
     }
 
-    protected function tearDown(): void
-    {
-        cache()->forget('ids::custom_log_paths');
-        cache()->forget('ids_custom_log_paths');
-        cache()->forget('ids.custom_log_paths');
-        parent::tearDown();
-    }
-
     public function test_add_custom_path_fails_when_path_not_readable(): void
     {
         // Explicitly create a non-existent path scenario by using tempnam and deleting it
@@ -50,8 +42,8 @@ class LogDiscoveryServiceTest extends TestCase
             $result = $this->service->addCustomPath($tempPath);
 
             $this->assertTrue($result);
-            $this->assertTrue(cache()->has('ids::custom_log_paths'));
-            $this->assertContains($tempPath, cache()->get('ids::custom_log_paths'));
+            $this->assertTrue(cache()->has('ids.custom_log_paths'));
+            $this->assertContains($tempPath, cache()->get('ids.custom_log_paths'));
         } finally {
             if (file_exists($tempPath)) {
                 unlink($tempPath);
@@ -66,12 +58,12 @@ class LogDiscoveryServiceTest extends TestCase
 
         try {
             $this->app['config']->set('ids.custom_log_paths', [$tempPath]);
-            $initialCacheState = cache()->get('ids::custom_log_paths', []);
+            $initialCacheState = cache()->get('ids.custom_log_paths', []);
 
             $result = $this->service->addCustomPath($tempPath);
 
             $this->assertTrue($result);
-            $this->assertEquals($initialCacheState, cache()->get('ids::custom_log_paths', []));
+            $this->assertEquals($initialCacheState, cache()->get('ids.custom_log_paths', []));
         } finally {
             if (file_exists($tempPath)) {
                 unlink($tempPath);
@@ -86,12 +78,12 @@ class LogDiscoveryServiceTest extends TestCase
 
         try {
             $this->app['config']->set('ids.custom_log_paths', []);
-            cache()->forever('ids::custom_log_paths', [$tempPath]);
+            cache()->forever('ids.custom_log_paths', [$tempPath]);
 
             $result = $this->service->addCustomPath($tempPath);
 
             $this->assertTrue($result);
-            $this->assertEquals([$tempPath], cache()->get('ids::custom_log_paths'));
+            $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
         } finally {
             if (file_exists($tempPath)) {
                 unlink($tempPath);
