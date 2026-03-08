@@ -12,6 +12,12 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    private const LOCK_TIMEOUT = 30;
+    private const LOCK_MAX_RETRIES = 10;
+    private const LOCK_INITIAL_DELAY = 50000;
+
+    public static bool $migrated = false;
+
     /**
      * Common web server log file locations to scan
      */
@@ -298,6 +304,33 @@ class LogDiscoveryService
     }
 
     /**
+     * Attempts to acquire a lock with exponential backoff
+     */
+    private function acquireLock(string $lockKey, int $timeout, int $maxRetries, int $initialDelay, &$lock)
+    {
+        $lock = cache()->lock($lockKey, $timeout);
+        $acquired = false;
+        $delay = $initialDelay;
+
+        for ($i = 0; $i < $maxRetries; $i++) {
+            try {
+                if ($acquired = $lock->get()) {
+                    break;
+                }
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::warning("Failed lock attempt for {$lockKey}: " . $e->getMessage());
+            }
+
+            if ($i < $maxRetries - 1) {
+                usleep($delay);
+                $delay = (int) min($delay * 2, 500000); // Max delay 500ms
+            }
+        }
+
+        return $acquired;
+    }
+
+    /**
      * Add a custom log path to monitor
      */
     public function addCustomPath(string $path): bool
@@ -306,11 +339,30 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $lock = null;
+        $acquired = $this->acquireLock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT, self::LOCK_MAX_RETRIES, self::LOCK_INITIAL_DELAY, $lock);
+
+        try {
+            if ($acquired) {
+                $cachedPaths = $this->getCustomPaths();
+                $configPaths = config('ids.custom_log_paths', []);
+
+                $allPaths = array_values(array_unique(array_merge($cachedPaths, $configPaths)));
+
+                if (!in_array($path, $allPaths, true)) {
+                    $cachedPaths[] = $path;
+                    cache()->forever('ids::custom_log_paths', $cachedPaths);
+                }
+            } else {
+                return false;
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
+            return false;
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
         }
 
         return true;
@@ -321,7 +373,66 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $newKey = 'ids::custom_log_paths';
+
+        if (!self::$migrated) {
+            $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
+
+            // Perform existence checks once before acquiring the lock
+            $existingLegacyKeys = [];
+            foreach ($legacyKeys as $legacyKey) {
+                if (cache()->has($legacyKey)) {
+                    $existingLegacyKeys[] = $legacyKey;
+                }
+            }
+
+            if (!empty($existingLegacyKeys)) {
+                $lock = null;
+                $acquired = $this->acquireLock('lock::ids::custom_log_paths_migrate', self::LOCK_TIMEOUT, self::LOCK_MAX_RETRIES, self::LOCK_INITIAL_DELAY, $lock);
+
+                try {
+                    if ($acquired) {
+                        // Double check: if legacy keys still exist
+                        $stillExistingLegacyKeys = [];
+                        foreach ($existingLegacyKeys as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $stillExistingLegacyKeys[] = $legacyKey;
+                            }
+                        }
+
+                        if (!empty($stillExistingLegacyKeys)) {
+                            $merged = cache()->get($newKey, []);
+
+                            foreach ($stillExistingLegacyKeys as $legacyKey) {
+                                $legacyData = cache()->get($legacyKey, []);
+                                if (is_array($legacyData)) {
+                                    $merged = array_merge($merged, $legacyData);
+                                }
+                            }
+
+                            $merged = array_values(array_unique($merged));
+                            cache()->forever($newKey, $merged);
+
+                            foreach ($stillExistingLegacyKeys as $legacyKey) {
+                                cache()->forget($legacyKey);
+                            }
+
+                            self::$migrated = true;
+                        } else {
+                            self::$migrated = true; // Another process completed the migration
+                        }
+                    }
+                } finally {
+                    if ($acquired && $lock) {
+                        $lock->release();
+                    }
+                }
+            } else {
+                self::$migrated = true; // No legacy keys to migrate
+            }
+        }
+
+        return cache()->get($newKey, []);
     }
 
     /**
