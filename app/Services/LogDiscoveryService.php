@@ -13,6 +13,18 @@ use Illuminate\Support\Facades\Log;
 class LogDiscoveryService
 {
     /**
+     * Allowed base directories for custom log paths
+     */
+    private const ALLOWED_BASE_DIRS = [
+        '/var/log',
+        '/var/www',
+        '/usr/local',
+        '/opt',
+        '/home',
+        '/private/var',
+    ];
+
+    /**
      * Common web server log file locations to scan
      */
     private const LOG_PATHS = [
@@ -302,18 +314,78 @@ class LogDiscoveryService
      */
     public function addCustomPath(string $path): bool
     {
-        if (!is_readable($path)) {
+        $realPath = realpath($path);
+
+        if ($realPath === false || is_link($path) || is_link($realPath) || !is_file($realPath) || !is_readable($realPath)) {
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        if (!$this->isAllowedPath($realPath)) {
+            return false;
         }
 
-        return true;
+        $configPaths = config('ids.custom_log_paths', []);
+
+        // We shouldn't redundantly merge and write to cache if not needed.
+        // First check if it's already in config.
+        if (in_array($path, $configPaths, true) || in_array($realPath, $configPaths, true)) {
+            return true;
+        }
+
+        // Blockingly attempt to acquire the lock for up to 5 seconds instead of failing immediately.
+        $lock = cache()->lock('ids.custom_log_paths_lock', 5);
+        $acquired = false;
+
+        try {
+            $lock->block(5);
+            $acquired = true;
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
+            return false;
+        }
+
+        try {
+            $cachedPaths = $this->getCustomPaths();
+
+            // If it's already in the cache, we're good.
+            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+                return true;
+            }
+
+            $cachedPaths[] = $realPath;
+            // Store in cache for persistence
+            cache()->forever('ids.custom_log_paths', $cachedPaths);
+
+            return true;
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
+        }
+    }
+
+    private function isAllowedPath(string $realPath): bool
+    {
+        $allowedDirs = self::ALLOWED_BASE_DIRS;
+
+        // Keep temp dir for testing environments only
+        if (app()->runningInConsole() && app()->environment('testing')) {
+            $allowedDirs[] = sys_get_temp_dir();
+        }
+
+        foreach ($allowedDirs as $dir) {
+            // resolve allowed dir to actual real path to prevent symlink bypasses
+            $realDir = realpath($dir);
+            if ($realDir !== false && is_dir($realDir)) {
+                // Ensure the base dir trailing slash to prevent partial matches (e.g. /var/log2 matching /var/log)
+                $basePrefix = rtrim($realDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                if (str_starts_with($realPath, $basePrefix)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -321,7 +393,36 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        // Handle backward compatibility for old cache key
+        if (cache()->has('ids_custom_log_paths')) {
+            $legacyPaths = cache()->pull('ids_custom_log_paths', []);
+
+            if (!is_array($legacyPaths)) {
+                Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
+                    'type' => gettype($legacyPaths)
+                ]);
+                $legacyPaths = [];
+            }
+
+            $currentPaths = cache()->get('ids.custom_log_paths', []);
+            $currentPaths = is_array($currentPaths) ? $currentPaths : [];
+
+            if (!empty($legacyPaths)) {
+                $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
+                cache()->forever('ids.custom_log_paths', $mergedPaths);
+            }
+        }
+
+        $paths = cache()->get('ids.custom_log_paths', []);
+
+        if (!is_array($paths)) {
+            Log::warning('Corrupted custom log paths cache key encountered and discarded.', [
+                'type' => gettype($paths)
+            ]);
+            return [];
+        }
+
+        return $paths;
     }
 
     /**
