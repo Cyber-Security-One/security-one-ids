@@ -309,9 +309,12 @@ class LogDiscoveryService
         $configPaths = config('ids.custom_log_paths', []);
         $cachePaths = $this->getCustomPaths();
 
-        if (!in_array($path, $configPaths) && !in_array($path, $cachePaths)) {
+        // Merge config and cache paths to check against the entire known state
+        $allPaths = array_unique(array_merge($configPaths, $cachePaths));
+
+        if (!in_array($path, $allPaths)) {
             $cachePaths[] = $path;
-            // Store in cache for persistence
+            // Store in cache for persistence using dot notation
             cache()->forever('ids.custom_log_paths', $cachePaths);
         }
 
@@ -323,16 +326,19 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        $paths = cache()->get('ids.custom_log_paths', []);
+        $paths = cache()->get('ids.custom_log_paths');
         $migrated = false;
 
-        foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
-            $legacyPaths = cache()->pull($legacyKey);
-            if ($legacyPaths !== null) {
-                if (is_array($legacyPaths)) {
-                    $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+        if ($paths === null) {
+            $paths = [];
+            foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
+                $legacyPaths = cache()->pull($legacyKey);
+                if ($legacyPaths !== null) {
+                    if (is_array($legacyPaths)) {
+                        $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                    }
+                    $migrated = true;
                 }
-                $migrated = true;
             }
         }
 
@@ -340,7 +346,7 @@ class LogDiscoveryService
             cache()->forever('ids.custom_log_paths', $paths);
         }
 
-        return $paths;
+        return $paths ?? [];
     }
 
     /**
