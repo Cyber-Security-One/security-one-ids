@@ -397,20 +397,27 @@ class LogDiscoveryService
         $legacyPaths = cache()->pull('ids_custom_log_paths');
 
         if ($legacyPaths !== null) {
-            if (!is_array($legacyPaths)) {
-                Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
-                    'type' => gettype($legacyPaths)
-                ]);
-                $legacyPaths = [];
-            }
+            try {
+                cache()->lock('ids.custom_log_paths_lock', 5)->block(5, function () use ($legacyPaths): void {
+                    if (!is_array($legacyPaths)) {
+                        Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
+                            'type' => gettype($legacyPaths)
+                        ]);
+                        return;
+                    }
 
-            // We must merge atomically to avoid overwriting another process's update
-            // But since this is a legacy migration, we just append if anything is valid
-            if (!empty($legacyPaths)) {
-                $currentPaths = cache()->get('ids.custom_log_paths', []);
-                $currentPaths = is_array($currentPaths) ? $currentPaths : [];
-                $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
-                cache()->forever('ids.custom_log_paths', $mergedPaths);
+                    if (!empty($legacyPaths)) {
+                        $currentPaths = cache()->get('ids.custom_log_paths', []);
+                        $currentPaths = is_array($currentPaths) ? $currentPaths : [];
+                        $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
+                        cache()->forever('ids.custom_log_paths', $mergedPaths);
+                    }
+                });
+            } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+                // If we can't get the lock for migration, log it and don't migrate this time.
+                // Re-add the pulled legacy paths so they can be migrated later.
+                cache()->put('ids_custom_log_paths', $legacyPaths);
+                Log::warning("Could not acquire lock to migrate legacy custom log paths");
             }
         }
 
