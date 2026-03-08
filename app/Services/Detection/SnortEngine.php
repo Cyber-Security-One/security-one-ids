@@ -18,6 +18,7 @@ class SnortEngine
     private string $alertLogPath;
     private string $pidFile;
     private string $logDir;
+    private ?bool $isWindowsCached = null;
 
     public function __construct()
     {
@@ -148,7 +149,7 @@ class SnortEngine
         $interface = $interface ?? $this->detectDefaultInterface();
 
         // On Windows, if no valid interface was found (Npcap missing), don't attempt start
-        if ($this->isWindows() && $interface === '1') {
+        if ($this->isWindows() && is_scalar($interface) && (string) $interface === '1') {
             // Ensure Npcap DLLs are findable (PATH may not be updated in this process)
             $npcapDir = 'C:\\Windows\\System32\\Npcap';
             if (is_dir($npcapDir) && !str_contains(getenv('PATH') ?: '', 'Npcap')) {
@@ -1738,7 +1739,10 @@ LUA;
 
     private function isWindows(): bool
     {
-        return PHP_OS_FAMILY === 'Windows';
+        if ($this->isWindowsCached === null) {
+            $this->isWindowsCached = PHP_OS_FAMILY === 'Windows';
+        }
+        return $this->isWindowsCached;
     }
 
     /**
