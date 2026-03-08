@@ -409,7 +409,16 @@ class LogDiscoveryService
             $currentPaths = is_array($currentPaths) ? $currentPaths : [];
 
             if (!empty($legacyPaths)) {
-                $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
+                $sanitizedLegacyPaths = array_values(array_filter($legacyPaths, function ($path) {
+                    $realPath = is_string($path) ? realpath($path) : false;
+
+                    return $realPath !== false
+                        && is_file($realPath)
+                        && is_readable($realPath)
+                        && $this->isAllowedPath($realPath);
+                }));
+
+                $mergedPaths = array_values(array_unique(array_merge($currentPaths, $sanitizedLegacyPaths)));
                 cache()->forever('ids.custom_log_paths', $mergedPaths);
             }
         }
