@@ -23,8 +23,9 @@ class AppServiceProvider extends ServiceProvider
     public function boot(Application $app, LoggerInterface $logger, ConfigRepository $config): void
     {
         $token = $config->get('ids.agent_token', '');
+        $normalizedToken = is_string($token) ? trim($token) : $token;
 
-        if ($app->environment('production') && empty($token)) {
+        if ($app->environment('production') && empty($normalizedToken)) {
             // Only throw an exception if we are specifically handling web requests
             // to avoid breaking deployment pipelines (like config:cache, key:generate, package:discover, etc.)
             // We rely on runningInConsole() to detect CLI SAPIs (like the queue worker or artisan setup).
