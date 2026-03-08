@@ -320,7 +320,8 @@ class LogDiscoveryService
             return false;
         }
 
-        if (!$this->isAllowedPath($realPath)) {
+        $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', self::ALLOWED_BASE_DIRS);
+        if (is_array($allowedBaseDirs) && !empty($allowedBaseDirs) && !$this->isAllowedPath($realPath, $allowedBaseDirs)) {
             return false;
         }
 
@@ -363,11 +364,11 @@ class LogDiscoveryService
         }
     }
 
-    private function isAllowedPath(string $realPath): bool
+    private function isAllowedPath(string $realPath, array $allowedDirs): bool
     {
-        $allowedDirs = self::ALLOWED_BASE_DIRS;
-        // Keep temp dir for testing environments
-        $allowedDirs[] = sys_get_temp_dir();
+        if (app()->environment('testing')) {
+            $allowedDirs[] = sys_get_temp_dir();
+        }
 
         foreach ($allowedDirs as $dir) {
             // resolve allowed dir to actual real path to prevent symlink bypasses
