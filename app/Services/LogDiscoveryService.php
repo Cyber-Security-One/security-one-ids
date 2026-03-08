@@ -414,7 +414,7 @@ class LogDiscoveryService
     {
         // Handle backward compatibility for old cache key
         if (cache()->has('ids_custom_log_paths')) {
-            $lock = cache()->lock('ids.custom_log_paths_migration_lock', 10);
+            $lock = cache()->lock('ids.custom_log_paths_lock', 10);
 
             if ($lock->get()) {
                 try {
