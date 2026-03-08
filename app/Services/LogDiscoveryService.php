@@ -324,30 +324,53 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         $paths = cache()->get('ids.custom_log_paths', []);
-        $migrated = false;
 
-        foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
+        // Legacy keys to migrate from previous versions:
+        // 'ids_custom_log_paths' was the original key structure.
+        // 'ids::custom_log_paths' was briefly used before standardizing on dot notation.
+        $legacyKeys = ['ids_custom_log_paths', 'ids::custom_log_paths'];
+        $needsMigration = false;
+
+        foreach ($legacyKeys as $legacyKey) {
             if (cache()->has($legacyKey)) {
+                $needsMigration = true;
+                break;
+            }
+        }
+
+        if ($needsMigration) {
+            try {
                 $lock = cache()->lock('ids.custom_log_paths_migration_lock', 5);
+                $acquired = $lock->get();
 
-                try {
-                    if ($lock->get()) {
-                        // Double check existence after acquiring lock
-                        if (cache()->has($legacyKey)) {
-                            $legacyPaths = cache()->get($legacyKey, []);
-                            // Always fetch latest paths inside lock
-                            $paths = cache()->get('ids.custom_log_paths', []);
-                            $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
-                            cache()->forever('ids.custom_log_paths', $paths);
-                            cache()->forget($legacyKey);
+                if ($acquired) {
+                    try {
+                        // Always fetch latest paths inside lock
+                        $paths = cache()->get('ids.custom_log_paths', []);
+                        $migrated = false;
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $legacyPaths = cache()->get($legacyKey, []);
+                                $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                                cache()->forget($legacyKey);
+                                $migrated = true;
+                            }
                         }
-                    }
-                } finally {
-                    $lock->release();
-                }
 
-                // Re-fetch in case another process migrated it while we were waiting or it was already migrated
-                $paths = cache()->get('ids.custom_log_paths', []);
+                        if ($migrated) {
+                            cache()->forever('ids.custom_log_paths', $paths);
+                        }
+                    } finally {
+                        $lock->release();
+                    }
+                } else {
+                    // Re-fetch in case another process migrated it while we were waiting
+                    $paths = cache()->get('ids.custom_log_paths', []);
+                }
+            } catch (\Exception $e) {
+                // Handle cache infrastructure failures gracefully
+                Log::warning('Failed to acquire cache lock or migrate legacy custom log paths: ' . $e->getMessage());
             }
         }
 
