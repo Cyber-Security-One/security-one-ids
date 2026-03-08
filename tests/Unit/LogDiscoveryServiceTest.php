@@ -21,6 +21,7 @@ class LogDiscoveryServiceTest extends TestCase
     protected function tearDown(): void
     {
         cache()->forget('ids.custom_log_paths');
+        config(['ids.custom_log_paths' => []]);
 
         foreach ($this->tempFiles as $file) {
             if (file_exists($file)) {
