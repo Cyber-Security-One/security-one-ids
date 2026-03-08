@@ -332,7 +332,8 @@ class LogDiscoveryService
 
         $isAllowed = false;
         foreach (self::ALLOWED_BASE_DIRS as $baseDir) {
-            if (str_starts_with($realPath, $baseDir)) {
+            $normalizedBaseDir = rtrim($baseDir, '/');
+            if ($realPath === $normalizedBaseDir || str_starts_with($realPath, $normalizedBaseDir . DIRECTORY_SEPARATOR)) {
                 $isAllowed = true;
                 break;
             }
