@@ -151,7 +151,7 @@ class SnortEngine
         $interface = $interface ?? $this->detectDefaultInterface();
 
         // On Windows, if no valid interface was found (Npcap missing), don't attempt start
-        if ($this->detectIsWindows() && $interface === '1') {
+        if ($this->isWindows() && (string) $interface === '1') {
             // Ensure Npcap DLLs are findable (PATH may not be updated in this process)
             $npcapDir = 'C:\\Windows\\System32\\Npcap';
             if (is_dir($npcapDir) && !str_contains(getenv('PATH') ?: '', 'Npcap')) {
@@ -220,7 +220,7 @@ class SnortEngine
                 'command' => $cmd,
             ]);
 
-            if ($this->detectIsWindows()) {
+            if ($this->isWindows()) {
                 // Windows: Snort 2.9 doesn't have -D daemon mode
                 // Use Start-Process to launch Snort as a detached background process
                 $logFile = $this->logDir . '\\snort_stdout.log';
@@ -247,7 +247,7 @@ class SnortEngine
             // For daemon mode (-D), check the Snort-written PID file first
             // because the shell PID (from echo $!) is the parent that already exited
             $snortPidFile = $this->logDir . '/snort.pid';
-            if (!$this->detectIsWindows() && file_exists($snortPidFile)) {
+            if (!$this->isWindows() && file_exists($snortPidFile)) {
                 $daemonPid = trim(file_get_contents($snortPidFile));
                 if (is_numeric($daemonPid)) {
                     // Verify the daemon process exists
@@ -277,7 +277,7 @@ class SnortEngine
 
             // Start failed — capture error output for debugging
             $errorOutput = '';
-            if ($this->detectIsWindows()) {
+            if ($this->isWindows()) {
                 // Windows: read the stderr redirect file
                 $winErrFile = $this->logDir . '\\snort_stderr.log';
                 if (file_exists($winErrFile)) {
@@ -348,7 +348,7 @@ class SnortEngine
 
             // Read FULL stderr from the log file
             $stderrContent = '';
-            if ($this->detectIsWindows()) {
+            if ($this->isWindows()) {
                 $stderrFile = $this->logDir . '\\snort_stderr.log';
                 if (file_exists($stderrFile)) {
                     $stderrContent = file_get_contents($stderrFile);
@@ -540,7 +540,7 @@ class SnortEngine
             }
 
             // For Windows Snort 2: fix Linux paths in snort.conf
-            if ($this->detectIsWindows() && $this->isSnort2()) {
+            if ($this->isWindows() && $this->isSnort2()) {
                 $configContent = file_get_contents($this->configPath);
                 $originalContent = $configContent;
 
@@ -745,7 +745,7 @@ LUA;
 
             if (PHP_OS === 'Darwin') {
                 $result = $this->updateSnortMac();
-            } elseif ($this->detectIsWindows()) {
+            } elseif ($this->isWindows()) {
                 $result = $this->updateSnortWindows();
             } else {
                 $result = $this->updateSnortLinux();
@@ -948,7 +948,7 @@ LUA;
         try {
             if (file_exists($this->pidFile)) {
                 $pid = trim(file_get_contents($this->pidFile));
-                if ($this->detectIsWindows()) {
+                if ($this->isWindows()) {
                     Process::run("taskkill /PID {$pid} /F 2>nul");
                 } else {
                     Process::run("kill {$pid} 2>/dev/null");
@@ -961,7 +961,7 @@ LUA;
                 @unlink($this->pidFile);
             } else {
                 // Kill all snort processes
-                if ($this->detectIsWindows()) {
+                if ($this->isWindows()) {
                     Process::run("taskkill /IM snort.exe /F 2>nul");
                 } else {
                     Process::run("pkill -f snort 2>/dev/null");
@@ -1101,7 +1101,7 @@ LUA;
         // Get the network interface Snort is listening on
         $interface = $this->detectDefaultInterface();
 
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             // Windows: use PowerShell Get-NetAdapterStatistics
             $this->collectWindowsPacketStats($stats, $interface);
         } elseif (PHP_OS === 'Darwin') {
@@ -1288,14 +1288,14 @@ LUA;
             $tempFile = sys_get_temp_dir() . '/snort3-community-rules.tar.gz';
             $url = 'https://www.snort.org/downloads/community/snort3-community-rules.tar.gz';
 
-            if ($this->detectIsWindows()) {
+            if ($this->isWindows()) {
                 Process::run("curl -fsSL -o \"{$tempFile}\" \"{$url}\"");
             } else {
                 Process::run("wget -q -O '{$tempFile}' '{$url}' 2>/dev/null || curl -fsSL -o '{$tempFile}' '{$url}'");
             }
 
             if (file_exists($tempFile) && filesize($tempFile) > 1000) {
-                if (!$this->detectIsWindows()) {
+                if (!$this->isWindows()) {
                     Process::run("tar xzf '{$tempFile}' -C '{$rulesDir}' --strip-components=1 2>/dev/null");
                 }
                 @unlink($tempFile);
@@ -1327,7 +1327,7 @@ LUA;
 
         try {
             // Windows: SIGHUP not available, do full stop+start
-            if ($this->detectIsWindows()) {
+            if ($this->isWindows()) {
                 Log::info('Reloading Snort on Windows via stop+start (SIGHUP not available)');
                 $this->stop();
                 sleep(2); // Wait for Snort to fully stop
@@ -1384,7 +1384,7 @@ LUA;
         // Version detection failed — fall back to platform heuristic:
         // Windows almost always has Snort 2 (Snort 3 has no official Windows build)
         // macOS/Linux with Homebrew/apt typically have Snort 3
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             Log::debug('Snort version undetectable on Windows, assuming Snort 2');
             return true;
         }
@@ -1422,13 +1422,13 @@ LUA;
         // Snort 2: Use fast alert output (text format parsed by collectSnortAlerts)
         $cmd .= " -A fast";
 
-        if ($mode === 'ips' && !$this->detectIsWindows()) {
+        if ($mode === 'ips' && !$this->isWindows()) {
             // -Q (inline) requires DAQ support not available on Windows (WinPcap/Npcap is passive)
             $cmd .= " -Q";
         }
 
         // Run as daemon on Unix
-        if (!$this->detectIsWindows()) {
+        if (!$this->isWindows()) {
             $cmd .= " -D";
         }
 
@@ -1486,7 +1486,7 @@ LUA;
         // Packet stats are collected from OS network interface counters instead
 
         // Run as daemon on Unix
-        if (!$this->detectIsWindows()) {
+        if (!$this->isWindows()) {
             $cmd .= " -D";
             $cmd .= " --create-pidfile"; // PID file created in log dir (-l)
         }
@@ -1496,7 +1496,7 @@ LUA;
 
     private function detectSnortPath(): string
     {
-        $paths = $this->detectIsWindows()
+        $paths = $this->isWindows()
             ? [
                 'C:\\Snort\\bin\\snort.exe',
                 'C:\\Program Files\\Snort\\bin\\snort.exe',
@@ -1521,7 +1521,7 @@ LUA;
 
         // Try which/where command
         try {
-            $cmd = $this->detectIsWindows() ? 'where snort 2>nul' : 'which snort3 2>/dev/null || which snort 2>/dev/null';
+            $cmd = $this->isWindows() ? 'where snort 2>nul' : 'which snort3 2>/dev/null || which snort 2>/dev/null';
             $result = Process::run($cmd);
             $path = trim($result->output());
             if (!empty($path) && file_exists($path)) {
@@ -1538,7 +1538,7 @@ LUA;
     {
         $isSnort2 = $this->isSnort2();
 
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             $confPaths = [
                 'C:\\Snort\\etc\\snort.conf',
                 'C:\\Snort\\etc\\snort\\snort.conf',
@@ -1580,7 +1580,7 @@ LUA;
         }
 
         // Return platform-appropriate default
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             return $isSnort2 ? 'C:\\Snort\\etc\\snort.conf' : 'C:\\Snort\\etc\\snort.lua';
         }
         return $isSnort2 ? '/etc/snort/snort.conf' : '/etc/snort/snort.lua';
@@ -1588,7 +1588,7 @@ LUA;
 
     private function detectLogDir(): string
     {
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             $dir = 'C:\\Snort\\log';
         } elseif (PHP_OS === 'Darwin') {
             $dir = '/var/log/snort';
@@ -1610,7 +1610,7 @@ LUA;
 
     public function detectRulesDir(): string
     {
-        $paths = $this->detectIsWindows()
+        $paths = $this->isWindows()
             ? ['C:\\Snort\\rules', 'C:\\Snort\\etc\\snort\\rules']
             : ['/opt/homebrew/etc/snort/rules', '/etc/snort/rules', '/usr/local/etc/snort/rules', '/opt/snort/rules'];
 
@@ -1620,7 +1620,7 @@ LUA;
             }
         }
 
-        $default = $this->detectIsWindows() ? 'C:\\Snort\\rules' : '/etc/snort/rules';
+        $default = $this->isWindows() ? 'C:\\Snort\\rules' : '/etc/snort/rules';
         @mkdir($default, 0755, true);
 
         return $default;
@@ -1634,7 +1634,7 @@ LUA;
             return $this->cachedInterface;
         }
 
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             // Windows Snort uses device index from `snort -W`
             // Try to detect the active adapter
             // Ensure Npcap DLLs are findable (PATH may not be updated in this PHP process)
@@ -1745,7 +1745,7 @@ LUA;
      */
     public function fixLogPermissions(): void
     {
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             return; // Windows doesn't have this issue
         }
 
@@ -1760,7 +1760,7 @@ LUA;
 
     private function isProcessRunning(int $pid): bool
     {
-        if ($this->detectIsWindows()) {
+        if ($this->isWindows()) {
             try {
                 $result = Process::run("tasklist /FI \"PID eq {$pid}\" /NH 2>nul");
                 return str_contains($result->output(), (string) $pid);
@@ -1775,7 +1775,7 @@ LUA;
     private function isSnortProcessActive(): bool
     {
         try {
-            if ($this->detectIsWindows()) {
+            if ($this->isWindows()) {
                 $result = Process::run('tasklist /FI "IMAGENAME eq snort.exe" /NH 2>nul');
                 return str_contains($result->output(), 'snort');
             }
@@ -1909,7 +1909,7 @@ LUA;
     private function tailFile(string $file, int $lines): array
     {
         try {
-            if ($this->detectIsWindows()) {
+            if ($this->isWindows()) {
                 $result = Process::run("powershell -Command \"Get-Content '{$file}' -Tail {$lines}\"");
             } else {
                 $result = Process::run("tail -n {$lines} '{$file}' 2>/dev/null");
