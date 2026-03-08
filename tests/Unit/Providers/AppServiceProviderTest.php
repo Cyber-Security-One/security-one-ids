@@ -26,10 +26,14 @@ class AppServiceProviderTest extends TestCase
 
     public function test_it_throws_exception_in_production_without_token()
     {
-        Config::set('ids.agent_token', '');
-        $this->app['env'] = 'production';
+        // Mock application running in console true
+        $app = \Mockery::mock($this->app)->makePartial();
+        $app->shouldReceive('runningInConsole')->andReturn(true);
 
-        $provider = new AppServiceProvider($this->app);
+        Config::set('ids.agent_token', '');
+        $app['env'] = 'production';
+
+        $provider = new AppServiceProvider($app);
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('AGENT_TOKEN must be set in production environment.');
@@ -39,8 +43,11 @@ class AppServiceProviderTest extends TestCase
 
     public function test_it_does_nothing_if_in_maintenance_mode()
     {
+        $app = \Mockery::mock($this->app)->makePartial();
+        $app->shouldReceive('runningInConsole')->andReturn(true);
+
         Config::set('ids.agent_token', '');
-        $this->app['env'] = 'production';
+        $app['env'] = 'production';
 
         // Simulate maintenance mode
         if (!file_exists(storage_path('framework'))) {
@@ -48,7 +55,21 @@ class AppServiceProviderTest extends TestCase
         }
         file_put_contents(storage_path('framework/down'), json_encode([]));
 
-        $provider = new AppServiceProvider($this->app);
+        $provider = new AppServiceProvider($app);
+
+        $provider->boot();
+        $this->assertTrue(true); // Reached without exception
+    }
+
+    public function test_it_does_nothing_in_production_web_request_without_token()
+    {
+        $app = \Mockery::mock($this->app)->makePartial();
+        $app->shouldReceive('runningInConsole')->andReturn(false);
+
+        Config::set('ids.agent_token', '');
+        $app['env'] = 'production';
+
+        $provider = new AppServiceProvider($app);
 
         $provider->boot();
         $this->assertTrue(true); // Reached without exception
