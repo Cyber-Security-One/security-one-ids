@@ -420,6 +420,7 @@ class LogDiscoveryService
             Log::warning('Corrupted custom log paths cache key encountered and discarded.', [
                 'type' => gettype($paths)
             ]);
+            cache()->forget('ids.custom_log_paths');
             return [];
         }
 
