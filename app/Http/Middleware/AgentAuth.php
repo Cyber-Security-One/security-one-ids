@@ -17,11 +17,11 @@ class AgentAuth
     {
         $token = $request->bearerToken()
             ?? $request->header('X-Agent-Token')
-            ?? ($request->input('token') ?: null);
+            ?? $request->input('token');
 
         $agentToken = env('AGENT_TOKEN') ?: config('ids.agent_token');
 
-        if (!$token || !hash_equals((string) $agentToken, (string) $token)) {
+        if ($token === null || $token === '' || !hash_equals((string) $agentToken, (string) $token)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
