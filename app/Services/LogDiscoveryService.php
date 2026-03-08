@@ -306,17 +306,23 @@ class LogDiscoveryService
             return false;
         }
 
-        $lock = cache()->lock('add_custom_log_path', 10);
         $acquired = false;
-        $delay = 10000; // 10ms
+        $delayMicroseconds = 10000; // 10ms
+        $lock = null;
 
-        for ($i = 0; $i < 10; $i++) {
-            if ($lock->get()) {
-                $acquired = true;
-                break;
+        try {
+            $lock = cache()->lock('add_custom_log_path', 10);
+            for ($i = 0; $i < 10; $i++) {
+                if ($lock->get()) {
+                    $acquired = true;
+                    break;
+                }
+                usleep($delayMicroseconds);
+                $delayMicroseconds *= 2;
             }
-            usleep($delay);
-            $delay *= 2;
+        } catch (\Exception $e) {
+            // Log warning or proceed, handled by fallback
+            Log::warning("Cache lock failed during addCustomPath: " . $e->getMessage());
         }
 
         if (!$acquired) {
@@ -334,7 +340,7 @@ class LogDiscoveryService
                 cache()->forever('ids::custom_log_paths', array_values(array_unique($cachedPaths)));
             }
         } finally {
-            if ($acquired) {
+            if ($acquired && $lock) {
                 $lock->release();
             }
         }
@@ -351,17 +357,22 @@ class LogDiscoveryService
         $hasLegacy2 = cache()->has('ids.custom_log_paths');
 
         if ($hasLegacy1 || $hasLegacy2) {
-            $lock = cache()->lock('migrate_custom_log_paths', 10);
             $acquired = false;
-            $delay = 10000;
+            $delayMicroseconds = 10000;
+            $lock = null;
 
-            for ($i = 0; $i < 10; $i++) {
-                if ($lock->get()) {
-                    $acquired = true;
-                    break;
+            try {
+                $lock = cache()->lock('migrate_custom_log_paths', 10);
+                for ($i = 0; $i < 10; $i++) {
+                    if ($lock->get()) {
+                        $acquired = true;
+                        break;
+                    }
+                    usleep($delayMicroseconds);
+                    $delayMicroseconds *= 2;
                 }
-                usleep($delay);
-                $delay *= 2;
+            } catch (\Exception $e) {
+                Log::warning("Cache lock failed during migration in getCustomPaths: " . $e->getMessage());
             }
 
             if ($acquired) {
@@ -384,7 +395,7 @@ class LogDiscoveryService
                         return $merged;
                     }
                 } finally {
-                    if ($acquired) {
+                    if ($acquired && $lock) {
                         $lock->release();
                     }
                 }
