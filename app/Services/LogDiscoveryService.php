@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    public static bool $migrated = false;
+
     /**
      * Common web server log file locations to scan
      */
@@ -306,11 +308,13 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
+        $configPaths = config('ids.custom_log_paths', []);
+        $cachePaths = $this->getCustomPaths();
+
+        if (!in_array($path, $configPaths) && !in_array($path, $cachePaths)) {
+            $cachePaths[] = $path;
             // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+            cache()->forever('ids.custom_log_paths', $cachePaths);
         }
 
         return true;
@@ -321,7 +325,62 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $paths = cache()->get('ids.custom_log_paths', []);
+
+        if (self::$migrated) {
+            return $paths;
+        }
+
+        $legacyKeys = ['ids_custom_log_paths', 'ids::custom_log_paths'];
+        $hasLegacyKey = false;
+
+        foreach ($legacyKeys as $legacyKey) {
+            if (cache()->has($legacyKey)) {
+                $hasLegacyKey = true;
+                break;
+            }
+        }
+
+        if ($hasLegacyKey) {
+            try {
+                $lock = cache()->lock('ids.custom_log_paths_migration_lock', 5);
+
+                try {
+                    if ($lock->get()) {
+                        $legacyPaths = [];
+                        $anyMigrated = false;
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $legacyPaths = array_merge($legacyPaths, cache()->get($legacyKey, []));
+                                cache()->forget($legacyKey);
+                                $anyMigrated = true;
+                            }
+                        }
+
+                        if ($anyMigrated) {
+                            // Always fetch latest paths inside lock
+                            $paths = cache()->get('ids.custom_log_paths', []);
+                            $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                            cache()->forever('ids.custom_log_paths', $paths);
+                        }
+                    }
+                } finally {
+                    if (isset($lock)) {
+                        $lock->release();
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::error("Failed to acquire lock for log paths migration: " . $e->getMessage());
+                return $paths;
+            }
+
+            // Re-fetch to return the latest known paths, whether we migrated them or another process did
+            $paths = cache()->get('ids.custom_log_paths', []);
+        }
+
+        self::$migrated = true;
+        return $paths;
     }
 
     /**
