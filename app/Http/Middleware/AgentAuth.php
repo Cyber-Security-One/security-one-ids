@@ -35,13 +35,12 @@ class AgentAuth
         }
 
         $agentTokenEnv = env('AGENT_TOKEN');
-        // If env('AGENT_TOKEN') is explicitly set to an empty string, it won't be strictly null,
-        // so we need to fallback to config if it's strictly empty or null,
-        // while preserving '0' which is not strictly empty.
+        // Fallback to config ONLY if the environment variable is strictly null (missing) or explicitly empty string (default fallback for env() without value).
+        // We preserve '0' which is not strictly empty.
         $agentToken = (string) ($agentTokenEnv !== null && $agentTokenEnv !== '' ? $agentTokenEnv : (config('ids.agent_token') ?? ''));
 
         if ($agentToken === '') {
-            return response()->json(['error' => 'Server misconfiguration: AGENT_TOKEN is not set'], 500);
+            return response()->json(['error' => 'Server misconfiguration: AGENT_TOKEN is not set'], 503);
         }
 
         if (!is_scalar($token)) {
