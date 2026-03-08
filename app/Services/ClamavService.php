@@ -49,56 +49,11 @@ class ClamavService
      */
     protected function getCaCertPath(): ?string
     {
-        // Check common locations for cacert.pem on Windows
-        $possiblePaths = [];
-
-        // Get PHP directory
-        $phpBinary = PHP_BINARY;
-        if ($phpBinary) {
-            $phpDir = dirname($phpBinary);
-            $possiblePaths[] = $phpDir . '\\cacert.pem';
-            $possiblePaths[] = $phpDir . '\\extras\\ssl\\cacert.pem';
+        $path = base_path('resources/certs/cacert.pem');
+        if (!file_exists($path)) {
+            throw new \RuntimeException('CA certificate bundle not found at ' . $path);
         }
-
-        // Check common PHP installation locations
-        $possiblePaths = array_merge($possiblePaths, [
-            'C:\\tools\\php85\\cacert.pem',
-            'C:\\tools\\php\\cacert.pem',
-            'C:\\php\\cacert.pem',
-            'C:\\xampp\\php\\extras\\ssl\\cacert.pem',
-            'C:\\Program Files\\PHP\\cacert.pem',
-            'C:\\ProgramData\\ComposerSetup\\bin\\cacert.pem',
-        ]);
-
-        foreach ($possiblePaths as $path) {
-            if (file_exists($path)) {
-                return $path;
-            }
-        }
-
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                // Ignore
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
-        }
-
-        return null;
+        return $path;
     }
 
     /**
