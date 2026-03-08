@@ -318,11 +318,8 @@ class LogDiscoveryService
         if (!in_array($path, $cachedPaths, true)) {
             $cachedPaths[] = $path;
 
-            // Clean up array keys just in case and remove any potential duplicates with config
-            $pathsToCache = array_values(array_unique(array_diff($cachedPaths, $configPaths)));
-
             // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $pathsToCache);
+            cache()->forever('ids.custom_log_paths', $cachedPaths);
         }
 
         return true;
@@ -333,7 +330,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids.custom_log_paths', cache()->get('ids_custom_log_paths', []));
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
