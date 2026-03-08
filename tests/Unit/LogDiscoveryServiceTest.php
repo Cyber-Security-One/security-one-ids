@@ -4,7 +4,6 @@ namespace Tests\Unit;
 
 use App\Services\LogDiscoveryService;
 use Tests\TestCase;
-use Illuminate\Support\Facades\Cache;
 
 class LogDiscoveryServiceTest extends TestCase
 {

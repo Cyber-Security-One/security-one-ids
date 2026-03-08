@@ -323,23 +323,23 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        // Backward compatibility: migrate legacy keys
-        if (cache()->has('ids_custom_log_paths')) {
-            $legacyPaths = cache()->get('ids_custom_log_paths', []);
-            cache()->forever('ids::custom_log_paths', $legacyPaths);
-            cache()->forget('ids_custom_log_paths');
-            return $legacyPaths;
+        $paths = cache()->get('ids::custom_log_paths', []);
+        $migrated = false;
+
+        foreach (['ids_custom_log_paths', 'ids.custom_log_paths'] as $legacyKey) {
+            if (cache()->has($legacyKey)) {
+                $legacyPaths = cache()->get($legacyKey, []);
+                $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                cache()->forget($legacyKey);
+                $migrated = true;
+            }
         }
 
-        // Backward compatibility: check if dot notation was mistakenly used
-        if (cache()->has('ids.custom_log_paths')) {
-            $legacyPaths = cache()->get('ids.custom_log_paths', []);
-            cache()->forever('ids::custom_log_paths', $legacyPaths);
-            cache()->forget('ids.custom_log_paths');
-            return $legacyPaths;
+        if ($migrated) {
+            cache()->forever('ids::custom_log_paths', $paths);
         }
 
-        return cache()->get('ids::custom_log_paths', []);
+        return $paths;
     }
 
     /**
