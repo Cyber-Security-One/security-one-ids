@@ -328,9 +328,9 @@ class LogDiscoveryService
 
         foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
             if (cache()->has($legacyKey)) {
-                $lock = cache()->lock('migrate_' . $legacyKey, 10);
-
                 try {
+                    $lock = cache()->lock('migrate_' . $legacyKey, 10);
+
                     if ($lock->block(5)) {
                         try {
                             // Double-check inside the lock
@@ -346,6 +346,17 @@ class LogDiscoveryService
                         } finally {
                             $lock->release();
                         }
+                    }
+                } catch (\BadMethodCallException $e) {
+                    // Store does not support locks, fallback to best-effort migration
+                    if (cache()->has($legacyKey)) {
+                        $legacyPaths = cache()->get($legacyKey, []);
+                        if (is_array($legacyPaths)) {
+                            $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                        }
+                        cache()->forever('ids.custom_log_paths', $paths);
+                        cache()->forget($legacyKey);
+                        $migrated = true;
                     }
                 } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
                     // Lock not acquired, continue
