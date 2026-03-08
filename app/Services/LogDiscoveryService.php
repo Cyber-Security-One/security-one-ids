@@ -336,8 +336,9 @@ class LogDiscoveryService
         // Blockingly attempt to acquire the lock for up to 5 seconds instead of failing immediately.
         $lock = cache()->lock('ids.custom_log_paths_lock', 5);
 
+        $lockAcquired = false;
         try {
-            $lock->block(5);
+            $lockAcquired = $lock->block(5);
 
             $cachedPaths = $this->getCustomPaths();
 
@@ -360,7 +361,9 @@ class LogDiscoveryService
             Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
             return false;
         } finally {
-            $lock->release();
+            if ($lockAcquired) {
+                $lock->release();
+            }
         }
     }
 
@@ -391,9 +394,9 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         // Handle backward compatibility for old cache key
-        if (cache()->has('ids_custom_log_paths')) {
-            $legacyPaths = cache()->pull('ids_custom_log_paths', []);
+        $legacyPaths = cache()->pull('ids_custom_log_paths');
 
+        if ($legacyPaths !== null) {
             if (!is_array($legacyPaths)) {
                 Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
                     'type' => gettype($legacyPaths)
@@ -401,10 +404,11 @@ class LogDiscoveryService
                 $legacyPaths = [];
             }
 
-            $currentPaths = cache()->get('ids.custom_log_paths', []);
-            $currentPaths = is_array($currentPaths) ? $currentPaths : [];
-
+            // We must merge atomically to avoid overwriting another process's update
+            // But since this is a legacy migration, we just append if anything is valid
             if (!empty($legacyPaths)) {
+                $currentPaths = cache()->get('ids.custom_log_paths', []);
+                $currentPaths = is_array($currentPaths) ? $currentPaths : [];
                 $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
                 cache()->forever('ids.custom_log_paths', $mergedPaths);
             }
