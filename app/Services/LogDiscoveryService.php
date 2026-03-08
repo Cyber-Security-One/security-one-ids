@@ -306,11 +306,15 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $configPaths = config('ids.custom_log_paths', []);
+        $cachedPaths = $this->getCustomPaths();
+
+        $unifiedList = array_values(array_unique(array_merge($configPaths, $cachedPaths)));
+
+        if (!in_array($path, $unifiedList, true)) {
+            $cachedPaths[] = $path;
+            // Store only dynamically added items in the cache
+            cache()->forever('ids::custom_log_paths', array_values(array_unique($cachedPaths)));
         }
 
         return true;
@@ -321,7 +325,75 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $hasLegacy1 = cache()->has('ids_custom_log_paths');
+        $hasLegacy2 = cache()->has('ids.custom_log_paths');
+
+        if ($hasLegacy1 || $hasLegacy2) {
+            $lock = cache()->lock('migrate_custom_log_paths', 10);
+            $acquired = false;
+
+            try {
+                $retries = 0;
+                $maxRetries = 5;
+                $delay = 10000; // 10ms initial delay
+
+                while ($retries < $maxRetries) {
+                    if ($lock->get()) {
+                        $acquired = true;
+                        break;
+                    }
+                    usleep($delay);
+                    $delay *= 2;
+                    $retries++;
+                }
+
+                if ($acquired) {
+                    // Double check in case another process migrated it
+                    $hasLegacy1 = cache()->has('ids_custom_log_paths');
+                    $hasLegacy2 = cache()->has('ids.custom_log_paths');
+
+                    if ($hasLegacy1 || $hasLegacy2) {
+                        $legacyPaths1 = $hasLegacy1 ? cache()->get('ids_custom_log_paths', []) : [];
+                        $legacyPaths2 = $hasLegacy2 ? cache()->get('ids.custom_log_paths', []) : [];
+                        $currentPaths = cache()->get('ids::custom_log_paths', []);
+
+                        $mergedPaths = array_values(array_unique(array_merge(
+                            is_array($legacyPaths1) ? $legacyPaths1 : [],
+                            is_array($legacyPaths2) ? $legacyPaths2 : [],
+                            is_array($currentPaths) ? $currentPaths : []
+                        )));
+
+                        cache()->forever('ids::custom_log_paths', $mergedPaths);
+
+                        if ($hasLegacy1) {
+                            cache()->forget('ids_custom_log_paths');
+                        }
+                        if ($hasLegacy2) {
+                            cache()->forget('ids.custom_log_paths');
+                        }
+                    }
+                }
+            } catch (\Exception $e) {
+                Log::error('Failed to acquire cache lock for custom log paths migration: ' . $e->getMessage());
+            } finally {
+                if ($acquired) {
+                    $lock->release();
+                }
+            }
+
+            if (!$acquired && !cache()->has('ids::custom_log_paths')) {
+                // If acquired is false and the new key doesn't exist, return legacy data directly without migrating
+                $legacyPaths1 = $hasLegacy1 ? cache()->get('ids_custom_log_paths', []) : [];
+                $legacyPaths2 = $hasLegacy2 ? cache()->get('ids.custom_log_paths', []) : [];
+                return array_values(array_unique(array_merge(
+                    is_array($legacyPaths1) ? $legacyPaths1 : [],
+                    is_array($legacyPaths2) ? $legacyPaths2 : []
+                )));
+            }
+        }
+
+        $paths = cache()->get('ids::custom_log_paths', []);
+        return is_array($paths) ? $paths : [];
     }
 
     /**
