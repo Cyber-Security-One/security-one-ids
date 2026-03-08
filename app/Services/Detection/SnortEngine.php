@@ -2,6 +2,7 @@
 
 namespace App\Services\Detection;
 
+use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 
@@ -18,6 +19,8 @@ class SnortEngine
     private string $alertLogPath;
     private string $pidFile;
     private string $logDir;
+
+    use DetectsPlatform;
 
     public function __construct()
     {
@@ -1734,11 +1737,6 @@ LUA;
         }
 
         return null;
-    }
-
-    private function isWindows(): bool
-    {
-        return PHP_OS_FAMILY === 'Windows';
     }
 
     /**
