@@ -15,13 +15,20 @@ class AppServiceProviderTest extends TestCase
         Config::set('ids.agent_token', 'token');
     }
 
+    protected function tearDown(): void
+    {
+        Config::offsetUnset('ids.agent_token');
+        parent::tearDown();
+    }
 
-    public function test_it_throws_exception_in_production_without_token()
+
+    public function test_it_throws_exception_in_production_without_token_on_unsafe_command()
     {
         // Mock application running in console true
         $app = \Mockery::mock($this->app)->makePartial();
         $app->shouldReceive('runningInConsole')->andReturn(true);
         $app->shouldReceive('isDownForMaintenance')->andReturn(false);
+        $app->shouldReceive('runningConsoleCommand')->with('queue:work')->andReturn(true);
 
         Config::set('ids.agent_token', '');
         $app['env'] = 'production';
@@ -29,9 +36,27 @@ class AppServiceProviderTest extends TestCase
         $provider = new AppServiceProvider($app);
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('AGENT_TOKEN must be set in production environment.');
+        $this->expectExceptionMessage('AGENT_TOKEN must be set in production environment for background processes.');
 
         $provider->boot();
+    }
+
+    public function test_it_does_nothing_if_running_safe_command()
+    {
+        $app = \Mockery::mock($this->app)->makePartial();
+        $app->shouldReceive('runningInConsole')->andReturn(true);
+        $app->shouldReceive('isDownForMaintenance')->andReturn(false);
+        $app->shouldReceive('runningConsoleCommand')->with('queue:work')->andReturn(false);
+        $app->shouldReceive('runningConsoleCommand')->with('schedule:run')->andReturn(false);
+        $app->shouldReceive('runningConsoleCommand')->with('schedule:work')->andReturn(false);
+
+        Config::set('ids.agent_token', '');
+        $app['env'] = 'production';
+
+        $provider = new AppServiceProvider($app);
+
+        $provider->boot();
+        $this->assertTrue(true); // Reached without exception
     }
 
     public function test_it_does_nothing_if_in_maintenance_mode()
