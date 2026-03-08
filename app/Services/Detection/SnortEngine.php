@@ -13,6 +13,8 @@ use Illuminate\Support\Facades\Process;
  */
 class SnortEngine
 {
+    use \App\Traits\DetectsPlatform;
+
     private string $snortPath;
     private string $configPath;
     private string $alertLogPath;
@@ -1735,8 +1737,6 @@ LUA;
 
         return null;
     }
-
-    use \App\Traits\DetectsPlatform;
 
     /**
      * Fix log directory permissions so non-root PHP agent can read alert files.

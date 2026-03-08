@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Process;
  */
 class SuricataEngine
 {
+    use \App\Traits\DetectsPlatform;
+
     private string $suricataPath;
     private string $configPath;
     private string $alertLogPath;
@@ -1029,8 +1031,6 @@ YAML;
             default => 'low',
         };
     }
-
-    use \App\Traits\DetectsPlatform;
 
     private function detectLinuxDistro(): string
     {
