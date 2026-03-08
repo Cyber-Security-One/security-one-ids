@@ -307,11 +307,35 @@ class LogDiscoveryService
         }
 
         $configPaths = config('ids.custom_log_paths', []);
-        $cachePaths = $this->getCustomPaths();
 
-        if (!in_array($path, $cachePaths)) {
-            $cachePaths[] = $path;
-            cache()->forever('ids.custom_log_paths', $cachePaths);
+        try {
+            $lock = cache()->lock('ids.custom_log_paths:add', 10);
+
+            if ($lock->block(5)) {
+                try {
+                    $cachePaths = $this->getCustomPaths();
+
+                    if (!in_array($path, $cachePaths, true)) {
+                        $cachePaths[] = $path;
+                        cache()->forever('ids.custom_log_paths', $cachePaths);
+                    }
+                } finally {
+                    $lock->release();
+                }
+            } else {
+                Log::warning("Failed to acquire lock for adding custom log path: {$path}");
+            }
+        } catch (\BadMethodCallException | \Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            if ($e instanceof \Illuminate\Contracts\Cache\LockTimeoutException) {
+                Log::warning("Lock timeout while adding custom log path: {$path}", ['exception' => $e->getMessage()]);
+            }
+            // Store does not support locks or timed out, fallback to best-effort
+            $cachePaths = $this->getCustomPaths();
+
+            if (!in_array($path, $cachePaths, true)) {
+                $cachePaths[] = $path;
+                cache()->forever('ids.custom_log_paths', $cachePaths);
+            }
         }
 
         return true;
