@@ -2,6 +2,7 @@
 
 namespace App\Services\Detection;
 
+use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 
@@ -13,6 +14,8 @@ use Illuminate\Support\Facades\Process;
  */
 class SnortEngine
 {
+    use DetectsPlatform;
+
     private string $snortPath;
     private string $configPath;
     private string $alertLogPath;
@@ -147,7 +150,8 @@ class SnortEngine
 
         $interface = $interface ?? $this->detectDefaultInterface();
 
-        // On Windows, if no valid interface was found (Npcap missing), don't attempt start
+        // On Windows, if no valid interface was found (Npcap missing), don't attempt start.
+        // '1' is treated as a special case because detectDefaultInterface() returns '1' as a fallback when no routable IP is detected.
         if ($this->isWindows() && $interface === '1') {
             // Ensure Npcap DLLs are findable (PATH may not be updated in this process)
             $npcapDir = 'C:\\Windows\\System32\\Npcap';
@@ -1734,11 +1738,6 @@ LUA;
         }
 
         return null;
-    }
-
-    private function isWindows(): bool
-    {
-        return PHP_OS_FAMILY === 'Windows';
     }
 
     /**
