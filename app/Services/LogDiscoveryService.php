@@ -320,12 +320,6 @@ class LogDiscoveryService
             return false;
         }
 
-        // Validate that path does not contain path traversal vectors
-        $segments = explode('/', str_replace('\\', '/', $path));
-        if (in_array('..', $segments, true)) {
-            return false;
-        }
-
         if (!$this->isAllowedPath($realPath)) {
             return false;
         }
@@ -338,18 +332,12 @@ class LogDiscoveryService
             return true;
         }
 
+        // Blockingly attempt to acquire the lock for up to 5 seconds instead of failing immediately.
         $lock = cache()->lock('ids.custom_log_paths_lock', 5);
 
-        if (!$lock->get()) {
-            $cachedPaths = $this->getCustomPaths();
-            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
-                return true;
-            }
-            Log::warning("Could not acquire lock to add custom log path", ['path' => $path]);
-            return false;
-        }
-
         try {
+            $lock->block(5);
+
             $cachedPaths = $this->getCustomPaths();
 
             // If it's already in the cache, we're good.
@@ -360,22 +348,36 @@ class LogDiscoveryService
             $cachedPaths[] = $realPath;
             // Store in cache for persistence
             cache()->forever('ids.custom_log_paths', $cachedPaths);
+
+            return true;
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            // Only after blocking for 5 seconds and failing, check if it was added concurrently
+            $cachedPaths = $this->getCustomPaths();
+            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+                return true;
+            }
+            Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
+            return false;
         } finally {
             $lock->release();
         }
-
-        return true;
     }
 
     private function isAllowedPath(string $realPath): bool
     {
         $allowedDirs = self::ALLOWED_BASE_DIRS;
+        // Keep temp dir for testing environments
         $allowedDirs[] = sys_get_temp_dir();
 
         foreach ($allowedDirs as $dir) {
-            $realDir = realpath($dir) ?: $dir;
-            if (str_starts_with($realPath, rtrim($realDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
-                return true;
+            // resolve allowed dir to actual real path to prevent symlink bypasses
+            $realDir = realpath($dir);
+            if ($realDir !== false) {
+                // Ensure the base dir trailing slash to prevent partial matches (e.g. /var/log2 matching /var/log)
+                $basePrefix = rtrim($realDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                if (str_starts_with($realPath, $basePrefix)) {
+                    return true;
+                }
             }
         }
 
