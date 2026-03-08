@@ -340,7 +340,7 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         if (cache()->has('ids_custom_log_paths')) {
-            $lock = cache()->lock('migrate_ids_custom_log_paths', 10);
+            $lock = cache()->lock('ids.custom_log_paths_migrate_lock', 10);
             $acquired = false;
             try {
                 $acquired = $lock->block(5);
