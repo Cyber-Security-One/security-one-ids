@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    private const LOCK_TIMEOUT_SECONDS = 5;
+
     /**
      * Allowed base directories for custom log paths
      */
@@ -339,22 +341,24 @@ class LogDiscoveryService
 
         // We shouldn't redundantly merge and write to cache if not needed.
         // First check if it's already in config.
-        if (in_array($path, $configPaths, true) || in_array($realPath, $configPaths, true)) {
+        // Perform case-insensitive comparison to handle filesystems like Windows/macOS where casing could vary
+        $lowercaseConfigPaths = array_map('strtolower', $configPaths);
+        if (in_array(strtolower($path), $lowercaseConfigPaths, true) || in_array(strtolower($realPath), $lowercaseConfigPaths, true)) {
             return true;
         }
 
-        $lock = cache()->lock('ids.custom_log_paths_lock', 5);
+        $lock = cache()->lock('ids.custom_log_paths_lock', self::LOCK_TIMEOUT_SECONDS);
         $acquired = false;
         $retries = 5;
-        $delay = 100000; // 100ms in microseconds
+        $delayMicroseconds = 100000; // 100ms in microseconds
 
         for ($i = 0; $i < $retries; $i++) {
             if ($lock->get()) {
                 $acquired = true;
                 break;
             }
-            usleep($delay);
-            $delay *= 2; // exponential backoff
+            usleep($delayMicroseconds);
+            $delayMicroseconds *= 2; // exponential backoff
         }
 
         if (!$acquired) {
@@ -366,7 +370,8 @@ class LogDiscoveryService
             $cachedPaths = $this->getCustomPaths();
 
             // If it's already in the cache, we're good.
-            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+            $lowercaseCachedPaths = array_map('strtolower', $cachedPaths);
+            if (in_array(strtolower($path), $lowercaseCachedPaths, true) || in_array(strtolower($realPath), $lowercaseCachedPaths, true)) {
                 return true;
             }
 
