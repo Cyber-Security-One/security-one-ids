@@ -1,4 +1,4 @@
-## 2024-05-15 - [Disabled SSL Peer Verification for Downloads]
+## 2024-05-15 - [Fixed: Disabled SSL Peer Verification for Downloads]
 **Vulnerability:** SSL peer verification was explicitly disabled (`'verify_peer' => false`, `'verify_peer_name' => false`) in stream context creation when downloading the CA certificate bundle (`cacert.pem`) in `ClamavService` and `WafSyncService`. This allows Man-in-the-Middle (MitM) attacks.
 **Learning:** Disabling SSL verification to bootstrap trust (downloading a CA bundle to establish secure connections) creates a Catch-22 and exposes the application to MitM attacks where a malicious CA bundle could be injected.
 **Prevention:** Bundle a known-good CA certificate bundle within the application repository itself rather than attempting to download it insecurely at runtime.
