@@ -367,6 +367,8 @@ class LogDiscoveryService
                     }
                 }
             } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::warning("Failed to acquire lock for log path migration: {$e->getMessage()}");
+
                 // If lock mechanism fails (e.g. unsupported driver), fallback to reading legacy keys
                 // directly so we don't break the application.
                 if (!cache()->has('ids.custom_log_paths')) {
