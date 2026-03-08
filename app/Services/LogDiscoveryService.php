@@ -311,25 +311,24 @@ class LogDiscoveryService
         try {
             $lock = cache()->lock('ids.custom_log_paths:add', 10);
 
-            if ($lock->block(5)) {
-                try {
+            try {
+                if ($lock->get()) {
                     $cachePaths = $this->getCustomPaths();
 
                     if (!in_array($path, $cachePaths, true)) {
                         $cachePaths[] = $path;
                         cache()->forever('ids.custom_log_paths', $cachePaths);
                     }
-                } finally {
-                    $lock->release();
+                } else {
+                    Log::warning("Failed to acquire lock for adding custom log path: {$path}");
                 }
-            } else {
-                Log::warning("Failed to acquire lock for adding custom log path: {$path}");
+            } finally {
+                // The lock is an instance of Illuminate\Contracts\Cache\Lock, release it safely
+                optional($lock)->release();
             }
-        } catch (\BadMethodCallException | \Illuminate\Contracts\Cache\LockTimeoutException $e) {
-            if ($e instanceof \Illuminate\Contracts\Cache\LockTimeoutException) {
-                Log::warning("Lock timeout while adding custom log path: {$path}", ['exception' => $e->getMessage()]);
-            }
-            // Store does not support locks or timed out, fallback to best-effort
+        } catch (\Exception $e) {
+            // Store does not support locks or other error occurred, fallback to best-effort
+            Log::warning("Cache lock error while adding custom log path: {$path}", ['exception' => $e->getMessage()]);
             $cachePaths = $this->getCustomPaths();
 
             if (!in_array($path, $cachePaths, true)) {
@@ -354,8 +353,8 @@ class LogDiscoveryService
                 try {
                     $lock = cache()->lock('migrate_' . $legacyKey, 10);
 
-                    if ($lock->block(5)) {
-                        try {
+                    try {
+                        if ($lock->get()) {
                             // Double-check inside the lock
                             if (cache()->has($legacyKey)) {
                                 $legacyPaths = cache()->get($legacyKey, []);
@@ -366,14 +365,15 @@ class LogDiscoveryService
                                 cache()->forget($legacyKey);
                                 $migrated = true;
                             }
-                        } finally {
-                            $lock->release();
+                        } else {
+                            Log::warning("Failed to acquire lock for cache migration of key: {$legacyKey}");
                         }
-                    } else {
-                        Log::warning("Failed to acquire lock for cache migration of key: {$legacyKey}");
+                    } finally {
+                        optional($lock)->release();
                     }
-                } catch (\BadMethodCallException $e) {
-                    // Store does not support locks, fallback to best-effort migration
+                } catch (\Exception $e) {
+                    Log::warning("Cache lock error during migration of key: {$legacyKey}", ['exception' => $e->getMessage()]);
+                    // Fallback to best-effort migration if locks are not supported
                     if (cache()->has($legacyKey)) {
                         $legacyPaths = cache()->get($legacyKey, []);
                         if (is_array($legacyPaths)) {
@@ -383,8 +383,6 @@ class LogDiscoveryService
                         cache()->forget($legacyKey);
                         $migrated = true;
                     }
-                } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-                    Log::warning("Lock timeout during cache migration of key: {$legacyKey}", ['exception' => $e->getMessage()]);
                 }
             }
         }
