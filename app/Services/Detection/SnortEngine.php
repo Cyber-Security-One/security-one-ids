@@ -14,13 +14,13 @@ use Illuminate\Support\Facades\Process;
  */
 class SnortEngine
 {
+    use DetectsPlatform;
+
     private string $snortPath;
     private string $configPath;
     private string $alertLogPath;
     private string $pidFile;
     private string $logDir;
-
-    use DetectsPlatform;
 
     public function __construct()
     {
