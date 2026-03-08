@@ -26,10 +26,13 @@ class AppServiceProvider extends ServiceProvider
                 throw new \RuntimeException('AGENT_TOKEN must be set in production environment.');
             });
 
-            // For custom IDS commands that act as background processes, we validate here
-            if (app()->runningInConsole() && isset($_SERVER['argv'][1]) && str_starts_with($_SERVER['argv'][1], 'ids:')) {
-                throw new \RuntimeException('AGENT_TOKEN must be set in production environment.');
-            }
+            // For custom IDS commands that act as background processes, we validate before they execute
+            // using the CommandStarting event rather than fragile parsing of $_SERVER['argv'].
+            $this->app['events']->listen(\Illuminate\Console\Events\CommandStarting::class, function ($event) {
+                if ($event->command && str_starts_with($event->command, 'ids:')) {
+                    throw new \RuntimeException('AGENT_TOKEN must be set in production environment.');
+                }
+            });
 
             // For web requests, we validate and ensure we are not in maintenance mode.
             // This prevents unexpected failures during deployment or maintenance mode.
