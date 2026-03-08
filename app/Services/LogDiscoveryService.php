@@ -354,10 +354,17 @@ class LogDiscoveryService
         }
 
         if (!$acquired) {
-            // Only after failing to acquire, check if it was added concurrently
-            $cachedPaths = $this->getCustomPaths();
-            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
-                return true;
+            try {
+                // Only after failing to acquire, check if it was added concurrently
+                $cachedPaths = $this->getCustomPaths();
+                if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+                    return true;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Failed to read custom log paths after lock contention.', [
+                    'path' => $path,
+                    'error' => $e->getMessage(),
+                ]);
             }
             Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
             return false;
@@ -381,6 +388,15 @@ class LogDiscoveryService
         }
     }
 
+    /**
+     * Validate if a fully resolved path resides strictly within the allowed base directories.
+     *
+     * This protects against path traversal and symlink bypasses by checking prefixes
+     * against a fixed list of absolute paths.
+     *
+     * @param string $realPath The fully resolved target file path.
+     * @return bool True if the path is permitted, false otherwise.
+     */
     private function isAllowedPath(string $realPath): bool
     {
         $allowedDirs = self::ALLOWED_BASE_DIRS;
@@ -426,14 +442,22 @@ class LogDiscoveryService
             $currentPaths = is_array($currentPaths) ? $currentPaths : [];
 
             if (!empty($legacyPaths)) {
-                $sanitizedLegacyPaths = array_values(array_filter($legacyPaths, function ($path) {
-                    $realPath = is_string($path) ? realpath($path) : false;
+                $sanitizedLegacyPaths = array_values(array_filter(array_map(function ($path) {
+                    if (!is_string($path)) {
+                        return null;
+                    }
 
-                    return $realPath !== false
-                        && is_file($realPath)
-                        && is_readable($realPath)
-                        && $this->isAllowedPath($realPath);
-                }));
+                    $realPath = realpath($path);
+
+                    if ($realPath === false
+                        || !is_file($realPath)
+                        || !is_readable($realPath)
+                        || !$this->isAllowedPath($realPath)) {
+                        return null;
+                    }
+
+                    return $realPath;
+                }, $legacyPaths)));
 
                 $mergedPaths = array_values(array_unique(array_merge($currentPaths, $sanitizedLegacyPaths)));
                 cache()->forever('ids.custom_log_paths', $mergedPaths);
