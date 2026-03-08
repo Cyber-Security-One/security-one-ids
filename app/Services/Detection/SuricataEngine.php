@@ -2,6 +2,7 @@
 
 namespace App\Services\Detection;
 
+use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 
@@ -14,6 +15,8 @@ use Illuminate\Support\Facades\Process;
  */
 class SuricataEngine
 {
+    use DetectsPlatform;
+
     private string $suricataPath;
     private string $configPath;
     private string $alertLogPath;
@@ -32,7 +35,7 @@ class SuricataEngine
         $this->pidFile = $this->logDir . DIRECTORY_SEPARATOR . 'suricata.pid';
 
         // On Windows, ensure CYGWIN env var is set system-wide (prevents TP_NUM_C_BUFS crash)
-        if ($this->isWindows()) {
+        if ($this->detectIsWindows()) {
             $currentCygwin = getenv('CYGWIN');
             if (empty($currentCygwin) || !str_contains($currentCygwin, 'tls_num_c_bufs')) {
                 try {
@@ -146,7 +149,7 @@ class SuricataEngine
         $this->ensureConfig();
 
         // Windows (Cygwin): limit rules before startup to prevent TP_NUM_C_BUFS crash
-        if ($this->isWindows()) {
+        if ($this->detectIsWindows()) {
             $this->limitRulesForWindows();
         }
 
@@ -161,7 +164,7 @@ class SuricataEngine
                 'command' => $cmd,
             ]);
 
-            if ($this->isWindows()) {
+            if ($this->detectIsWindows()) {
                 // Windows: launch as background process via .bat wrapper to set CYGWIN env var
                 $logFile = $this->logDir . '\\suricata_stdout.log';
                 $errFile = $this->logDir . '\\suricata_stderr.log';
@@ -216,7 +219,7 @@ class SuricataEngine
 
             // Start failed — capture error output
             $errorOutput = '';
-            if ($this->isWindows()) {
+            if ($this->detectIsWindows()) {
                 $winErrFile = $this->logDir . '\\suricata_stderr.log';
                 $winOutFile = $this->logDir . '\\suricata_stdout.log';
                 if (file_exists($winErrFile)) {
@@ -256,7 +259,7 @@ class SuricataEngine
         try {
             if (file_exists($this->pidFile)) {
                 $pid = trim(file_get_contents($this->pidFile));
-                if ($this->isWindows()) {
+                if ($this->detectIsWindows()) {
                     Process::run("taskkill /PID {$pid} /F 2>nul");
                 } else {
                     Process::run("kill {$pid} 2>/dev/null");
@@ -267,7 +270,7 @@ class SuricataEngine
                 }
                 @unlink($this->pidFile);
             } else {
-                if ($this->isWindows()) {
+                if ($this->detectIsWindows()) {
                     Process::run("taskkill /IM suricata.exe /F 2>nul");
                 } else {
                     Process::run("pkill -f suricata 2>/dev/null");
@@ -328,9 +331,9 @@ class SuricataEngine
 
         // Collect packet stats from OS network interface counters
         $interface = $this->detectDefaultInterface();
-        if (!$this->isWindows() && PHP_OS === 'Darwin') {
+        if (!$this->detectIsWindows() && PHP_OS === 'Darwin') {
             $this->collectMacPacketStats($stats, $interface);
-        } elseif (!$this->isWindows()) {
+        } elseif (!$this->detectIsWindows()) {
             $this->collectLinuxPacketStats($stats, $interface);
         }
 
@@ -405,7 +408,7 @@ class SuricataEngine
         }
 
         try {
-            if ($this->isWindows()) {
+            if ($this->detectIsWindows()) {
                 // Windows: stop + start
                 $this->stop();
                 sleep(2);
@@ -497,7 +500,7 @@ class SuricataEngine
 
             if (PHP_OS === 'Darwin') {
                 $this->updateSuricataMac();
-            } elseif ($this->isWindows()) {
+            } elseif ($this->detectIsWindows()) {
                 $this->updateSuricataWindows();
             } else {
                 $this->updateSuricataLinux();
@@ -545,7 +548,7 @@ class SuricataEngine
         $cmd .= " --pidfile \"{$this->pidFile}\"";
         $cmd .= " -l \"{$this->logDir}\"";
 
-        if ($this->isWindows()) {
+        if ($this->detectIsWindows()) {
             // Windows: use WinDivert for packet capture
             if ($mode === 'ips') {
                 // IPS inline mode: WinDivert forward (can drop packets)
@@ -717,7 +720,7 @@ YAML;
      */
     private function detectSuricataPath(): string
     {
-        $paths = $this->isWindows()
+        $paths = $this->detectIsWindows()
             ? [
                 'C:\\Program Files\\Suricata\\suricata.exe',
                 'C:\\Suricata\\suricata.exe',
@@ -739,7 +742,7 @@ YAML;
 
         // Try which/where
         try {
-            $cmd = $this->isWindows() ? 'where suricata 2>nul' : 'which suricata 2>/dev/null';
+            $cmd = $this->detectIsWindows() ? 'where suricata 2>nul' : 'which suricata 2>/dev/null';
             $result = Process::run($cmd);
             $path = trim($result->output());
             if (!empty($path) && file_exists($path)) {
@@ -757,7 +760,7 @@ YAML;
      */
     private function detectConfigPath(): string
     {
-        $paths = $this->isWindows()
+        $paths = $this->detectIsWindows()
             ? [
                 'C:\\Program Files\\Suricata\\suricata.yaml',
                 'C:\\Suricata\\suricata.yaml',
@@ -778,7 +781,7 @@ YAML;
         }
 
         // Default: use standard location or storage fallback
-        if ($this->isWindows()) {
+        if ($this->detectIsWindows()) {
             return 'C:\\Suricata\\suricata.yaml';
         }
 
@@ -790,7 +793,7 @@ YAML;
      */
     private function detectLogDir(): string
     {
-        $paths = $this->isWindows()
+        $paths = $this->detectIsWindows()
             ? ['C:\\Suricata\\log', 'C:\\Program Files\\Suricata\\log']
             : ['/var/log/suricata', '/opt/homebrew/var/log/suricata', '/usr/local/var/log/suricata'];
 
@@ -800,7 +803,7 @@ YAML;
             }
         }
 
-        return $this->isWindows() ? 'C:\\Suricata\\log' : '/var/log/suricata';
+        return $this->detectIsWindows() ? 'C:\\Suricata\\log' : '/var/log/suricata';
     }
 
     /**
@@ -808,7 +811,7 @@ YAML;
      */
     private function detectRulesDir(): string
     {
-        $paths = $this->isWindows()
+        $paths = $this->detectIsWindows()
             ? ['C:\\Suricata\\rules', 'C:\\Program Files\\Suricata\\rules']
             : ['/etc/suricata/rules', '/var/lib/suricata/rules', '/usr/local/etc/suricata/rules'];
 
@@ -818,7 +821,7 @@ YAML;
             }
         }
 
-        return $this->isWindows() ? 'C:\\Suricata\\rules' : '/etc/suricata/rules';
+        return $this->detectIsWindows() ? 'C:\\Suricata\\rules' : '/etc/suricata/rules';
     }
 
     /**
@@ -830,7 +833,7 @@ YAML;
             return $this->cachedInterface;
         }
 
-        if ($this->isWindows()) {
+        if ($this->detectIsWindows()) {
             // On Windows with WinDivert, we use a filter string (not an interface name)
             // Default filter captures all IPv4/IPv6 traffic
             $this->cachedInterface = 'true';
@@ -1030,10 +1033,7 @@ YAML;
         };
     }
 
-    private function isWindows(): bool
-    {
-        return PHP_OS_FAMILY === 'Windows';
-    }
+
 
     private function detectLinuxDistro(): string
     {
@@ -1052,7 +1052,7 @@ YAML;
      */
     private function fixLogPermissions(): void
     {
-        if ($this->isWindows()) {
+        if ($this->detectIsWindows()) {
             return;
         }
 
@@ -1072,7 +1072,7 @@ YAML;
             return false;
         }
 
-        if ($this->isWindows()) {
+        if ($this->detectIsWindows()) {
             try {
                 $result = Process::run("tasklist /FI \"PID eq {$pid}\" /NH 2>nul");
                 return str_contains($result->output(), (string) $pid);
@@ -1087,7 +1087,7 @@ YAML;
     private function isSuricataProcessActive(): bool
     {
         try {
-            if ($this->isWindows()) {
+            if ($this->detectIsWindows()) {
                 $result = Process::run('tasklist /FI "IMAGENAME eq suricata.exe" /NH 2>nul');
                 return str_contains($result->output(), 'suricata.exe');
             }
@@ -1148,7 +1148,7 @@ YAML;
      */
     public function fixCygwinDll(): bool
     {
-        if (!$this->isWindows()) {
+        if (!$this->detectIsWindows()) {
             return false;
         }
 
