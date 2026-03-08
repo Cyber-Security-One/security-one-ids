@@ -342,8 +342,8 @@ class LogDiscoveryService
                 }
             }
         } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-            // Lock timeout, cannot safely add path
-            return false;
+            // Lock timeout: another request may have already added the path
+            return in_array($path, $this->getCustomPaths(), true);
         }
 
         return true;
