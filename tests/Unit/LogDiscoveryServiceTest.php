@@ -29,6 +29,7 @@ class LogDiscoveryServiceTest extends TestCase
         $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'missing_' . uniqid();
 
         // ensure the file actually does not exist
+        $this->assertFileDoesNotExist($path);
         $this->assertFalse(is_readable($path));
 
         $result = $this->service->addCustomPath($path);
@@ -72,7 +73,7 @@ class LogDiscoveryServiceTest extends TestCase
 
             // To isolate config modification without polluting global state across tests,
             // we use Laravel's internal config array mutation which is automatically reset by TestCase after the test
-            $this->app['config']->set('ids.custom_log_paths', [$tempPath]);
+            \Illuminate\Support\Facades\Config::set('ids.custom_log_paths', [$tempPath]);
 
             $result = $this->service->addCustomPath($tempPath);
 
