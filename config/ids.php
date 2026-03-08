@@ -8,6 +8,8 @@ return [
     */
 
     'waf_url' => env('WAF_URL', ''),
+    // Defaulting to null ensures middleware correctly identifies missing configuration.
+    // AGENT_TOKEN must be explicitly set in production environments.
     'agent_token' => env('AGENT_TOKEN', null),
     'agent_name' => env('AGENT_NAME', gethostname()),
     'install_token' => env('INSTALL_TOKEN', ''),

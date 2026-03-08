@@ -7,9 +7,9 @@ use Tests\TestCase;
 class ApiMiddlewareTest extends TestCase
 {
     /**
-     * Test when AGENT_TOKEN is empty.
+     * Test when AGENT_TOKEN is empty string.
      */
-    public function test_api_middleware_fails_if_agent_token_not_configured()
+    public function test_api_middleware_fails_if_agent_token_is_empty_string()
     {
         $this->app['config']->set('ids.agent_token', '');
 

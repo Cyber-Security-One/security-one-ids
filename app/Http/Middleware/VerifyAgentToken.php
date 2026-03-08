@@ -9,6 +9,7 @@ class VerifyAgentToken
 {
     public function handle(Request $request, Closure $next)
     {
+        // Cast to string defensively in case request inputs return arrays or other non-string types.
         $token = (string) ($request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken());
         $agentToken = (string) config('ids.agent_token');
 
