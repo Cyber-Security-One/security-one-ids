@@ -40,7 +40,7 @@ class AgentAuth
 
         $token = (string) $token;
 
-        if ($token === '' || strlen($token) !== strlen($agentToken) || !hash_equals($agentToken, $token)) {
+        if ($token === '' || strlen($token) > 256 || strlen($token) !== strlen($agentToken) || !hash_equals($agentToken, $token)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
