@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    public static bool $migrated = false;
+
     /**
      * Common web server log file locations to scan
      */
@@ -306,11 +308,44 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $configPaths = config('ids.custom_log_paths', []);
+
+        try {
+            $lock = cache()->lock('ids.custom_log_paths:add', 10);
+
+            try {
+                if ($lock->get()) {
+                    $cachePaths = $this->getCustomPaths();
+                    $allPaths = array_merge($configPaths, $cachePaths);
+
+                    if (!in_array($path, $allPaths, true)) {
+                        if (!is_readable($path)) {
+                            return false;
+                        }
+                        $cachePaths[] = $path;
+                        cache()->forever('ids.custom_log_paths', $cachePaths);
+                    }
+                } else {
+                    Log::warning("Failed to acquire lock for adding custom log path: {$path}");
+                    return false;
+                }
+            } finally {
+                // The lock is an instance of Illuminate\Contracts\Cache\Lock, release it safely
+                optional($lock)->release();
+            }
+        } catch (\Exception $e) {
+            // Store does not support locks or other error occurred, fallback to best-effort
+            Log::warning("Cache lock error while adding custom log path: {$path}", ['exception' => $e->getMessage()]);
+            $cachePaths = $this->getCustomPaths();
+            $allPaths = array_merge($configPaths, $cachePaths);
+
+            if (!in_array($path, $allPaths, true)) {
+                if (!is_readable($path)) {
+                    return false;
+                }
+                $cachePaths[] = $path;
+                cache()->forever('ids.custom_log_paths', $cachePaths);
+            }
         }
 
         return true;
@@ -321,7 +356,52 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $paths = cache()->get('ids.custom_log_paths', []);
+        $migrated = false;
+
+        if (!self::$migrated) {
+            foreach (['ids_custom_log_paths', 'ids::custom_log_paths'] as $legacyKey) {
+                if (cache()->has($legacyKey)) {
+                    try {
+                        $lock = cache()->lock('migrate_' . $legacyKey, 10);
+
+                        try {
+                            if ($lock->get()) {
+                                // Double-check inside the lock
+                                if (cache()->has($legacyKey)) {
+                                    $legacyPaths = cache()->get($legacyKey, []);
+                                    if (is_array($legacyPaths)) {
+                                        $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                                    }
+                                    cache()->forever('ids.custom_log_paths', $paths);
+                                    cache()->forget($legacyKey);
+                                    $migrated = true;
+                                }
+                            } else {
+                                Log::warning("Failed to acquire lock for cache migration of key: {$legacyKey}");
+                            }
+                        } finally {
+                            optional($lock)->release();
+                        }
+                    } catch (\Exception $e) {
+                        Log::warning("Cache lock error during migration of key: {$legacyKey}", ['exception' => $e->getMessage()]);
+                        // Fallback to best-effort migration if locks are not supported
+                        if (cache()->has($legacyKey)) {
+                            $legacyPaths = cache()->get($legacyKey, []);
+                            if (is_array($legacyPaths)) {
+                                $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                            }
+                            cache()->forever('ids.custom_log_paths', $paths);
+                            cache()->forget($legacyKey);
+                            $migrated = true;
+                        }
+                    }
+                }
+            }
+            self::$migrated = true;
+        }
+
+        return $paths;
     }
 
     /**
