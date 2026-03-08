@@ -336,7 +336,8 @@ class LogDiscoveryService
                     if ($lockAcquired) {
                         try {
                             // Double check in case another process migrated it
-                            if (cache()->has('ids_custom_log_paths')) {
+                            $legacyKeyExists = cache()->has('ids_custom_log_paths');
+                            if ($legacyKeyExists) {
                                 $legacyPaths = cache()->get('ids_custom_log_paths', []);
                                 $currentPaths = cache()->get('ids.custom_log_paths', []);
 
@@ -344,10 +345,12 @@ class LogDiscoveryService
                                 cache()->forever('ids.custom_log_paths', array_values($mergedPaths));
 
                                 cache()->forget('ids_custom_log_paths');
+
+                                // Only write persistent marker if we actually migrated the legacy key
+                                cache()->forever('ids.custom_log_paths_migrated', true);
                             }
 
-                            // Mark as migrated to prevent checking legacy key again
-                            cache()->forever('ids.custom_log_paths_migrated', true);
+                            // Mark as checked in the current process lifecycle
                             self::$migrated = true;
                         } finally {
                             $lock->release();
