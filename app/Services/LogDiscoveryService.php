@@ -306,10 +306,10 @@ class LogDiscoveryService
             return false;
         }
 
-        $configPaths = config('ids.custom_log_paths', []);
+        $existingConfigPaths = config('ids.custom_log_paths', []);
 
         // If it's already in the config, no need to cache
-        if (in_array($path, $configPaths, true)) {
+        if (in_array($path, $existingConfigPaths, true)) {
             return true;
         }
 
@@ -342,9 +342,10 @@ class LogDiscoveryService
         if (!empty($legacyPaths)) {
             cache()->forever($newKey, $legacyPaths);
             cache()->forget($oldKey);
+            return $legacyPaths;
         }
 
-        return $legacyPaths;
+        return [];
     }
 
     /**
