@@ -43,6 +43,18 @@ class ApiAuthTest extends TestCase
 
         // Empty query token should not override valid bearer/header
         $this->postJson('/api/rules/update?token=', [], ['Authorization' => 'Bearer test-agent-token'])->assertStatus(200);
+
+        // Empty/whitespace Bearer token should fallback to valid query token
+        $this->postJson('/api/rules/update?token=test-agent-token', [], ['Authorization' => 'Bearer   '])->assertStatus(200);
+    }
+
+    public function test_auth_logic_returns_500_if_server_misconfigured()
+    {
+        // Explicitly set the config to empty string
+        Config::set('ids.agent_token', '');
+        putenv('AGENT_TOKEN=');
+
+        $this->postJson('/api/rules/update?token=test-agent-token', [])->assertStatus(500);
     }
 
     public function test_auth_logic_allows_zero_as_token()
