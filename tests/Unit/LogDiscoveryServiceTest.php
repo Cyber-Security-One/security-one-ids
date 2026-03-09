@@ -80,7 +80,7 @@ class LogDiscoveryServiceTest extends TestCase
         $this->assertTrue($result);
 
         // Because the path is in the config, the service short-circuits and never reads the cache
-        // or initializes it. Therefore, the cache should still be empty/absent.
+        // or initializes it. Therefore, the cache key should genuinely not exist.
         $this->assertFalse(cache()->has('ids.custom_log_paths'));
     }
 

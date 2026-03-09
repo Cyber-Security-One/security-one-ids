@@ -340,9 +340,10 @@ class LogDiscoveryService
             return cache()->get(self::CACHE_KEY_NEW);
         }
 
-        // Fast-path: Unnecessary lock acquisition for every cache miss
+        // Fast-path: no data in either legacy key, return directly without locking.
+        // Do not persist an empty new key here, otherwise later legacy writes
+        // (e.g. during a rolling deploy) can no longer be migrated.
         if (!cache()->has(self::CACHE_KEY_LEGACY_1) && !cache()->has(self::CACHE_KEY_LEGACY_2)) {
-            cache()->forever(self::CACHE_KEY_NEW, []);
             return [];
         }
 
