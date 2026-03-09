@@ -148,7 +148,7 @@ class SnortEngine
         $interface = $interface ?? $this->detectDefaultInterface();
 
         // On Windows, if no valid interface was found (Npcap missing), don't attempt start
-        if ($this->isWindows() && $interface === '1') {
+        if ($this->isWindows() && is_string($interface) && $interface === '1') {
             // Ensure Npcap DLLs are findable (PATH may not be updated in this process)
             $npcapDir = 'C:\\Windows\\System32\\Npcap';
             if (is_dir($npcapDir) && !str_contains(getenv('PATH') ?: '', 'Npcap')) {
