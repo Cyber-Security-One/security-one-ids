@@ -1097,8 +1097,13 @@ LUA;
      */
     private function collectPacketStats(array &$stats): void
     {
-        // Get the network interface Snort is listening on
-        $interface = $this->detectDefaultInterface();
+        try {
+            // Get the network interface Snort is listening on
+            $interface = $this->detectDefaultInterface();
+        } catch (\RuntimeException $e) {
+            Log::debug('Could not collect packet stats: ' . $e->getMessage());
+            return;
+        }
 
         if ($this->isWindows()) {
             // Windows: use PowerShell Get-NetAdapterStatistics
