@@ -300,10 +300,10 @@ class LogDiscoveryService
     /**
      * Best effort addition to cache (fallback for when locks are not supported/acquired)
      */
-    private function bestEffortAddCustomPath(string $path): void
+    private function bestEffortAddCustomPath(string $path): bool
     {
         if (!is_readable($path)) {
-            return;
+            return false;
         }
 
         $cachePaths = $this->getCustomPaths();
@@ -311,6 +311,8 @@ class LogDiscoveryService
             $cachePaths[] = $path;
             cache()->forever('ids.custom_log_paths', $cachePaths);
         }
+
+        return true;
     }
 
     /**
@@ -321,8 +323,6 @@ class LogDiscoveryService
         if (!is_readable($path)) {
             return false;
         }
-
-        $configPaths = config('ids.custom_log_paths', []);
 
         try {
             $lock = cache()->lock('ids.custom_log_paths:add', 10);
@@ -341,9 +341,10 @@ class LogDiscoveryService
                         $cachePaths[] = $path;
                         cache()->forever('ids.custom_log_paths', $cachePaths);
                     }
+                    return true;
                 } else {
                     Log::warning("Failed to acquire lock for adding custom log path: {$path} after waiting. Falling back to best-effort.");
-                    $this->bestEffortAddCustomPath($path);
+                    return $this->bestEffortAddCustomPath($path);
                 }
             } finally {
                 // The lock is an instance of Illuminate\Contracts\Cache\Lock, release it safely
@@ -352,10 +353,8 @@ class LogDiscoveryService
         } catch (\Exception $e) {
             // Catch all exceptions including LockTimeoutException (if thrown by drivers) or lock support errors
             Log::warning("Cache lock error or timeout while adding custom log path: {$path}", ['exception' => $e->getMessage()]);
-            $this->bestEffortAddCustomPath($path);
+            return $this->bestEffortAddCustomPath($path);
         }
-
-        return true;
     }
 
     /**
