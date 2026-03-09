@@ -298,6 +298,22 @@ class LogDiscoveryService
     }
 
     /**
+     * Best effort addition to cache (fallback for when locks are not supported/acquired)
+     */
+    private function bestEffortAddCustomPath(string $path): void
+    {
+        if (!is_readable($path)) {
+            return;
+        }
+
+        $cachePaths = $this->getCustomPaths();
+        if (!in_array($path, $cachePaths, true)) {
+            $cachePaths[] = $path;
+            cache()->forever('ids.custom_log_paths', $cachePaths);
+        }
+    }
+
+    /**
      * Add a custom log path to monitor
      */
     public function addCustomPath(string $path): bool
@@ -326,29 +342,17 @@ class LogDiscoveryService
                         cache()->forever('ids.custom_log_paths', $cachePaths);
                     }
                 } else {
-                    Log::warning("Failed to acquire lock for adding custom log path: {$path} after waiting.");
-                    return false;
+                    Log::warning("Failed to acquire lock for adding custom log path: {$path} after waiting. Falling back to best-effort.");
+                    $this->bestEffortAddCustomPath($path);
                 }
             } finally {
                 // The lock is an instance of Illuminate\Contracts\Cache\Lock, release it safely
                 optional($lock)->release();
             }
-        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-            Log::warning("Lock timeout for adding custom log path: {$path}");
-            return false;
         } catch (\Exception $e) {
-            // Store does not support locks or other error occurred, fallback to best-effort
-            Log::warning("Cache lock error while adding custom log path: {$path}", ['exception' => $e->getMessage()]);
-            $cachePaths = $this->getCustomPaths();
-
-            if (!is_readable($path)) {
-                return false;
-            }
-
-            if (!in_array($path, $cachePaths, true)) {
-                $cachePaths[] = $path;
-                cache()->forever('ids.custom_log_paths', $cachePaths);
-            }
+            // Catch all exceptions including LockTimeoutException (if thrown by drivers) or lock support errors
+            Log::warning("Cache lock error or timeout while adding custom log path: {$path}", ['exception' => $e->getMessage()]);
+            $this->bestEffortAddCustomPath($path);
         }
 
         return true;
