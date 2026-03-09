@@ -12,6 +12,9 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    private const CACHE_KEY = 'ids.custom_log_paths';
+    private const LEGACY_CACHE_KEY = 'ids_custom_log_paths';
+
     /**
      * Common web server log file locations to scan
      */
@@ -302,15 +305,23 @@ class LogDiscoveryService
      */
     public function addCustomPath(string $path): bool
     {
-        if (!is_readable($path)) {
+        if (!file_exists($path) || !is_readable($path)) {
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $configPaths = config('ids.custom_log_paths', []);
+
+        // If path is already defined in config, don't write it to cache
+        if (in_array($path, $configPaths)) {
+            return true;
+        }
+
+        $cachePaths = $this->getCustomPaths();
+
+        if (!in_array($path, $cachePaths)) {
+            $cachePaths[] = $path;
+            // Store new paths in cache for persistence using dot notation
+            cache()->forever(self::CACHE_KEY, array_values(array_unique($cachePaths)));
         }
 
         return true;
@@ -321,7 +332,88 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        if (!cache()->has(self::CACHE_KEY)) {
+            // Only acquire lock if legacy key actually exists and needs migration
+            if (!cache()->has(self::LEGACY_CACHE_KEY)) {
+                cache()->forever(self::CACHE_KEY, []);
+                return [];
+            }
+
+            try {
+                $lock = cache()->lock('migrate_custom_log_paths', 10);
+                $acquired = false;
+                $attempts = 0;
+                $sleepDuration = 100000;
+
+                try {
+                    while ($attempts < 3) {
+                        $acquired = $lock->get();
+                        if ($acquired) {
+                            $this->migrateLegacyPaths();
+                            break;
+                        }
+
+                        // Check if another process completed it while we were waiting
+                        if (cache()->has(self::CACHE_KEY) || !cache()->has(self::LEGACY_CACHE_KEY)) {
+                            break;
+                        }
+
+                        $attempts++;
+                        usleep($sleepDuration);
+                        $sleepDuration *= 2; // Exponential backoff
+                    }
+
+                    if (!$acquired && !cache()->has(self::CACHE_KEY)) {
+                        // Lock contention timeout - return fallback without altering state
+                        $legacyPaths = (array) cache()->get(self::LEGACY_CACHE_KEY, []);
+                        return array_values(array_unique($legacyPaths));
+                    }
+                } finally {
+                    if ($acquired) {
+                        $lock->release();
+                    }
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Failed to acquire lock for log path migration: {$e->getMessage()}");
+
+                // If lock mechanism itself fails (e.g. unsupported driver), fallback to reading legacy keys
+                // directly so we don't break the application.
+                if (!cache()->has(self::CACHE_KEY)) {
+                    $legacyPaths = (array) cache()->get(self::LEGACY_CACHE_KEY, []);
+                    return array_values(array_unique($legacyPaths));
+                }
+            }
+        }
+
+        return cache()->get(self::CACHE_KEY, []);
+    }
+
+    /**
+     * Migrate legacy custom log paths to the new cache key format
+     */
+    private function migrateLegacyPaths(): void
+    {
+        if (cache()->has(self::CACHE_KEY)) {
+            return;
+        }
+
+        $paths = [];
+        $migrated = false;
+
+        if (cache()->has(self::LEGACY_CACHE_KEY)) {
+            $legacyPaths = cache()->get(self::LEGACY_CACHE_KEY);
+            if (is_array($legacyPaths)) {
+                $paths = array_merge($paths, $legacyPaths);
+            }
+            $migrated = true;
+        }
+
+        $paths = array_values(array_unique($paths));
+        cache()->forever(self::CACHE_KEY, $paths);
+
+        if ($migrated) {
+            cache()->forget(self::LEGACY_CACHE_KEY);
+        }
     }
 
     /**
