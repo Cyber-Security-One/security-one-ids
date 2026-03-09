@@ -18,11 +18,7 @@ class ValidateAgentToken
     public function handle(Request $request, Closure $next): Response
     {
         if (app()->environment('production') && trim((string) config('ids.agent_token', '')) === '') {
-            if (!app()->runningInConsole()) {
-                throw new MissingAgentTokenException();
-            } else {
-                Log::warning('AGENT_TOKEN is missing in production. This may cause background WAF processes to fail.');
-            }
+            throw new MissingAgentTokenException();
         }
 
         return $next($request);
