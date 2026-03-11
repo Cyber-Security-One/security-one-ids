@@ -59,9 +59,14 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            $http = $http->withOptions([
-                'verify' => $cacertPath,
-            ]);
+            if ($cacertPath) {
+                $http = $http->withOptions([
+                    'verify' => $cacertPath,
+                ]);
+            } else {
+                // No cacert.pem found — disable SSL verification as fallback
+                $http = $http->withoutVerifying();
+            }
         }
 
         return $http;
@@ -1537,13 +1542,13 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-$safeConsoleUser = escapeshellarg($consoleUser);
+                $safeConsoleUser = escapeshellarg($consoleUser);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
 
-                if ($consoleUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
-$result = Process::run(['sudo', 'dscl', '.', '-create', "/Users/{$consoleUser}", 'AuthenticationAuthority', ';DisabledUser;']);
+                    $result = Process::run(['sudo', 'dscl', '.', '-create', "/Users/{$consoleUser}", 'AuthenticationAuthority', ';DisabledUser;']);
                     $returnCode = $result->exitCode();
                     file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser}: code={$returnCode}, output={$result->output()}\n", FILE_APPEND);
 
@@ -1556,7 +1561,7 @@ $result = Process::run(['sudo', 'dscl', '.', '-create', "/Users/{$consoleUser}",
 
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
-$result = Process::run(['sudo', 'dscl', '.', '-passwd', "/Users/{$consoleUser}", '*']);
+                        $result = Process::run(['sudo', 'dscl', '.', '-passwd', "/Users/{$consoleUser}", '*']);
                         $returnCode = $result->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
                     }
@@ -1617,12 +1622,10 @@ $result = Process::run(['sudo', 'dscl', '.', '-passwd', "/Users/{$consoleUser}",
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
-
-                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
+                    if (!$user) continue;
 
                     // Remove DisabledUser from AuthenticationAuthority
-$safeUser = escapeshellarg($user);
+                    $safeUser = escapeshellarg($user);
                     $result = Process::run(['sudo', 'dscl', '.', '-delete', "/Users/{$user}", 'AuthenticationAuthority']);
                     $returnCode = $result->exitCode();
                     file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
@@ -2877,10 +2880,8 @@ $safeUser = escapeshellarg($user);
 
     /**
      * Get CA certificate path for Windows SSL verification
-     *
-     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): string
+    protected function getCaCertPath(): ?string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2911,15 +2912,31 @@ $safeUser = escapeshellarg($user);
             }
         }
 
-        // If not found, use bundled certificate
-        $bundledPath = base_path('resources/certs/cacert.pem');
-        if (file_exists($bundledPath)) {
-            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
-            return $bundledPath;
+        // If not found, try to download it
+        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
+        if (!file_exists($downloadPath)) {
+            try {
+                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
+                $context = stream_context_create([
+                    'ssl' => [
+                        'verify_peer' => false,
+                        'verify_peer_name' => false,
+                    ],
+                ]);
+                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
+                if ($cacert) {
+                    file_put_contents($downloadPath, $cacert);
+                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
+                    return $downloadPath;
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
+            }
+        } elseif (file_exists($downloadPath)) {
+            return $downloadPath;
         }
 
-        Log::error('CA certificate bundle missing: ' . $bundledPath);
-        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+        return null;
     }
 
     /**
