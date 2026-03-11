@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
-use App\Http\Controllers\Controller;
 
 class SystemUpdateController extends Controller
 {
@@ -27,9 +26,6 @@ class SystemUpdateController extends Controller
                 // Clear caches
                 Artisan::call('config:clear');
                 Artisan::call('cache:clear');
---- Resolution #1 ---
-
---- Resolution #2 ---
                 Log::info('System update completed', [
                     'output' => implode("\n", $output),
                 ]);
@@ -77,10 +73,6 @@ class SystemUpdateController extends Controller
             // Get git info
             exec('git rev-parse HEAD 2>/dev/null', $hashOutput);
             exec('git rev-parse --abbrev-ref HEAD 2>/dev/null', $branchOutput);
-<<<<<<< /tmp/merge_ours_427csl0714ad2zQWhoE
-
-=======
->>>>>>> /tmp/merge_theirs_7arn2dl8t2q51QwdP8C
             $gitHash = !empty($hashOutput) ? substr($hashOutput[0], 0, 7) : 'unknown';
             $gitBranch = !empty($branchOutput) ? $branchOutput[0] : 'unknown';
         } catch (\Exception $e) {
