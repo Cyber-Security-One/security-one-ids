@@ -389,13 +389,7 @@ private const LOCK_TIMEOUT_SECONDS = 5;
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
             return false;
-        } finally {
-            if ($lock->isLocked()) {
-                $lock->release();
-            }
         }
-
-        return true;
         } finally {
             if ($acquired) {
                 $lock->release();
