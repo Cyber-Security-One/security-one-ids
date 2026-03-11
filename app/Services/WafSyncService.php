@@ -1195,13 +1195,13 @@ class WafSyncService
                 // Create task
                 $createCommand = "schtasks /create /tn \"{$taskName}\" /tr \"shutdown /r /t 5 /f /c \\\"Security One IDS: Remote Reboot\\\"\" /sc once /st {$rebootTime} /sd {$rebootDate} /f /ru SYSTEM";
                 exec($createCommand . ' 2>&1', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] schtasks create result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
+                file_put_contents($logFile, "[{$timestamp}] schtasks create result: code={$returnCode}\n", FILE_APPEND);
                 
                 if ($returnCode === 0) {
                     // Run the task immediately
                     $output = [];
                     exec("schtasks /run /tn \"{$taskName}\" 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] schtasks run result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] schtasks run result: code={$returnCode}\n", FILE_APPEND);
                 }
                 
                 // Fallback: try direct shutdown if schtasks failed
@@ -1209,7 +1209,7 @@ class WafSyncService
                     file_put_contents($logFile, "[{$timestamp}] schtasks failed, trying direct shutdown...\n", FILE_APPEND);
                     $output = [];
                     exec('C:\\Windows\\System32\\shutdown.exe /r /t 10 /f 2>&1', $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] Direct shutdown result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] Direct shutdown result: code={$returnCode}\n", FILE_APPEND);
                 }
                 
                 // Last resort: PowerShell
@@ -1232,7 +1232,7 @@ class WafSyncService
                 
                 // Method 1: Try shutdown with sudo (launchd runs as root)
                 exec('sudo /sbin/shutdown -r now 2>&1', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] shutdown result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
+                file_put_contents($logFile, "[{$timestamp}] shutdown result: code={$returnCode}\n", FILE_APPEND);
                 
                 if ($returnCode !== 0) {
                     // Method 2: Try without sudo (if running as root)
@@ -1303,7 +1303,7 @@ class WafSyncService
                 
                 // Method 1: Try query user (Windows Pro/Enterprise with RDS)
                 exec('query user 2>&1', $userOutput, $rc);
-                file_put_contents($logFile, "[{$timestamp}] query user output: " . implode(" ", $userOutput) . "\n", FILE_APPEND);
+                file_put_contents($logFile, "[{$timestamp}] query user executed: code={$rc}\n", FILE_APPEND);
                 
                 foreach ($userOutput as $line) {
                     if (preg_match('/^>?(\S+)\s+\S+\s+\d+\s+Active/i', trim($line), $matches)) {
@@ -1316,7 +1316,7 @@ class WafSyncService
                 if (!$username) {
                     $userOutput = [];
                     exec('wmic computersystem get username 2>&1', $userOutput, $rc);
-                    file_put_contents($logFile, "[{$timestamp}] wmic username output: " . implode(" ", $userOutput) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] wmic username executed: code={$rc}\n", FILE_APPEND);
                     foreach ($userOutput as $line) {
                         $line = trim($line);
                         // Format: DOMAIN\username or just username
@@ -1336,7 +1336,7 @@ class WafSyncService
                 if (!$username) {
                     $userOutput = [];
                     exec('tasklist /FI "IMAGENAME eq explorer.exe" /FO CSV /NH 2>&1', $userOutput, $rc);
-                    file_put_contents($logFile, "[{$timestamp}] tasklist output: " . implode(" ", $userOutput) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] tasklist executed: code={$rc}\n", FILE_APPEND);
                     // If explorer.exe is running, someone is logged in
                     if (!empty($userOutput) && strpos($userOutput[0], 'explorer.exe') !== false) {
                         // Get username from environment
@@ -1356,7 +1356,7 @@ class WafSyncService
                     // Create task that runs as INTERACTIVE user (the one currently logged in)
                     $createCmd = 'schtasks /Create /TN "SecurityOneLock" /TR "wscript.exe \"' . $lockScript . '\"" /SC ONCE /ST 00:00 /F /RU "' . $username . '" /IT';
                     exec($createCmd . ' 2>&1', $output, $rc1);
-                    file_put_contents($logFile, "[{$timestamp}] schtasks create for user '{$username}': code={$rc1}, output=" . implode(" ", array_slice($output, -3)) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] schtasks create for user '{$username}': code={$rc1}\n", FILE_APPEND);
                     
                     if ($rc1 === 0) {
                         // Run the task
@@ -1549,7 +1549,7 @@ class WafSyncService
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
                     exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}\n", FILE_APPEND);
                     
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
