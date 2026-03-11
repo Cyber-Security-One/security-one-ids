@@ -1544,16 +1544,14 @@ class WafSyncService
                 $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 $cleanUser = preg_replace('/[\r\n]/', '', $user);
                 
-                // Keep log safe by encoding raw value as suggested
-                $safeUserForLog = preg_replace('/[\r\n]/', '', $user);
-                file_put_contents($logFile, "[{$timestamp}] Raw console user: {$safeUserForLog}, Sanitized: {$cleanUser}\n", FILE_APPEND);
+                file_put_contents($logFile, "[{$timestamp}] Raw console user: {$cleanUser}, Sanitized: {$cleanUser}\n", FILE_APPEND);
 
                 if (!empty($cleanUser) && preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $method1Success = false;
                     try {
-                        $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
+                        $process1 = Process::timeout(60)->run(['sudo', '-n', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $method1Success = $process1->successful();
                         $returnCode1 = $process1->exitCode();
                         $outputStr = trim($process1->output() . ' ' . $process1->errorOutput());
@@ -1568,7 +1566,7 @@ class WafSyncService
                         // Method 2: Lock the user's password (they won't be able to login)
                         $method2Success = false;
                         try {
-                            $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
+                            $process2 = Process::timeout(60)->run(['sudo', '-n', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
                             $method2Success = $process2->successful();
                             $returnCode2 = $process2->exitCode();
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
@@ -1582,7 +1580,7 @@ class WafSyncService
                             // Method 3: Set password expiration to immediate past
                             $method3Success = false;
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'chpass', '-e', '0', $cleanUser]);
+                                $process3 = Process::timeout(60)->run(['sudo', '-n', 'chpass', '-e', '0', $cleanUser]);
                                 $method3Success = $process3->successful();
                                 $returnCode3 = $process3->exitCode();
                                 file_put_contents($logFile, "[{$timestamp}] chpass set expire immediately: code={$returnCode3}\n", FILE_APPEND);
