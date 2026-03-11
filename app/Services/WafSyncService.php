@@ -1593,6 +1593,11 @@ class WafSyncService
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
+
+                        if ($dsclPasswdResult !== 0) {
+                            Log::error("Critical failure: Could not disable user {$cleanUser} via any available method.");
+                            throw new \Exception("Failed to completely disable macOS user login for {$cleanUser}.");
+                        }
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
