@@ -13,7 +13,7 @@
 **Learning:** Checking secure tokens with standard operators (`==` or `===`) stops comparison on the first mismatched character, leading to timing variations that can be measured and exploited to extract a token.
 **Prevention:** Always use `hash_equals()` for token or password verification and cast values to strings beforehand.
 
-## 2025-03-10 - [OS Command Injection via Unsanitized User Inputs in Shell Execution]
+## 2025-03-10 - OS Command Injection via Unsanitized User Inputs in Shell Execution
 **Vulnerability:** Unsanitized system variables (like `$consoleUser` and `$user`) derived from dynamic system states were directly interpolated into string commands passed to `exec()` functions (e.g., `exec("sudo dscl . -delete /Users/{$user} ...")`) in `app/Services/WafSyncService.php` (`handleDisableLogin` and `handleEnableLogin`).
 **Learning:** Any variable that is incorporated into a shell command, even if originating from a seemingly trustworthy system query (such as listing user accounts), poses a command injection risk or syntax error risk if the data contains spaces, quotes, or shell metacharacters.
 **Prevention:** Always use `escapeshellarg()` on any dynamic variable before inserting it into a shell command executed via `exec()`, `shell_exec()`, or `system()`. Alternatively, prefer using `Illuminate\Support\Facades\Process::run([])` passing arguments as an array alongside input validation (e.g. `preg_match('/^[a-zA-Z0-9_.-]+$/', $var)`).
