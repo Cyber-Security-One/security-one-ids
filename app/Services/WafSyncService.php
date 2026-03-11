@@ -59,10 +59,17 @@ class WafSyncService
 
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
-            $cacertPath = $this->getCaCertPath();
-            $http = $http->withOptions([
-                'verify' => $cacertPath,
-            ]);
+            try {
+                $cacertPath = $this->getCaCertPath();
+                $http = $http->withOptions([
+                    'verify' => $cacertPath,
+                ]);
+            } catch (\Throwable $e) {
+                Log::warning('CA certificate unavailable on Windows, falling back to insecure TLS mode', [
+                    'error' => $e->getMessage(),
+                ]);
+                $http = $http->withoutVerifying();
+            }
         }
 
         return $http;
@@ -1537,7 +1544,7 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-$user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
 
@@ -1565,7 +1572,7 @@ $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                     $method1Failed = !$dsclDisableExecuted || $dsclDisableResult !== 0;
                     if ($method1Failed) {
                         // Method 2: Lock the user's password (they won't be able to login)
-try {
+                        try {
                             $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
                             $process2->setTimeout(60);
                             $process2->run();
@@ -1580,7 +1587,7 @@ try {
                     $method2Failed = $method1Failed && (!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0);
                     if ($method2Failed) {
                         // Method 3: Set an impossible password hash
-try {
+                        try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
                             $process3->setTimeout(60);
                             $process3->run();
@@ -1653,9 +1660,9 @@ try {
                 $failedUsers = [];
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+                    if (!$user) continue;
 
-$cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+                    $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
 
                     if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) continue;
 
@@ -2944,10 +2951,8 @@ $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
 
     /**
      * Get CA certificate path for Windows SSL verification
-     *
-     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): string
+    protected function getCaCertPath(): ?string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2986,7 +2991,7 @@ $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
         }
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
-        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+        throw new \RuntimeException('CA certificate bundle missing: ' . $bundledPath);
     }
 
     /**
