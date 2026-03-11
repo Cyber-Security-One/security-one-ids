@@ -1567,8 +1567,8 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
-                    $shouldRetryPwpolicy = !$dsclDisableExecuted || $dsclDisableResult !== 0;
-                    if ($shouldRetryPwpolicy) {
+                    $method1Failed = !$dsclDisableExecuted || $dsclDisableResult !== 0;
+                    if ($method1Failed) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         try {
                             $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
@@ -1582,8 +1582,8 @@ class WafSyncService
                         }
                     }
                     
-                    $shouldRetryDsclPasswd = $shouldRetryPwpolicy && (!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0);
-                    if ($shouldRetryDsclPasswd) {
+                    $method2Failed = $method1Failed && (!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0);
+                    if ($method2Failed) {
                         // Method 3: Set an impossible password hash
                         try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
@@ -1688,9 +1688,9 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
 
-                    $success = ($dsclClearExecuted && $dsclClearResult === 0) || ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0);
+                    $success = ($dsclClearExecuted && $dsclClearResult === 0) && ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0);
                     if (!$success) {
-                        Log::error("Critical failure: Could not enable user {$cleanUser} via dscl or pwpolicy.");
+                        Log::error("Critical failure: Could not completely enable user {$cleanUser} via both dscl and pwpolicy.");
                         $failedUsers[] = $cleanUser;
                         continue;
                     }
