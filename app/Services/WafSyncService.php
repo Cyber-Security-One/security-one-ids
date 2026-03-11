@@ -1639,11 +1639,16 @@ class WafSyncService
             
             file_put_contents($logFile, "[{$timestamp}] Enable login signal received from WAF Hub\n", FILE_APPEND);
             
+            $failedUsers = 0;
+
             if (PHP_OS_FAMILY === 'Windows') {
                 echo "✅ Enabling Windows user accounts...\n";
                 // Enable previously disabled users, but exclude system accounts (Guest, Administrator)
                 exec('powershell -Command "Get-LocalUser | Where-Object {$_.Enabled -eq $false -and $_.Name -ne \'Guest\' -and $_.Name -ne \'Administrator\'} | Enable-LocalUser" 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Windows enable users result: code={$returnCode}\n", FILE_APPEND);
+                if ($returnCode !== 0) {
+                    $failedUsers++;
+                }
                 
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "✅ Enabling macOS user login...\n";
@@ -1690,6 +1695,7 @@ class WafSyncService
 
                     $success = ($dsclClearExecuted && $dsclClearResult === 0) || ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0);
                     if (!$success) {
+                        $failedUsers++;
                         Log::error("Critical failure: Could not enable user {$cleanUser} via dscl or pwpolicy.");
                         file_put_contents($logFile, "[{$timestamp}] Critical failure: Could not enable user {$cleanUser} via dscl or pwpolicy.\n", FILE_APPEND);
                         continue;
@@ -1700,11 +1706,20 @@ class WafSyncService
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Linux enable users result: code={$returnCode}\n", FILE_APPEND);
+                if ($returnCode !== 0) {
+                    $failedUsers++;
+                }
             }
             
-            echo "✅ Login enabled\n";
-            Log::info('Login enabled');
-            file_put_contents($logFile, "[{$timestamp}] Login enabled successfully\n", FILE_APPEND);
+            if ($failedUsers > 0) {
+                echo "⚠️ Login enabled with errors: {$failedUsers} failures\n";
+                Log::warning("Login enabled with errors: {$failedUsers} failures");
+                file_put_contents($logFile, "[{$timestamp}] Login enabled with errors: {$failedUsers} failures\n", FILE_APPEND);
+            } else {
+                echo "✅ Login enabled\n";
+                Log::info('Login enabled');
+                file_put_contents($logFile, "[{$timestamp}] Login enabled successfully\n", FILE_APPEND);
+            }
             
         } catch (\Exception $e) {
             echo "❌ Failed to enable login: " . $e->getMessage() . "\n";
