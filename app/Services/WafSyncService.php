@@ -1717,7 +1717,7 @@ class WafSyncService
                         Log::warning("Could not verify AuthenticationAuthority for {$cleanUser}: " . $e->getMessage());
                     }
 
-                    $success = ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0) && !$authStillDisabled;
+                    $success = !$authStillDisabled && (($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0) || ($dsclClearExecuted && $dsclClearResult === 0));
                     if (!$success) {
                         Log::error("Critical failure: User {$cleanUser} may still be disabled (pwpolicy_code={$pwpolicyEnableResult}, dscl_code={$dsclClearResult}, auth_still_disabled=" . ($authStillDisabled ? 'yes' : 'no') . ").");
                         $failedUsers[] = $cleanUser;
