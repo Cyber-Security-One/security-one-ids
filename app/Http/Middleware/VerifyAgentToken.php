@@ -9,8 +9,16 @@ class VerifyAgentToken
 {
     public function handle(Request $request, Closure $next)
     {
-        $token = $request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken();
-        $agentToken = (string) config('ids.agent_token', env('AGENT_TOKEN'));
+        $token = $request->bearerToken();
+        if ($token === null || $token === '') {
+            $token = $request->header('X-Agent-Token');
+        }
+        if ($token === null || $token === '') {
+            $token = $request->input('token');
+        }
+
+        $agentTokenEnv = env('AGENT_TOKEN');
+        $agentToken = (string) ($agentTokenEnv !== null && $agentTokenEnv !== '' ? $agentTokenEnv : config('ids.agent_token', ''));
 
         // To prevent information leakage (e.g., revealing via different response times
         // or codes that the system is misconfigured), we enforce a generic 401 response
