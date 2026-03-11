@@ -1564,10 +1564,17 @@ class WafSyncService
                         $dsclDisableResult = $process1->getExitCode() ?? 1;
                         $outputStr = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$dsclDisableResult}, output={$outputStr}\n", FILE_APPEND);
+
+                        if (!$dsclDisableSuccess && (stripos($outputStr, 'password') !== false || stripos($outputStr, 'authentication') !== false)) {
+                            Log::error("Sudo authentication failure while disabling user {$cleanUser} via dscl: " . $outputStr);
+                        }
                     } catch (\Exception $e) {
                         $dsclDisableSuccess = false;
                         $dsclDisableResult = 1;
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        if (stripos($e->getMessage(), 'password') !== false || stripos($e->getMessage(), 'authentication') !== false) {
+                            Log::error("Sudo authentication failure while disabling user {$cleanUser} via dscl: " . $e->getMessage());
+                        }
                     }
 
                     if (!$dsclDisableSuccess) {
@@ -1578,11 +1585,19 @@ class WafSyncService
                             $process2->run();
                             $pwpolicyDisableSuccess = $process2->isSuccessful();
                             $pwpolicyDisableResult = $process2->getExitCode() ?? 1;
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$pwpolicyDisableResult}\n", FILE_APPEND);
+                            $outputStr = trim($process2->getOutput() . ' ' . $process2->getErrorOutput());
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$pwpolicyDisableResult}, output={$outputStr}\n", FILE_APPEND);
+
+                            if (!$pwpolicyDisableSuccess && (stripos($outputStr, 'password') !== false || stripos($outputStr, 'authentication') !== false)) {
+                                Log::error("Sudo authentication failure while disabling user {$cleanUser} via pwpolicy: " . $outputStr);
+                            }
                         } catch (\Exception $e) {
                             $pwpolicyDisableSuccess = false;
                             $pwpolicyDisableResult = 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                            if (stripos($e->getMessage(), 'password') !== false || stripos($e->getMessage(), 'authentication') !== false) {
+                                Log::error("Sudo authentication failure while disabling user {$cleanUser} via pwpolicy: " . $e->getMessage());
+                            }
                         }
                     }
 
@@ -1594,11 +1609,19 @@ class WafSyncService
                             $process3->run();
                             $dsclPasswdSuccess = $process3->isSuccessful();
                             $dsclPasswdResult = $process3->getExitCode() ?? 1;
-                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$dsclPasswdResult}\n", FILE_APPEND);
+                            $outputStr = trim($process3->getOutput() . ' ' . $process3->getErrorOutput());
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$dsclPasswdResult}, output={$outputStr}\n", FILE_APPEND);
+
+                            if (!$dsclPasswdSuccess && (stripos($outputStr, 'password') !== false || stripos($outputStr, 'authentication') !== false)) {
+                                Log::error("Sudo authentication failure while setting impossible password for {$cleanUser}: " . $outputStr);
+                            }
                         } catch (\Exception $e) {
                             $dsclPasswdSuccess = false;
                             $dsclPasswdResult = 1;
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
+                            if (stripos($e->getMessage(), 'password') !== false || stripos($e->getMessage(), 'authentication') !== false) {
+                                Log::error("Sudo authentication failure while setting impossible password for {$cleanUser}: " . $e->getMessage());
+                            }
                         }
                     }
 
@@ -1661,6 +1684,7 @@ class WafSyncService
                 $usersOutput = [];
                 exec("dscl . -list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root' 2>/dev/null", $usersOutput, $rc);
 
+                $failedUsers = [];
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user) continue;
@@ -1676,33 +1700,54 @@ class WafSyncService
 
                     // Remove DisabledUser from AuthenticationAuthority
                     try {
-                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                        $process1 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
                         $process1->setTimeout(60);
                         $process1->run();
                         $dsclClearExecuted = true;
                         $dsclClearResult = $process1->getExitCode() ?? 1;
+                        $outputStr = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$dsclClearResult}\n", FILE_APPEND);
+
+                        if ($dsclClearResult !== 0 && (stripos($outputStr, 'password') !== false || stripos($outputStr, 'authentication') !== false)) {
+                            Log::error("Sudo authentication failure while enabling user {$cleanUser} via dscl: " . $outputStr);
+                        }
                     } catch (\Exception $e) {
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        if (stripos($e->getMessage(), 'password') !== false || stripos($e->getMessage(), 'authentication') !== false) {
+                            Log::error("Sudo authentication failure while enabling user {$cleanUser} via dscl: " . $e->getMessage());
+                        }
                     }
 
                     // Re-enable with pwpolicy
                     try {
-                        $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                        $process2 = new SymfonyProcess(['sudo', '-n', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
                         $process2->setTimeout(60);
                         $process2->run();
                         $pwpolicyEnableExecuted = true;
                         $pwpolicyEnableResult = $process2->getExitCode() ?? 1;
+                        $outputStr = trim($process2->getOutput() . ' ' . $process2->getErrorOutput());
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$pwpolicyEnableResult}\n", FILE_APPEND);
+
+                        if ($pwpolicyEnableResult !== 0 && (stripos($outputStr, 'password') !== false || stripos($outputStr, 'authentication') !== false)) {
+                            Log::error("Sudo authentication failure while enabling user {$cleanUser} via pwpolicy: " . $outputStr);
+                        }
                     } catch (\Exception $e) {
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        if (stripos($e->getMessage(), 'password') !== false || stripos($e->getMessage(), 'authentication') !== false) {
+                            Log::error("Sudo authentication failure while enabling user {$cleanUser} via pwpolicy: " . $e->getMessage());
+                        }
                     }
 
                     $success = ($dsclClearExecuted && $dsclClearResult === 0) || ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0);
                     if (!$success) {
                         Log::error("Critical failure: Could not enable user {$cleanUser} via dscl or pwpolicy.");
-                        continue;
+                        $failedUsers[] = $cleanUser;
                     }
+                }
+
+                if (!empty($failedUsers)) {
+                    $failedUsersStr = implode(', ', $failedUsers);
+                    throw new \RuntimeException("Failed to completely enable macOS user login for the following users: {$failedUsersStr}.");
                 }
 
             } else {
