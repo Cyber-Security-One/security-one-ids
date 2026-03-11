@@ -338,7 +338,8 @@ class LogDiscoveryService
                     if (in_array($path, $configPaths, true) || in_array($realPath, $configPaths, true)) {
                         return true;
                     }
-                    $cachedPaths = $this->getCustomPaths();
+                    $cachedPaths = cache()->get('ids.custom_log_paths', []);
+                    $cachedPaths = is_array($cachedPaths) ? $cachedPaths : [];
 
                     // If it's already in the cache, we're good.
                     if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
@@ -359,7 +360,9 @@ class LogDiscoveryService
         }
 
         // Only after blocking for 5 seconds and failing, check if it was added concurrently
-        $cachedPaths = $this->getCustomPaths();
+        // Note: we avoid getCustomPaths() here so we don't accidentally execute a double-migration block attempt
+        $cachedPaths = cache()->get('ids.custom_log_paths', []);
+        $cachedPaths = is_array($cachedPaths) ? $cachedPaths : [];
         if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
             return true;
         }
