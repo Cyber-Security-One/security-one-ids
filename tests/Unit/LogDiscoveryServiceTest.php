@@ -1,29 +1,3 @@
-<?php
-
-namespace Tests\Unit;
-
-use App\Services\LogDiscoveryService;
-use Tests\TestCase;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Config;
-
-class LogDiscoveryServiceTest extends TestCase
-{
-    private LogDiscoveryService $service;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-        // Use the array driver to isolate cache state per test
-        config(['cache.default' => 'array']);
-        $this->service = app(LogDiscoveryService::class);
-    }
-
-    protected function tearDown(): void
-    {
-        parent::tearDown();
-    }
-
     public function test_add_custom_path_fails_when_path_not_readable(): void
     {
         $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'missing_' . uniqid();
@@ -51,7 +25,7 @@ class LogDiscoveryServiceTest extends TestCase
         $lockMock->shouldReceive('release');
 
         Cache::shouldReceive('lock')
-            ->with('lock::ids::custom_log_paths_add', 30)
+            ->with('lock::ids.custom_log_paths_add', 30)
             ->andReturn($lockMock);
 
         Cache::shouldReceive('get')
@@ -89,11 +63,12 @@ class LogDiscoveryServiceTest extends TestCase
         $lockMock->shouldReceive('release');
 
         Cache::shouldReceive('lock')
-            ->with('lock::ids::custom_log_paths_add', 30)
+            ->with('lock::ids.custom_log_paths_add', 30)
             ->andReturn($lockMock);
 
         Cache::shouldReceive('get')
             ->with('ids.custom_log_paths', [])
+
             ->andReturn([]);
 
         Cache::shouldReceive('forever')->never();
