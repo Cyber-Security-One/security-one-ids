@@ -1544,23 +1544,46 @@ class WafSyncService
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
-                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    // Method 1: Use dscl to disable user account
-                    // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $output = [];
-                    exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                $cleanUser = '';
+                if (preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $consoleUser)) {
+                    $cleanUser = $consoleUser;
+                }
+
+                if ($cleanUser && $cleanUser !== 'root' && $cleanUser !== '_mbsetupuser') {
+                    $sudoCheckCode = -1;
+                    exec('sudo -n true 2>/dev/null', $sudoOutput, $sudoCheckCode);
                     
-                    if ($returnCode !== 0) {
-                        // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
-                    }
-                    
-                    if ($returnCode !== 0) {
-                        // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                    if ($sudoCheckCode !== 0) {
+                        file_put_contents($logFile, "[{$timestamp}] Sudo access required to disable user\n", FILE_APPEND);
+                    } else {
+                        // Method 1: Use dscl to disable user account
+                        // The correct way is to set AuthenticationAuthority to DisabledUser
+                        $output1 = [];
+                        $returnCode1 = -1;
+                        $returnCode2 = -1;
+                        $returnCode3 = -1;
+                        $safeUser = escapeshellarg($cleanUser);
+                        exec("sudo -n dscl . -create /Users/{$safeUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output1, $returnCode1);
+
+                        if ($returnCode1 === 0) {
+                            file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} SUCCESS: code={$returnCode1}\n", FILE_APPEND);
+                        } else {
+                            file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} FAILED: error: [operation failed]\n", FILE_APPEND);
+                        }
+
+                        if ($returnCode1 !== 0) {
+                            // Method 2: Lock the user's password (they won't be able to login)
+                            $output2 = [];
+                            exec("sudo -n pwpolicy -u {$safeUser} disableuser 2>&1", $output2, $returnCode2);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode2}\n", FILE_APPEND);
+                        }
+
+                        if ($returnCode1 !== 0 && $returnCode2 !== 0) {
+                            // Method 3: Set an impossible password hash
+                            $output3 = [];
+                            exec("sudo -n dscl . -passwd /Users/{$safeUser} '*' 2>&1", $output3, $returnCode3);
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
+                        }
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1621,12 +1644,18 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
+                    if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $user)) {
+                        continue;
+                    }
+                    $safeUser = escapeshellarg($user);
+                    $output = [];
                     // Remove DisabledUser from AuthenticationAuthority
-                    exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
+                    exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
-                    exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
+                    $output = [];
+                    exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
                 }
                 
