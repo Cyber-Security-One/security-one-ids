@@ -327,17 +327,15 @@ $configPaths = config('ids.custom_log_paths', []);
      */
     public function getCustomPaths(): array
     {
-$paths = cache()->get('ids.custom_log_paths', []);
-
-        // Legacy keys to migrate from previous versions:
-        // 'ids_custom_log_paths' was the original key structure.
-        // 'ids::custom_log_paths' was briefly used before standardizing on dot notation.
-        $legacyKeys = ['ids_custom_log_paths', 'ids::custom_log_paths'];
-        $needsMigration = false;
+$newKey = 'ids::custom_log_paths';
 
         if (self::$migrated) {
-            return $paths;
+            return cache()->get($newKey, []);
         }
+
+        $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
+
+        $needsMigration = false;
         foreach ($legacyKeys as $legacyKey) {
             if (cache()->has($legacyKey)) {
                 $needsMigration = true;
@@ -379,10 +377,6 @@ try {
                 // Handle cache infrastructure failures gracefully
                 Log::warning('Failed to acquire cache lock or migrate legacy custom log paths: ' . $e->getMessage());
             }
-
-            self::$migrated = true;
-        } else {
-            self::$migrated = true;
         }
 
         return $paths;
