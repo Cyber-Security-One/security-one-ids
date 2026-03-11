@@ -12,9 +12,6 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-    public static bool $migrated = false;
-    private const LOCK_TIMEOUT = 30;
-
     /**
      * Common web server log file locations to scan
      */
@@ -317,7 +314,7 @@ class LogDiscoveryService
             return false;
         }
 
-$acquired = false;
+        $acquired = false;
         $delayMicroseconds = 10000; // 10ms
         $lock = null;
 
@@ -354,12 +351,6 @@ $acquired = false;
             if ($acquired && $lock) {
                 $lock->release();
             }
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
-            return false;
-        }
-                $lock->release();
-            }
         }
 
         return true;
@@ -370,7 +361,7 @@ $acquired = false;
      */
     public function getCustomPaths(): array
     {
-$hasLegacy1 = cache()->has('ids_custom_log_paths');
+        $hasLegacy1 = cache()->has('ids_custom_log_paths');
         $hasLegacy2 = cache()->has('ids.custom_log_paths');
 
         if ($hasLegacy1 || $hasLegacy2) {
@@ -394,7 +385,6 @@ $hasLegacy1 = cache()->has('ids_custom_log_paths');
 
             if ($acquired) {
                 try {
-                    // Double check after acquiring lock
                     $hasLegacy1 = cache()->has('ids_custom_log_paths');
                     $hasLegacy2 = cache()->has('ids.custom_log_paths');
 
@@ -410,7 +400,6 @@ $hasLegacy1 = cache()->has('ids_custom_log_paths');
                         if ($hasLegacy1) cache()->forget('ids_custom_log_paths');
                         if ($hasLegacy2) cache()->forget('ids.custom_log_paths');
 
-                        self::$migrated = true;
                         return $merged;
                     }
                 } finally {
@@ -421,14 +410,13 @@ $hasLegacy1 = cache()->has('ids_custom_log_paths');
             }
 
             // Fallback: Return merged state if lock acquisition failed but legacies exist
-            $legacyPaths1 = cache()->get('ids_custom_log_paths', []);
-            $legacyPaths2 = cache()->get('ids.custom_log_paths', []);
+            $legacyPaths1 = $hasLegacy1 ? cache()->get('ids_custom_log_paths', []) : [];
+            $legacyPaths2 = $hasLegacy2 ? cache()->get('ids.custom_log_paths', []) : [];
             $currentPaths = cache()->get('ids::custom_log_paths', []);
 
             return array_values(array_unique(array_merge($legacyPaths1, $legacyPaths2, $currentPaths)));
         }
 
-        self::$migrated = true;
         return cache()->get('ids::custom_log_paths', []);
     }
 
