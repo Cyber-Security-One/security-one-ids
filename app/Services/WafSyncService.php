@@ -1543,47 +1543,45 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
+                $sanitizedUser = preg_replace('/[\r\n]+/', ' ', $user);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$sanitizedUser}\n", FILE_APPEND);
                 
-                if ($cleanUser && preg_match('/^[a-zA-Z0-9_]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
+                if ($sanitizedUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $sanitizedUser) && $sanitizedUser !== 'root' && $sanitizedUser !== 'daemon' && $sanitizedUser !== 'nobody' && $sanitizedUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $returnCode1 = -1;
                     $returnCode2 = -1;
                     $returnCode3 = -1;
                     try {
-                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
+                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $sanitizedUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $process1->setTimeout(60);
                         $process1->run();
                         $returnCode1 = $process1->getExitCode() ?? 1;
                         $outputStr = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$sanitizedUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
                     } catch (\Exception $e) {
                         $returnCode1 = 1;
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
-                        throw $e;
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
                     if ($returnCode1 !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         try {
-                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
+                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $sanitizedUser, 'disableuser']);
                             $process2->setTimeout(60);
                             $process2->run();
                             $returnCode2 = $process2->getExitCode() ?? 1;
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$sanitizedUser}: code={$returnCode2}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $returnCode2 = 1;
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
-                            throw $e;
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                     }
                     
                     if ($returnCode2 !== -1 && $returnCode2 !== 0) {
                         // Method 3: Set an impossible password hash
                         try {
-                            $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                            $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $sanitizedUser, '*']);
                             $process3->setTimeout(60);
                             $process3->run();
                             $returnCode3 = $process3->getExitCode() ?? 1;
@@ -1591,12 +1589,11 @@ class WafSyncService
                         } catch (\Exception $e) {
                             $returnCode3 = 1;
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
-                            throw $e;
                         }
                     }
 
                     if ($returnCode1 !== 0 && $returnCode2 !== 0 && $returnCode3 !== 0) {
-                        throw new \RuntimeException("All methods failed to disable user {$cleanUser}");
+                        throw new \RuntimeException("All methods failed to disable user {$sanitizedUser}");
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1659,9 +1656,13 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
-                    $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+                    $sanitizedUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
 
-                    if (!preg_match('/^[a-zA-Z0-9_]+$/', $cleanUser)) continue;
+                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $sanitizedUser)) {
+                        file_put_contents($logFile, "[{$timestamp}] Skip invalid username format: {$sanitizedUser}\n", FILE_APPEND);
+                        $overallSuccess = false;
+                        continue;
+                    }
 
                     // Remove DisabledUser from AuthenticationAuthority
                     $returnCode1 = -1;
@@ -1670,19 +1671,18 @@ class WafSyncService
                         $attempts1++;
                         $hasException = false;
                         try {
-                            $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                            $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $sanitizedUser, 'AuthenticationAuthority']);
                             $process1->setTimeout(60);
                             $process1->run();
                             $returnCode1 = $process1->getExitCode() ?? 1;
                             if ($returnCode1 !== 0 && strpos($process1->getErrorOutput(), 'eDSNoSuchKey') !== false) {
                                 $returnCode1 = 0;
                             }
-                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser}: code={$returnCode1}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $hasException = true;
                             $returnCode1 = 1;
-                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
-                            throw $e;
+                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                         if ($returnCode1 !== 0 && $attempts1 < 3) sleep(1);
                     }
@@ -1693,15 +1693,14 @@ class WafSyncService
                     while ($returnCode2 !== 0 && $attempts2 < 3) {
                         $attempts2++;
                         try {
-                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $sanitizedUser, 'enableuser']);
                             $process2->setTimeout(60);
                             $process2->run();
                             $returnCode2 = $process2->getExitCode() ?? 1;
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$sanitizedUser}: code={$returnCode2}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $returnCode2 = 1;
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
-                            throw $e;
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                         if ($returnCode2 !== 0 && $attempts2 < 3) sleep(1);
                     }
