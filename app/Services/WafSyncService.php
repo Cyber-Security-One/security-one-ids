@@ -1537,7 +1537,8 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-// Safely log the console user without CRLF injection
+
+                // Safely log the console user without CRLF injection
                 $logSafeConsoleUser = (string) preg_replace('/[\r\n]+/', ' ', $consoleUser);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$logSafeConsoleUser}\n", FILE_APPEND);
 
@@ -1566,8 +1567,6 @@ class WafSyncService
                                 file_put_contents($logFile, "[{$timestamp}] dscl set impossible password {$logSafeConsoleUser}: code={$returnCode}\n", FILE_APPEND);
                             }
                         }
-                    }
-                }
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1626,9 +1625,9 @@ class WafSyncService
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+                    if (!$user) continue;
 
-// Allow alphanumeric, underscore, hyphen, and period (standard macOS username format)
+                    // Allow alphanumeric, underscore, hyphen, and period (standard macOS username format)
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
                         $logSafeUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
                         file_put_contents($logFile, "[{$timestamp}] Invalid user format: {$logSafeUser}, skipping enable operation\n", FILE_APPEND);
@@ -2895,7 +2894,7 @@ class WafSyncService
     /**
      * Get CA certificate path for Windows SSL verification
      *
-* @throws \RuntimeException
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
     protected function getCaCertPath(): string
     {
@@ -2936,7 +2935,7 @@ class WafSyncService
         }
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
-throw new \RuntimeException("CA certificate bundle missing: {$bundledPath}");
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
