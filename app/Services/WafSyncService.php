@@ -1545,25 +1545,23 @@ class WafSyncService
                 $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
                 
-                if ($user && $user !== 'root' && $user !== '_mbsetupuser' && preg_match('/^[a-zA-Z0-9._-]+$/', $user)) {
+                if ($user && $user !== 'root' && $user !== '_mbsetupuser') {
+                    $escapedUser = escapeshellarg($user);
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $process = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $user, 'AuthenticationAuthority', ';DisabledUser;']);
-                    $returnCode = $process->exitCode();
-                    $outputStr = trim($process->output() . ' ' . $process->errorOutput());
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode}, output={$outputStr}\n", FILE_APPEND);
+                    $output = [];
+                    exec("sudo dscl . -create /Users/{$escapedUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
                     
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
-                        $process = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $user, 'disableuser']);
-                        $returnCode = $process->exitCode();
+                        exec("sudo pwpolicy -u {$escapedUser} disableuser 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
                     }
                     
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
-                        $process = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $user, '*']);
-                        $returnCode = $process->exitCode();
+                        exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
                     }
                 } else {
@@ -1623,18 +1621,17 @@ class WafSyncService
                 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9._-]+$/', $user)) continue;
+                    if (!$user) continue;
                     
-                    $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+                    $escapedUser = escapeshellarg($user);
+                    $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
 
                     // Remove DisabledUser from AuthenticationAuthority
-                    $process = Process::timeout(60)->run(['sudo', 'dscl', '.', '-delete', '/Users/' . $user, 'AuthenticationAuthority']);
-                    $returnCode = $process->exitCode();
+                    exec("sudo dscl . -delete /Users/{$escapedUser} AuthenticationAuthority 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
-                    $process = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $user, 'enableuser']);
-                    $returnCode = $process->exitCode();
+                    exec("sudo pwpolicy -u {$escapedUser} enableuser 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode}\n", FILE_APPEND);
                 }
                 
