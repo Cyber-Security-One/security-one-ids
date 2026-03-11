@@ -1543,15 +1543,17 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                $cleanUser = preg_replace('/[^a-zA-Z0-9._-]/', '', $user);
-                
-                if (empty($cleanUser)) {
-                    // Do not continue to avoid executing invalid commands
-                } else {
+                $cleanUser = $user;
+                if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) {
+                    file_put_contents($logFile, "[{$timestamp}] Invalid console user skipped: {$user}\n", FILE_APPEND);
+                    $cleanUser = '';
+                }
+
+                if (!empty($cleanUser)) {
                     file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
                 }
 
-                if (!empty($cleanUser) && preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
+                if (!empty($cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
                     $dsclDisableExecuted = false;
                     $dsclDisableResult = null;
                     $pwpolicyDisableExecuted = false;
@@ -1661,9 +1663,11 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
-                    $cleanUser = (string) preg_replace('/[^a-zA-Z0-9._-]/', '', $user);
-
-                    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) continue;
+                    $cleanUser = $user;
+                    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) {
+                        file_put_contents($logFile, "[{$timestamp}] Invalid user skipped during enable: {$user}\n", FILE_APPEND);
+                        continue;
+                    }
 
                     $dsclClearExecuted = false;
                     $dsclClearResult = null;
