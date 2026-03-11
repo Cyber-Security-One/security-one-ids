@@ -1033,6 +1033,8 @@ YAML;
         };
     }
 
+
+
     private function detectLinuxDistro(): string
     {
         if (!file_exists('/etc/os-release')) {
