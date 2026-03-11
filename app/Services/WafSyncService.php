@@ -1603,9 +1603,15 @@ class WafSyncService
                             }
 
                             if ($dsclPasswdResult !== 0) {
-                                Log::error("Critical failure: All 3 methods failed to disable user {$cleanUser}");
-                                file_put_contents($logFile, "[{$timestamp}] Critical failure: All 3 methods failed to disable user {$cleanUser}\n", FILE_APPEND);
-                                throw new \RuntimeException("Failed to disable macOS user {$cleanUser} via all available methods.");
+                                $methodsFailed = [];
+                                if ($method1Failed) $methodsFailed[] = "dscl create (code {$dsclDisableResult})";
+                                if ($method2Failed) $methodsFailed[] = "pwpolicy disableuser (code {$pwpolicyDisableResult})";
+                                $methodsFailed[] = "dscl passwd (code {$dsclPasswdResult})";
+                                $failureDetails = implode(', ', $methodsFailed);
+
+                                Log::error("Critical failure: All 3 methods failed to disable user {$cleanUser}. Details: {$failureDetails}");
+                                file_put_contents($logFile, "[{$timestamp}] Critical failure: All 3 methods failed to disable user {$cleanUser}. Details: {$failureDetails}\n", FILE_APPEND);
+                                throw new \RuntimeException("Failed to disable macOS user {$cleanUser} via all available methods. Details: {$failureDetails}");
                             }
                         }
                     }
@@ -1671,7 +1677,7 @@ class WafSyncService
                     if (!$user) continue;
                     
                     $cleanUser = $user;
-                    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) {
+                    if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) {
                         file_put_contents($logFile, "[{$timestamp}] Invalid user skipped during enable: {$user}\n", FILE_APPEND);
                         continue;
                     }
@@ -1688,6 +1694,13 @@ class WafSyncService
                         $process1->run();
                         $dsclClearExecuted = true;
                         $dsclClearResult = $process1->getExitCode() ?? 1;
+
+                        $outputStr = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
+                        // If it errors specifically because the key doesn't exist ("No such key"), consider it a success.
+                        if ($dsclClearResult !== 0 && stripos($outputStr, 'No such key') !== false) {
+                            $dsclClearResult = 0;
+                        }
+
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$dsclClearResult}\n", FILE_APPEND);
                     } catch (\Exception $e) {
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
