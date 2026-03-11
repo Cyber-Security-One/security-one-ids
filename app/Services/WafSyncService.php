@@ -1670,6 +1670,8 @@ class WafSyncService
                     if (!preg_match('/^[a-zA-Z0-9_.\-]+$/', $cleanUser)) continue;
 
                     // Remove DisabledUser from AuthenticationAuthority
+                    // Retry up to 3 times with 1-second delay to handle transient directory service locks.
+                    // $returnCode1 is initialized to -1 to represent 'not run' vs 0 (success) and >0 (failure).
                     $returnCode1 = -1;
                     $attempts1 = 0;
                     while ($returnCode1 !== 0 && $attempts1 < 3) {
@@ -1694,6 +1696,8 @@ class WafSyncService
                     }
                     
                     // Re-enable with pwpolicy  
+                    // Retry up to 3 times with 1-second delay to handle transient directory service locks.
+                    // $returnCode2 is initialized to -1 to represent 'not run' vs 0 (success) and >0 (failure).
                     $returnCode2 = -1;
                     $attempts2 = 0;
                     while ($returnCode2 !== 0 && $attempts2 < 3) {
