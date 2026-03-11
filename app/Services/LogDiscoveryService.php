@@ -309,7 +309,7 @@ class LogDiscoveryService
             return false;
         }
 
-$lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
+        $lock = cache()->lock('lock::ids.custom_log_paths_add', self::LOCK_TIMEOUT);
         $acquired = false;
         $delayMicroseconds = 10000;
 
@@ -323,11 +323,15 @@ $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
             }
 
             if ($acquired) {
-                $customPaths = config('ids.custom_log_paths', []);
-                if (!in_array($path, $customPaths)) {
-                    $customPaths[] = $path;
-                    // Store in cache for persistence
-                    cache()->forever('ids::custom_log_paths', $customPaths);
+                $cachedPaths = $this->getCustomPaths();
+                $configPaths = config('ids.custom_log_paths', []);
+
+                $allPaths = array_values(array_unique(array_merge($cachedPaths, $configPaths)));
+
+                if (!in_array($path, $allPaths, true)) {
+                    $cachedPaths[] = $path;
+                    $cachedPaths = array_values(array_unique($cachedPaths));
+                    cache()->forever('ids.custom_log_paths', $cachedPaths);
                 }
             } else {
                 return false;
@@ -349,15 +353,85 @@ $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
      */
     public function getCustomPaths(): array
     {
-// Migrate legacy key if it exists
-        if (cache()->has('ids_custom_log_paths')) {
-            $legacyPaths = cache()->pull('ids_custom_log_paths');
-            if (is_array($legacyPaths)) {
-                $currentPaths = cache()->get('ids.custom_log_paths', []);
-                cache()->forever('ids.custom_log_paths', array_values(array_unique(array_merge($currentPaths, $legacyPaths))));
+        $newKey = 'ids.custom_log_paths';
+
+        if (self::$migrated) {
+            return cache()->get($newKey, []);
+        }
+
+        // We check for legacy keys to migrate. But 'ids.custom_log_paths' cannot be a legacy key if it's the new key!
+        // Originally this code was migrating to ids::custom_log_paths from ids.custom_log_paths
+        $legacyKeys = ['ids_custom_log_paths'];
+
+        $needsMigration = false;
+        foreach ($legacyKeys as $legacyKey) {
+            if (cache()->has($legacyKey)) {
+                $needsMigration = true;
+                break;
             }
         }
-        return cache()->get('ids.custom_log_paths', []);
+
+        if ($needsMigration) {
+            $lock = cache()->lock('lock::ids.custom_log_paths_migrate', self::LOCK_TIMEOUT);
+            $acquired = false;
+            $delayMicroseconds = 10000;
+
+            try {
+                for ($i = 0; $i < 10; $i++) {
+                    if ($acquired = $lock->get()) {
+                        break;
+                    }
+                    usleep($delayMicroseconds);
+                    $delayMicroseconds = min($delayMicroseconds * 2, 100000);
+                }
+
+                if ($acquired) {
+                    // Double check
+                    $needsMigration = false;
+                    foreach ($legacyKeys as $legacyKey) {
+                        if (cache()->has($legacyKey)) {
+                            $needsMigration = true;
+                            break;
+                        }
+                    }
+
+                    if ($needsMigration) {
+                        $merged = cache()->get($newKey, []);
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $legacyData = cache()->get($legacyKey, []);
+                                if (is_array($legacyData)) {
+                                    $merged = array_merge($merged, $legacyData);
+                                }
+                            }
+                        }
+
+                        // Remove static config values from cache
+                        $configPaths = config('ids.custom_log_paths', []);
+                        $merged = array_diff($merged, $configPaths);
+
+                        $merged = array_values(array_unique($merged));
+                        cache()->forever($newKey, $merged);
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            cache()->forget($legacyKey);
+                        }
+                    }
+                    self::$migrated = true;
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Failed to migrate custom paths: " . $e->getMessage());
+            } finally {
+                if ($acquired) {
+                    $lock->release();
+                }
+            }
+        } else {
+            self::$migrated = true;
+        }
+
+        return cache()->get($newKey, []);
     }
 
     /**
