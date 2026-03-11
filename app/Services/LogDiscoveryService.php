@@ -306,11 +306,53 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $configPaths = config('ids.custom_log_paths', []);
+
+        // If it's already in the config, no need to cache
+        if (in_array($path, $configPaths, true)) {
+            return true;
+        }
+
+        $lock = cache()->lock('lock.ids.custom_log_paths', 10);
+        $maxRetries = 5;
+        $retryDelay = 100000; // 100ms
+        $acquired = false;
+
+        for ($i = 0; $i < $maxRetries; $i++) {
+            try {
+                if ($lock->get()) {
+                    $acquired = true;
+                    try {
+                        $cachedPaths = $this->getCustomPaths();
+
+                        if (!in_array($path, $cachedPaths, true)) {
+                            $cachedPaths[] = $path;
+
+                            // Clean up array keys just in case and deduplicate paths
+                            $pathsToCache = array_values(array_unique($cachedPaths));
+
+                            // Store in cache for persistence
+                            cache()->forever('ids.custom_log_paths', $pathsToCache);
+                        }
+                        return true;
+                    } finally {
+                        $lock->release();
+                    }
+                }
+            } catch (\Exception $e) {
+                // If a cache error happens during lock or cache read/write, log it and try again
+                Log::warning('Cache exception in addCustomPath lock: ' . $e->getMessage());
+                $acquired = false;
+            }
+
+            usleep($retryDelay);
+            $retryDelay *= 2; // Exponential backoff
+        }
+
+        // Fallback: check if another process succeeded while we failed to get the lock or if an exception occurred
+        $cachedPaths = $this->getCustomPaths();
+        if (!in_array($path, $cachedPaths, true)) {
+            return false;
         }
 
         return true;
@@ -321,7 +363,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
