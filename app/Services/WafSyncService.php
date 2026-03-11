@@ -59,9 +59,14 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            $http = $http->withOptions([
-                'verify' => $cacertPath,
-            ]);
+            if ($cacertPath) {
+                $http = $http->withOptions([
+                    'verify' => $cacertPath,
+                ]);
+            } else {
+                // No cacert.pem found — disable SSL verification as fallback
+                $http = $http->withoutVerifying();
+            }
         }
 
         return $http;
@@ -1537,10 +1542,15 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
 
-if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                    // Validate username format to prevent shell injection
+                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
+                        file_put_contents($logFile, "[{$timestamp}] Invalid console user name: {$consoleUser}\n", FILE_APPEND);
+                        return;
+                    }
+
                     $escapedUser = escapeshellarg($consoleUser);
 
                     // Method 1: Use dscl to disable user account
@@ -1558,7 +1568,7 @@ if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') 
 
                     if ($returnCode !== 0 && (isset($returnCode2) && $returnCode2 !== 0)) {
                         // Method 3: Set an impossible password hash
-exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3);
+                        exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
                     }
                 } else {
@@ -1618,9 +1628,9 @@ exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+                    if (!$user) continue;
 
-// Verify the user actually exists using POSIX functions if available
+                    // Verify the user actually exists using POSIX functions if available
                     if (function_exists('posix_getpwnam') && !posix_getpwnam($user)) {
                          Log::warning('User does not exist: ' . $user);
                          file_put_contents($logFile, "[{$timestamp}] User does not exist: {$user}\n", FILE_APPEND);
@@ -2883,10 +2893,8 @@ exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3
 
     /**
      * Get CA certificate path for Windows SSL verification
-     *
-     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): string
+    protected function getCaCertPath(): ?string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2917,15 +2925,31 @@ exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3
             }
         }
 
-        // If not found, use bundled certificate
-        $bundledPath = base_path('resources/certs/cacert.pem');
-        if (file_exists($bundledPath)) {
-            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
-            return $bundledPath;
+        // If not found, try to download it
+        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
+        if (!file_exists($downloadPath)) {
+            try {
+                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
+                $context = stream_context_create([
+                    'ssl' => [
+                        'verify_peer' => false,
+                        'verify_peer_name' => false,
+                    ],
+                ]);
+                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
+                if ($cacert) {
+                    file_put_contents($downloadPath, $cacert);
+                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
+                    return $downloadPath;
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
+            }
+        } elseif (file_exists($downloadPath)) {
+            return $downloadPath;
         }
 
-        Log::error('CA certificate bundle missing: ' . $bundledPath);
-        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+        return null;
     }
 
     /**
