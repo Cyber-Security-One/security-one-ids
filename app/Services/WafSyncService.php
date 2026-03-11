@@ -1561,7 +1561,8 @@ class WafSyncService
                         $process1->setTimeout(60);
                         $process1->run();
                         $returnCode1 = $process1->getExitCode() ?? 1;
-                        $outputStr = htmlspecialchars(trim($process1->getOutput() . ' ' . $process1->getErrorOutput()));
+                        $outputRaw = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
+                        $outputStr = htmlspecialchars((string) preg_replace('/[\r\n\t]+/', ' ', $outputRaw), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$sanitizedUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
                     } catch (\Exception $e) {
                         $returnCode1 = 1;
@@ -1668,10 +1669,18 @@ class WafSyncService
                         continue;
                     }
 
-                    exec("dscl . -read /Users/{$sanitizedUser} 2>&1", $userExistsOut, $userExistsCode);
+                    $userExistsProcess = new SymfonyProcess(['dscl', '.', '-read', '/Users/' . $sanitizedUser]);
+                    $userExistsProcess->setTimeout(30);
+                    $userExistsProcess->run();
+                    $userExistsCode = $userExistsProcess->getExitCode() ?? 1;
                     if ($userExistsCode !== 0) {
-                        file_put_contents($logFile, "[{$timestamp}] Skip non-existent user: {$sanitizedUser}\n", FILE_APPEND);
-                        continue;
+                        $userExistsErr = $userExistsProcess->getErrorOutput() . $userExistsProcess->getOutput();
+                        if (strpos($userExistsErr, 'eDSRecordNotFound') !== false) {
+                            file_put_contents($logFile, "[{$timestamp}] Skip non-existent user: {$sanitizedUser}\n", FILE_APPEND);
+                            $overallSuccess = false;
+                            continue;
+                        }
+                        throw new \RuntimeException("Failed to verify user {$sanitizedUser}: " . trim($userExistsErr));
                     }
 
                     // Remove DisabledUser from AuthenticationAuthority
