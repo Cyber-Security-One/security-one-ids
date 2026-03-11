@@ -1,3 +1,8 @@
+## 2024-05-15 - [Fixed: Disabled SSL Peer Verification for Downloads]
+**Vulnerability:** SSL peer verification was explicitly disabled (`'verify_peer' => false`, `'verify_peer_name' => false`) in stream context creation when downloading the CA certificate bundle (`cacert.pem`) in `ClamavService` and `WafSyncService`. This allows Man-in-the-Middle (MitM) attacks.
+**Learning:** Disabling SSL verification to bootstrap trust (downloading a CA bundle to establish secure connections) creates a Catch-22 and exposes the application to MitM attacks where a malicious CA bundle could be injected.
+**Prevention:** Bundle a known-good CA certificate bundle within the application repository itself rather than attempting to download it insecurely at runtime. When the certificate is missing, "fail closed" (throw an exception) instead of falling back to disabling TLS verification. Note: The bundled `resources/certs/cacert.pem` should be updated periodically from the official source (`https://curl.se/ca/cacert.pem`) to ensure trust stores remain current.
+
 ## 2024-05-15 - [Unauthenticated Endpoints Executing Shell Commands]
 **Vulnerability:** Several endpoints in `routes/api.php` (`/api/system/update`, `/api/system/version`, `/api/system/restart`, `/api/rules/update`) exposed functionality to trigger OS-level commands (like `git pull` or `supervisorctl restart all`) completely unauthenticated. Authentication was only applied inline within one specific route (`/api/settings/sync`).
 **Learning:** Due to a lack of shared middleware for the `api` route group, new API endpoints were added sequentially without considering global authentication. Security logic was duplicated and omitted on dangerous operational endpoints.
