@@ -1568,7 +1568,6 @@ class WafSyncService
                     }
 
                     $method1Failed = !$dsclDisableExecuted || $dsclDisableResult !== 0;
-
                     if ($method1Failed) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         try {
@@ -1583,9 +1582,8 @@ class WafSyncService
                         }
                     }
 
-                    $method2Failed = !$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0;
-
-                    if ($method1Failed && $method2Failed) {
+                    $method2Failed = $method1Failed && (!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0);
+                    if ($method2Failed) {
                         // Method 3: Set an impossible password hash
                         try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
@@ -1596,6 +1594,11 @@ class WafSyncService
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
+                    }
+
+                    $method3Failed = $method2Failed && $dsclPasswdResult !== 0;
+                    if ($method3Failed) {
+                        Log::error("Critical failure: Could not disable user {$cleanUser} via any method.");
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
