@@ -306,14 +306,43 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $configPaths = config('ids.custom_log_paths', []);
+
+        // If it's already in the config, no need to cache
+        if (in_array($path, $configPaths, true)) {
+            return true;
         }
 
-        return true;
+        try {
+            $lock = cache()->lock('lock.ids.custom_log_paths', 10);
+
+            // Block for up to 5 seconds waiting for the lock
+            $lock->block(5, function () use ($path) {
+                $cachedPaths = $this->getCustomPaths();
+
+                if (!in_array($path, $cachedPaths, true)) {
+                    $cachedPaths[] = $path;
+
+                    // Clean up array keys just in case and deduplicate paths
+                    $pathsToCache = array_values(array_unique($cachedPaths));
+
+                    // Store in cache for persistence
+                    cache()->forever('ids.custom_log_paths', $pathsToCache);
+                }
+            });
+
+            return true;
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            // Check if it was added by another process while waiting
+            $cachedPaths = $this->getCustomPaths();
+            if (!in_array($path, $cachedPaths, true)) {
+                Log::warning("Failed to acquire lock for custom log path: {$path}");
+            }
+            return true;
+        } catch (\Exception $e) {
+            Log::error("Exception occurred while caching custom log path: " . $e->getMessage());
+            return false;
+        }
     }
 
     /**
@@ -321,7 +350,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
