@@ -1544,10 +1544,7 @@ class WafSyncService
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
-                $cleanUser = '';
-                if (preg_match('/^[a-zA-Z0-9._-]+$/', $consoleUser) === 1) {
-                    $cleanUser = $consoleUser;
-                }
+                $cleanUser = preg_replace('/[^a-zA-Z0-9._-]/', '', $consoleUser);
 
                 if ($cleanUser && $cleanUser !== 'root' && $cleanUser !== '_mbsetupuser') {
                     $sudoCheckCode = -1;
