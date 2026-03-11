@@ -12,9 +12,6 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-    public static bool $migrated = false;
-    private const LOCK_TIMEOUT = 30;
-
     /**
      * Allowed base directories for custom log paths
      */
@@ -323,7 +320,7 @@ class LogDiscoveryService
             return false;
         }
 
-$allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', self::ALLOWED_BASE_DIRS);
+        $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', self::ALLOWED_BASE_DIRS);
         if (!is_array($allowedBaseDirs) || empty($allowedBaseDirs)) {
             $allowedBaseDirs = self::ALLOWED_BASE_DIRS;
         }
@@ -373,9 +370,6 @@ $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', self::ALLOWED_BASE
             return true;
         }
 
-        return false;
-        }
-
         Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
         return false;
     }
@@ -406,7 +400,7 @@ $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', self::ALLOWED_BASE
      */
     public function getCustomPaths(): array
     {
-// Handle backward compatibility for old cache key
+        // Handle backward compatibility for old cache key
         $legacyPaths = cache()->pull('ids_custom_log_paths');
 
         if ($legacyPaths !== null) {
