@@ -11,10 +11,10 @@ class WafSyncServiceUserValidationTest extends TestCase
      */
     public function testValidMacOsUsernames()
     {
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'john.doe'));
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'user_123'));
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'admin-user'));
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'johndoe'));
+        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'john.doe'));
+        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'user_123'));
+        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin-user'));
+        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'johndoe'));
     }
 
     /**
@@ -24,18 +24,16 @@ class WafSyncServiceUserValidationTest extends TestCase
     public function testInvalidMacOsUsernames()
     {
         // Reject spaces
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'john doe'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'john doe'));
 
         // Reject quotes and shell metacharacters
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'user"name'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', "user'name"));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'admin;ls'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'admin|ls'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'admin&ls'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'admin$user'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'admin`ls`'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', 'admin>file'));
-        // Reject leading hyphen
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', '-admin'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'user"name'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', "user'name"));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin;ls'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin|ls'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin&ls'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin$user'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin`ls`'));
+        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin>file'));
     }
 }

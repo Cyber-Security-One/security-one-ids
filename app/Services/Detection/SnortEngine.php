@@ -5,6 +5,7 @@ namespace App\Services\Detection;
 use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use App\Traits\DetectsPlatform;
 
 /**
  * Snort 3 IPS Detection Engine
@@ -14,11 +15,8 @@ use Illuminate\Support\Facades\Process;
  */
 class SnortEngine
 {
-<<<<<<< HEAD
-=======
     use DetectsPlatform;
 
->>>>>>> origin/main
     private string $snortPath;
     private string $configPath;
     private string $alertLogPath;
@@ -1742,7 +1740,6 @@ LUA;
         return null;
     }
 
->>>>>>> origin/main
     /**
      * Fix log directory permissions so non-root PHP agent can read alert files.
      * Snort runs as root (needed for pcap), creating root-owned files.

@@ -5,6 +5,7 @@ namespace App\Services\Detection;
 use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use App\Traits\DetectsPlatform;
 
 /**
  * Suricata IDS/IPS Detection Engine
@@ -15,11 +16,8 @@ use Illuminate\Support\Facades\Process;
  */
 class SuricataEngine
 {
-<<<<<<< HEAD
-=======
     use DetectsPlatform;
 
->>>>>>> origin/main
     private string $suricataPath;
     private string $configPath;
     private string $alertLogPath;
@@ -1036,7 +1034,6 @@ YAML;
         };
     }
 
->>>>>>> origin/main
     private function detectLinuxDistro(): string
     {
         if (!file_exists('/etc/os-release')) {
