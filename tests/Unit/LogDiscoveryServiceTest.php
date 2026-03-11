@@ -57,7 +57,7 @@ class LogDiscoveryServiceTest extends TestCase
             $this->assertTrue($result);
 
             // Verify the actual cache state
-            $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
+            $this->assertEquals([realpath($tempPath)], cache()->get('ids.custom_log_paths'));
         } finally {
             // Clean up
             if (file_exists($tempPath)) {
