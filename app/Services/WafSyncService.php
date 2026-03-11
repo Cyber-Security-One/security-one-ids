@@ -1710,6 +1710,7 @@ class WafSyncService
                 if (!empty($failedUsers)) {
                     $failedList = implode(', ', $failedUsers);
                     Log::error("ALERT: The following critical users could not be re-enabled: {$failedList}. Administrator intervention required.");
+                    throw new \RuntimeException("Enable login partially failed for users: {$failedList}");
                 }
                 
             } else {
