@@ -1545,6 +1545,7 @@ class WafSyncService
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                    // Prevent OS command injection attacks by escaping the user input
                     $safeConsoleUser = escapeshellarg($consoleUser);
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
@@ -1622,6 +1623,7 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
+                    // Prevent OS command injection attacks by escaping the user input
                     $safeUser = escapeshellarg($user);
 
                     // Remove DisabledUser from AuthenticationAuthority
