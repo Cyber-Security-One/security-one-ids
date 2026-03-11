@@ -13,9 +13,9 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-private const LOCK_TIMEOUT = 5;
-        private const LOCK_BLOCK_SECONDS = 3;
-        private const MAX_RETRIES = 3;
+    private const LOCK_TIMEOUT = 5;
+    private const LOCK_BLOCK_SECONDS = 3;
+    private const MAX_RETRIES = 3;
 
     /**
      * Common web server log file locations to scan
@@ -311,40 +311,39 @@ private const LOCK_TIMEOUT = 5;
             return false;
         }
 
-$attempts = 0;
+        $attempts = 0;
 
-            while ($attempts < self::MAX_RETRIES) {
-                try {
-                    return Cache::lock('add_custom_path_lock', self::LOCK_TIMEOUT)->block(self::LOCK_BLOCK_SECONDS, function () use ($path) {
-                        $cachedPaths = $this->getCustomPaths();
+        while ($attempts < self::MAX_RETRIES) {
+            try {
+                return Cache::lock('add_custom_path_lock', self::LOCK_TIMEOUT)->block(self::LOCK_BLOCK_SECONDS, function () use ($path) {
+                    $cachedPaths = $this->getCustomPaths();
 
-                        if (!in_array($path, $cachedPaths, true)) {
-                            $cachedPaths[] = $path;
-                            // Store in cache for persistence
-                            cache()->forever('ids.custom_log_paths', $cachedPaths);
-                        }
-
-                        return true;
-                    });
-                } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-                    $attempts++;
-                    if ($attempts >= self::MAX_RETRIES) {
-                        Log::warning('Failed to acquire lock when adding custom log path after retries', [
-                            'path' => $path,
-                            'error' => $e->getMessage(),
-                        ]);
-                        return false;
+                    if (!in_array($path, $cachedPaths, true)) {
+                        $cachedPaths[] = $path;
+                        // Store in cache for persistence
+                        cache()->forever('ids.custom_log_paths', $cachedPaths);
                     }
 
-                    // Exponential backoff
-                    usleep((2 ** $attempts) * 100000); // 200ms, 400ms...
-                } catch (\Exception $e) {
-                    Log::warning('Unexpected cache error when adding custom log path', [
+                    return true;
+                });
+            } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+                $attempts++;
+                if ($attempts >= self::MAX_RETRIES) {
+                    Log::warning('Failed to acquire lock when adding custom log path after retries', [
                         'path' => $path,
                         'error' => $e->getMessage(),
                     ]);
                     return false;
                 }
+
+                // Exponential backoff
+                usleep((2 ** $attempts) * 100000); // 200ms, 400ms...
+            } catch (\Exception $e) {
+                Log::warning('Unexpected cache error when adding custom log path', [
+                    'path' => $path,
+                    'error' => $e->getMessage(),
+                ]);
+                return false;
             }
         }
 
@@ -356,24 +355,24 @@ $attempts = 0;
      */
     public function getCustomPaths(): array
     {
-// Check new key first
-            $paths = cache()->get('ids.custom_log_paths');
+        // Check new key first
+        $paths = cache()->get('ids.custom_log_paths');
 
-            if ($paths !== null) {
-                return $paths;
-            }
+        if ($paths !== null) {
+            return $paths;
+        }
 
-            // Fallback to old key, migrate if present
-            $oldPaths = cache()->get('ids_custom_log_paths');
+        // Fallback to old key, migrate if present
+        $oldPaths = cache()->get('ids_custom_log_paths');
 
-            if ($oldPaths !== null) {
-                Log::warning('Migrating legacy cache key ids_custom_log_paths to ids.custom_log_paths');
-                cache()->forever('ids.custom_log_paths', $oldPaths);
-                cache()->forget('ids_custom_log_paths');
-                return $oldPaths;
-            }
+        if ($oldPaths !== null) {
+            Log::warning('Migrating legacy cache key ids_custom_log_paths to ids.custom_log_paths');
+            cache()->forever('ids.custom_log_paths', $oldPaths);
+            cache()->forget('ids_custom_log_paths');
+            return $oldPaths;
+        }
 
-            return [];
+        return [];
     }
 
     /**
