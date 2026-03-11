@@ -1551,6 +1551,7 @@ class WafSyncService
                     $dsclDisableResult = null;
                     $pwpolicyDisableExecuted = false;
                     $pwpolicyDisableResult = null;
+                    $dsclPasswdResult = null;
 
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
