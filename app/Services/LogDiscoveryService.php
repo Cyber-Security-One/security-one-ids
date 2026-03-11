@@ -363,23 +363,32 @@ class LogDiscoveryService
             $cachedPaths = cache()->get('ids.custom_log_paths', []);
             $cachedPaths = is_array($cachedPaths) ? $cachedPaths : [];
 
+            $shouldDeleteLegacy = false;
             // Execute legacy migration in-line to prevent locking issues
             if (cache()->has('ids_custom_log_paths')) {
+                $shouldDeleteLegacy = true;
                 $legacyPaths = cache()->get('ids_custom_log_paths', []);
                 if (is_array($legacyPaths) && !empty($legacyPaths)) {
                     $cachedPaths = array_values(array_unique(array_merge($cachedPaths, $legacyPaths)));
                 }
-                cache()->forget('ids_custom_log_paths');
             }
 
             // If it's already in the cache, we're good.
             if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+                if ($shouldDeleteLegacy) {
+                    // Make sure we successfully wrote the merged state before deleting
+                    if (cache()->forever('ids.custom_log_paths', $cachedPaths)) {
+                        cache()->forget('ids_custom_log_paths');
+                    }
+                }
                 return true;
             }
 
             $cachedPaths[] = $realPath;
             // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $cachedPaths);
+            if (cache()->forever('ids.custom_log_paths', $cachedPaths) && $shouldDeleteLegacy) {
+                cache()->forget('ids_custom_log_paths');
+            }
         } finally {
             if ($lockAcquired) {
                 $lock->release();
