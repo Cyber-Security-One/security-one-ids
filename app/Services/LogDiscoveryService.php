@@ -320,10 +320,10 @@ class LogDiscoveryService
     public function addCustomPath(string $path): bool
     {
         // Decode repeatedly to handle double or multiple encodings
-        $decodedPath = urldecode($path);
+        $decodedPath = rawurldecode($path);
         while ($decodedPath !== $path) {
             $path = $decodedPath;
-            $decodedPath = urldecode($path);
+            $decodedPath = rawurldecode($path);
         }
 
         // Ensure that any encoded traversal sequences are decoded before checking for '..'
