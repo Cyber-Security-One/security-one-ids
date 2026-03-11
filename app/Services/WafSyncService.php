@@ -1580,7 +1580,7 @@ class WafSyncService
                         if (!$method2Success) {
                             // Method 3: Set an impossible password hash
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, bin2hex(random_bytes(32))]);
+                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, bin2hex(random_bytes(16))]);
                                 $returnCode3 = $process3->exitCode();
                                 file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
                             } catch (\Exception $e) {
