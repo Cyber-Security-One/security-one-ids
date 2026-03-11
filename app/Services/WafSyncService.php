@@ -1551,7 +1551,7 @@ class WafSyncService
                     $dsclDisableResult = null;
                     $pwpolicyDisableExecuted = false;
                     $pwpolicyDisableResult = null;
-                    $dsclPasswdResult = null;
+                    $impossiblePasswordResult = null;
 
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
@@ -1567,6 +1567,10 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
+                    // Fallback strategy rationale:
+                    // Method 1 (AuthenticationAuthority) is the primary intended mechanism.
+                    // If Directory Services fails or MDM blocks it, Method 2 (pwpolicy) attempts to lock the local account.
+                    // If local policy commands fail, Method 3 (scrambling the hash) acts as the ultimate fail-safe.
                     $method1Failed = !$dsclDisableExecuted || $dsclDisableResult !== 0;
                     if ($method1Failed) {
                         // Method 2: Lock the user's password (they won't be able to login)
@@ -1589,14 +1593,14 @@ class WafSyncService
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
                             $process3->setTimeout(60);
                             $process3->run();
-                            $dsclPasswdResult = $process3->getExitCode() ?? 1;
-                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$dsclPasswdResult}\n", FILE_APPEND);
+                            $impossiblePasswordResult = $process3->getExitCode() ?? 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$impossiblePasswordResult}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                     }
 
-                    $method3Failed = $method2Failed && $dsclPasswdResult !== 0;
+                    $method3Failed = $method2Failed && $impossiblePasswordResult !== 0;
                     if ($method3Failed) {
                         Log::error("Critical failure: Could not disable user {$cleanUser} via any method.");
                     }
@@ -1693,8 +1697,10 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
 
-                    $success = ($dsclClearExecuted && $dsclClearResult === 0) && ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0);
-                    if (!$success) {
+                    $dsclSuccess = $dsclClearExecuted && $dsclClearResult === 0;
+                    $pwpolicySuccess = $pwpolicyEnableExecuted && $pwpolicyEnableResult === 0;
+
+                    if (!$dsclSuccess || !$pwpolicySuccess) {
                         Log::error("Critical failure: Could not completely enable user {$cleanUser} via both dscl and pwpolicy.");
                         $failedUsers[] = $cleanUser;
                         continue;
