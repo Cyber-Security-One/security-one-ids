@@ -1552,6 +1552,8 @@ class WafSyncService
                     $returnCode1 = -1;
                     $returnCode2 = -1;
                     $returnCode3 = -1;
+                    $lastException = null;
+
                     try {
                         $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $sanitizedUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $process1->setTimeout(60);
@@ -1561,6 +1563,8 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$sanitizedUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
                     } catch (\Exception $e) {
                         $returnCode1 = 1;
+                        $lastException = $e;
+                        Log::error("dscl disable user {$sanitizedUser} failed", ['exception' => $e]);
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
@@ -1574,6 +1578,8 @@ class WafSyncService
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$sanitizedUser}: code={$returnCode2}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $returnCode2 = 1;
+                            $lastException = $e;
+                            Log::error("pwpolicy disable user {$sanitizedUser} failed", ['exception' => $e]);
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                     }
@@ -1588,12 +1594,14 @@ class WafSyncService
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $returnCode3 = 1;
+                            $lastException = $e;
+                            Log::error("dscl set impossible password failed", ['exception' => $e]);
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                     }
 
                     if ($returnCode1 !== 0 && $returnCode2 !== 0 && $returnCode3 !== 0) {
-                        throw new \RuntimeException("All methods failed to disable user {$sanitizedUser}");
+                        throw new \RuntimeException("All methods failed to disable user {$sanitizedUser}", 0, $lastException);
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1652,6 +1660,8 @@ class WafSyncService
                 exec("dscl . -list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root' 2>/dev/null", $usersOutput, $rc);
                 
                 $overallSuccess = true;
+                $lastException = null;
+
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user) continue;
@@ -1680,6 +1690,8 @@ class WafSyncService
                             file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser}: code={$returnCode1}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $returnCode1 = 1;
+                            $lastException = $e;
+                            Log::error("dscl clear auth for {$sanitizedUser} failed", ['exception' => $e]);
                             file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                         if ($returnCode1 !== 0 && $attempts1 < 3) sleep(1);
@@ -1698,6 +1710,8 @@ class WafSyncService
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$sanitizedUser}: code={$returnCode2}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $returnCode2 = 1;
+                            $lastException = $e;
+                            Log::error("pwpolicy enable user {$sanitizedUser} failed", ['exception' => $e]);
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                         if ($returnCode2 !== 0 && $attempts2 < 3) sleep(1);
@@ -1709,7 +1723,7 @@ class WafSyncService
                 }
 
                 if (!$overallSuccess) {
-                    throw new \RuntimeException("Failed to enable one or more macOS users");
+                    throw new \RuntimeException("Failed to enable one or more macOS users", 0, $lastException);
                 }
                 
             } else {
