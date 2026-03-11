@@ -31,9 +31,15 @@ class ClamavService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
+<<<<<<< /tmp/merge_ours_6mc5gdsn3p114B69qN9
             $http = $http->withOptions([
                 'verify' => $cacertPath,
             ]);
+=======
+$http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
+>>>>>>> /tmp/merge_theirs_f33uhfta8a699CaWUUX
         }
 
         return $http;
@@ -41,10 +47,16 @@ class ClamavService
 
     /**
      * Get CA certificate path for Windows SSL verification
+<<<<<<< /tmp/merge_ours_6mc5gdsn3p114B69qN9
      *
      * @throws \App\Exceptions\CertificateBundleMissingException
      */
     protected function getCaCertPath(): string
+=======
+* @throws \App\Exceptions\CertificateBundleMissingException
+     */
+    protected function getCaCertPath(): string
+>>>>>>> /tmp/merge_theirs_f33uhfta8a699CaWUUX
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -73,6 +85,7 @@ class ClamavService
             }
         }
 
+<<<<<<< /tmp/merge_ours_6mc5gdsn3p114B69qN9
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
@@ -82,6 +95,17 @@ class ClamavService
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
         throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+=======
+// If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
+        }
+
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+>>>>>>> /tmp/merge_theirs_f33uhfta8a699CaWUUX
     }
 
     /**
@@ -514,7 +538,7 @@ class ClamavService
             Log::info('Installing ClamAV via chocolatey', ['choco_path' => $chocoPath]);
 
             // Use full path to choco.exe since PATH may not be updated in current process
-            $chocoCmd = file_exists($chocoPath) 
+            $chocoCmd = file_exists($chocoPath)
                 ? "& '{$chocoPath}' install clamav -y"
                 : 'choco install clamav -y';
 
@@ -886,7 +910,7 @@ class ClamavService
                 $output = implode("\n", $outputLines);
             } else {
                 // Unix: Build command with proper PATH for macOS Homebrew
-                $pathPrefix = $platform === 'macos' 
+                $pathPrefix = $platform === 'macos'
                     ? 'export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && '
                     : '';
 
@@ -1050,7 +1074,7 @@ class ClamavService
 
             // Only include scan results if they have actual data (not heartbeat defaults)
             // This prevents resetting existing counts in WAF Hub
-            if (isset($scanResult['last_scan']) || 
+            if (isset($scanResult['last_scan']) ||
                 (isset($scanResult['scanned_files']) && $scanResult['scanned_files'] > 0) ||
                 (isset($scanResult['infected_files']) && $scanResult['infected_files'] > 0)) {
                 $payload['last_scan'] = $scanResult['last_scan'] ?? now()->toDateTimeString();
