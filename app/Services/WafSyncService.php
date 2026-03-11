@@ -1541,26 +1541,58 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-                $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                $cleanUser = str_replace(["\r", "\n"], '', $user);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
                 
-                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                if ($cleanUser && preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
+                    $loginDisabled = false;
+
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $output = [];
-                    exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
-                    
-                    if ($returnCode !== 0) {
-                        // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
+                    try {
+                        $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
+                        if ($process1->successful()) {
+                            $loginDisabled = true;
+                        }
+                        $returnCode1 = $process1->exitCode();
+                        $outputStr = trim($process1->output() . ' ' . $process1->errorOutput());
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
+                    } catch (\Exception $e) {
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
-                    if ($returnCode !== 0) {
-                        // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                    if (!$loginDisabled) {
+                        // Method 2: Lock the user's password (they won't be able to login)
+                        try {
+                            $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
+                            if ($process2->successful()) {
+                                $loginDisabled = true;
+                            }
+                            $returnCode2 = $process2->exitCode();
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                        } catch (\Exception $e) {
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                        }
+
+                        if (!$loginDisabled) {
+                            // Method 3: Set an impossible password hash
+                            try {
+                                $randomHash = bin2hex(random_bytes(16));
+                                $process3 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'sethash', $randomHash]);
+                                if ($process3->successful()) {
+                                    $loginDisabled = true;
+                                }
+                                $returnCode3 = $process3->exitCode();
+                                file_put_contents($logFile, "[{$timestamp}] pwpolicy sethash random: code={$returnCode3}\n", FILE_APPEND);
+                            } catch (\Exception $e) {
+                                file_put_contents($logFile, "[{$timestamp}] pwpolicy sethash random exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                            }
+                        }
+                    }
+                    
+                    if (!$loginDisabled) {
+                        throw new \Exception("Failed to disable user {$cleanUser} via all available methods.");
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1621,13 +1653,27 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
+                    $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
+
+                    if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) continue;
+
                     // Remove DisabledUser from AuthenticationAuthority
-                    exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    try {
+                        $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                        $returnCode1 = $process1->exitCode();
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
+                    } catch (\Exception $e) {
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                    }
                     
                     // Re-enable with pwpolicy  
-                    exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    try {
+                        $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                        $returnCode2 = $process2->exitCode();
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                    } catch (\Exception $e) {
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                    }
                 }
                 
             } else {
