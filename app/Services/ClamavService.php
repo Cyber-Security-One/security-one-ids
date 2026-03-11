@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\CertificateBundleMissingException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Http;
@@ -76,29 +77,15 @@ class ClamavService
             }
         }
 
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                // Ignore
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
+        // If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
         }
 
-        return null;
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new CertificateBundleMissingException('CA certificate bundle is missing, refusing to disable TLS verification.');
     }
 
     /**
