@@ -1633,7 +1633,6 @@ class WafSyncService
         } catch (\Exception $e) {
             echo "❌ Failed to disable login: " . $e->getMessage() . "\n";
             Log::error('Failed to disable login: ' . $e->getMessage());
-            throw $e;
         }
     }
     
@@ -1748,7 +1747,6 @@ class WafSyncService
         } catch (\Exception $e) {
             echo "❌ Failed to enable login: " . $e->getMessage() . "\n";
             Log::error('Failed to enable login: ' . $e->getMessage());
-            throw $e;
         }
     }
     
