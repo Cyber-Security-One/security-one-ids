@@ -1543,20 +1543,20 @@ $safeConsoleUser = escapeshellarg($consoleUser);
                 if ($consoleUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
-$result = Process::run(['sudo', 'dscl', '.', '-create', "/Users/{$safeConsoleUser}", 'AuthenticationAuthority', ';DisabledUser;']);
+$result = Process::run(['sudo', 'dscl', '.', '-create', "/Users/{$consoleUser}", 'AuthenticationAuthority', ';DisabledUser;']);
                     $returnCode = $result->exitCode();
                     file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser}: code={$returnCode}, output={$result->output()}\n", FILE_APPEND);
 
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
-                        $result = Process::run(['sudo', 'pwpolicy', '-u', $safeConsoleUser, 'disableuser']);
+                        $result = Process::run(['sudo', 'pwpolicy', '-u', $consoleUser, 'disableuser']);
                         $returnCode = $result->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
                     }
 
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
-$result = Process::run(['sudo', 'dscl', '.', '-passwd', "/Users/{$safeConsoleUser}", '*']);
+$result = Process::run(['sudo', 'dscl', '.', '-passwd', "/Users/{$consoleUser}", '*']);
                         $returnCode = $result->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
                     }
@@ -1623,7 +1623,7 @@ $result = Process::run(['sudo', 'dscl', '.', '-passwd', "/Users/{$safeConsoleUse
 
                     // Remove DisabledUser from AuthenticationAuthority
 $safeUser = escapeshellarg($user);
-                    $result = Process::run(['sudo', 'dscl', '.', '-delete', "/Users/{$safeUser}", 'AuthenticationAuthority']);
+                    $result = Process::run(['sudo', 'dscl', '.', '-delete', "/Users/{$user}", 'AuthenticationAuthority']);
                     $returnCode = $result->exitCode();
                     file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
 
