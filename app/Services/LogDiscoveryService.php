@@ -321,6 +321,16 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
+        if (cache()->has('ids_custom_log_paths')) {
+            $legacyPaths = cache()->get('ids_custom_log_paths', []);
+            $newPaths = cache()->get('ids.custom_log_paths', []);
+
+            $mergedPaths = array_values(array_unique(array_merge($legacyPaths, $newPaths)));
+
+            cache()->forever('ids.custom_log_paths', $mergedPaths);
+            cache()->forget('ids_custom_log_paths');
+        }
+
         return cache()->get('ids.custom_log_paths', []);
     }
 
