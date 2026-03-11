@@ -1661,7 +1661,11 @@ class WafSyncService
                     
                     $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
 
-                    if (!preg_match('/^[a-zA-Z0-9_]+$/', $cleanUser)) continue;
+                    if (!preg_match('/^[a-zA-Z0-9_]+$/', $cleanUser)) {
+                        file_put_contents($logFile, "[{$timestamp}] Skip invalid username format: {$cleanUser}\n", FILE_APPEND);
+                        $overallSuccess = false;
+                        continue;
+                    }
 
                     // Remove DisabledUser from AuthenticationAuthority
                     $returnCode1 = null;
