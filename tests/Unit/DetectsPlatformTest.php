@@ -11,10 +11,15 @@ class DetectsPlatformTest extends TestCase
     {
         $class = new class {
             use DetectsPlatform;
+
+            public function checkIsWindows(): bool
+            {
+                return $this->isWindows();
+            }
         };
 
         $isWindows = PHP_OS_FAMILY === 'Windows';
 
-        $this->assertEquals($isWindows, $class->isWindows());
+        $this->assertEquals($isWindows, $class->checkIsWindows());
     }
 }
