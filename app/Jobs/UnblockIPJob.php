@@ -41,13 +41,15 @@ class UnblockIPJob implements ShouldQueue
     {
         Log::info('Executing UnblockIPJob', ['ip' => $this->ip]);
 
-        if (!$blockingService->isBlocked($this->ip)) {
+        $mode = config('ids.blocking.mode', 'hybrid');
+
+        if ($mode === 'waf' && !$blockingService->isBlocked($this->ip)) {
             Log::info('UnblockIPJob skipped: IP already unblocked', ['ip' => $this->ip]);
             return;
         }
 
         if (!$blockingService->unblockIP($this->ip)) {
-            Log::error('UnblockIPJob failed to unblock IP', ['ip' => $this->ip]);
+            Log::error('UnblockIPJob failed to unblock IP', ['ip' => $this->ip, 'mode' => $mode]);
             throw new \RuntimeException("Failed to unblock IP: {$this->ip}");
         }
     }

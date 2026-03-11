@@ -407,8 +407,14 @@ class LogDiscoveryService
                         // Remove static config values from cache
                         $configPaths = config('ids.custom_log_paths', []);
                         $merged = array_diff($merged, $configPaths);
-
                         $merged = array_values(array_unique($merged));
+
+                        // Prevent overriding concurrent additions to the new key
+                        $currentNewData = cache()->get($newKey, []);
+                        if (is_array($currentNewData)) {
+                            $merged = array_values(array_unique(array_merge($currentNewData, $merged)));
+                        }
+
                         cache()->forever($newKey, $merged);
 
                         foreach ($legacyKeys as $legacyKey) {
