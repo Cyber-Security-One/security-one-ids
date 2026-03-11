@@ -3,45 +3,68 @@
 namespace Tests\Feature;
 
 use Tests\TestCase;
+use Illuminate\Support\Facades\Config;
 
 class ApiAuthTest extends TestCase
 {
+    private string|false $originalAgentToken;
+    private mixed $originalConfigToken;
+
     protected function setUp(): void
     {
         parent::setUp();
-        config(['ids.agent_token' => 'test-agent-token']);
+
+        $this->originalAgentToken = getenv('AGENT_TOKEN');
+        $this->originalConfigToken = Config::get('ids.agent_token');
+
+        // Set a known token for testing.
+        putenv('AGENT_TOKEN');
+        Config::set('ids.agent_token', 'test-agent-token');
     }
 
-    public function test_api_routes_require_valid_agent_token()
+    protected function tearDown(): void
     {
-        // 1. No token provided
-        $this->postJson('/api/rules/update')->assertStatus(401);
+        if ($this->originalAgentToken === false) {
+            putenv('AGENT_TOKEN');
+        } else {
+            putenv('AGENT_TOKEN=' . $this->originalAgentToken);
+        }
 
-        // 2. Invalid token provided via header
-        $this->withHeaders(['X-Agent-Token' => 'invalid-token'])
-            ->postJson('/api/rules/update')
-            ->assertStatus(401);
+        Config::set('ids.agent_token', $this->originalConfigToken);
+        parent::tearDown();
+    }
 
-        // 3. Valid token provided via header
-        $this->withHeaders(['X-Agent-Token' => 'test-agent-token'])
-            ->postJson('/api/rules/update', [
-                'global_rules' => [],
-                'agent_rules' => [],
-            ])
-            ->assertStatus(200);
+    public function test_auth_logic_rejects_missing_token()
+    {
+        // Missing token
+        $this->postJson('/api/rules/update', [])->assertStatus(401);
 
-        // 4. Valid token provided via body
+        // Empty token
+        $this->postJson('/api/rules/update?token=', [])->assertStatus(401);
+
+        // Wrong token
+        $this->postJson('/api/rules/update?token=wrong-token', [])->assertStatus(401);
+
+        // Valid token should pass
+        $this->postJson('/api/rules/update?token=test-agent-token', [])->assertStatus(200);
+        $this->postJson('/api/rules/update', [], ['X-Agent-Token' => 'test-agent-token'])->assertStatus(200);
+        $this->postJson('/api/rules/update', [], ['Authorization' => 'Bearer test-agent-token'])->assertStatus(200);
+
+        // Empty query token should not override valid bearer/header
+        $this->postJson('/api/rules/update?token=', [], ['Authorization' => 'Bearer test-agent-token'])->assertStatus(200);
+
+        // Valid token provided via body
         $this->postJson('/api/rules/update', [
             'token' => 'test-agent-token',
             'global_rules' => [],
             'agent_rules' => [],
         ])->assertStatus(200);
+    }
 
-        // 5. Valid bearer token provided
-        $this->withToken('test-agent-token')
-            ->postJson('/api/rules/update', [
-                'global_rules' => [],
-                'agent_rules' => [],
-            ])->assertStatus(200);
+    public function test_auth_logic_allows_zero_as_token()
+    {
+        Config::set('ids.agent_token', '0');
+
+        $this->postJson('/api/rules/update?token=0', [])->assertStatus(200);
     }
 }
