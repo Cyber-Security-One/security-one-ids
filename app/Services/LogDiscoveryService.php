@@ -339,7 +339,7 @@ class LogDiscoveryService
             return false;
         }
 
-        $configPaths = config('ids.custom_log_paths', []);
+        $configPaths = array_values(array_filter(config('ids.custom_log_paths', []), static fn ($p) => is_string($p) && $p !== ''));
 
         // We shouldn't redundantly merge and write to cache if not needed.
         // First check if it's already in config.
@@ -375,7 +375,7 @@ class LogDiscoveryService
         }
 
         try {
-            $cachedPaths = $this->getCustomPaths();
+            $cachedPaths = array_values(array_filter($this->getCustomPaths(), static fn ($p) => is_string($p) && $p !== ''));
 
             // If it's already in the cache, we're good.
             $lowercaseCachedPaths = array_map('strtolower', $cachedPaths);
