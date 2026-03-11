@@ -1566,7 +1566,7 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
-                    if ($dsclDisableExecuted && $dsclDisableResult !== 0) {
+                    if ((!$dsclDisableExecuted || $dsclDisableResult !== 0)) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         try {
                             $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
@@ -1580,7 +1580,7 @@ class WafSyncService
                         }
                     }
                     
-                    if ($pwpolicyDisableExecuted && $pwpolicyDisableResult !== 0) {
+                    if ((!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0)) {
                         // Method 3: Set an impossible password hash
                         try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
