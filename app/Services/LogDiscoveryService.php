@@ -332,7 +332,7 @@ class LogDiscoveryService
         }
 
         try {
-            return cache()->lock('ids.custom_log_paths_migration_lock')->block(5, function () use ($newKey, $oldKey) {
+            return cache()->lock('ids.custom_log_paths_migration_lock')->block(1, function () use ($newKey, $oldKey) {
                 $paths = cache()->get($newKey);
                 if (is_array($paths)) {
                     return $paths;

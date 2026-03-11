@@ -14,6 +14,7 @@ class LogDiscoveryServiceTest extends TestCase
     {
         parent::setUp();
         $this->service = new LogDiscoveryService();
+        \Illuminate\Support\Facades\Storage::fake('local');
     }
 
     protected function tearDown(): void
@@ -33,7 +34,6 @@ class LogDiscoveryServiceTest extends TestCase
 
     private function createTempLogFile(): string
     {
-        \Illuminate\Support\Facades\Storage::fake('local');
         $tempPath = \Illuminate\Support\Facades\Storage::disk('local')->path(uniqid('test_log_', true) . '.log');
         file_put_contents($tempPath, 'test log content');
         $this->tempFiles[] = $tempPath;
