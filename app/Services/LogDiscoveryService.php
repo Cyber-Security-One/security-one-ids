@@ -309,16 +309,40 @@ class LogDiscoveryService
             return false;
         }
 
-$configPaths = config('ids.custom_log_paths', []);
-        $cachedPaths = $this->getCustomPaths();
+$lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
+        $acquired = false;
+        $delayMicroseconds = 10000;
 
-        $unifiedList = array_values(array_unique(array_merge($configPaths, $cachedPaths)));
+        try {
+            for ($i = 0; $i < 10; $i++) {
+                if ($acquired = $lock->get()) {
+                    break;
+                }
+                usleep($delayMicroseconds);
+                $delayMicroseconds = min($delayMicroseconds * 2, 100000);
+            }
 
-        if (!in_array($path, $unifiedList, true)) {
-            $cachedPaths[] = $path;
-            // Store only dynamically added items in the cache
-            cache()->forever('ids::custom_log_paths', array_values(array_unique($cachedPaths)));
-        }
+            if ($acquired) {
+                $cachedPaths = $this->getCustomPaths();
+                $configPaths = config('ids.custom_log_paths', []);
+
+                $unifiedList = array_values(array_unique(array_merge($cachedPaths, $configPaths)));
+
+                if (!in_array($path, $unifiedList, true)) {
+                    $cachedPaths[] = $path;
+                    // Store only dynamically added items in the cache
+                    cache()->forever('ids::custom_log_paths', array_values(array_unique($cachedPaths)));
+                }
+            } else {
+                return false;
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
+            return false;
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
         }
 
         return true;
