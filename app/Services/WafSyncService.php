@@ -1546,7 +1546,9 @@ class WafSyncService
                 $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
                 
-                if ($cleanUser && preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
+                // Validate that the console user only contains alphanumeric characters and safe symbols
+                // This prevents shell argument injection when building system commands.
+                if ($user && preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
                     $userDisabledSuccessfully = false;
                     $dsclDisableExecuted = false;
                     $dsclDisableResult = null;
@@ -1589,8 +1591,8 @@ class WafSyncService
                         }
                     }
                     
-                    $method2Failed = $method1Failed && (!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0);
-                    if ($method2Failed) {
+                    $allPreviousMethodsFailed = $method1Failed && (!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0);
+                    if ($allPreviousMethodsFailed) {
                         // Method 3: Set an impossible password hash
                         try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
@@ -1668,11 +1670,11 @@ class WafSyncService
                 exec("dscl . -list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root' 2>/dev/null", $usersOutput, $rc);
                 
                 $failedUsers = [];
-                foreach ($usersOutput as $user) {
-                    $user = trim($user);
-                    if (!$user) continue;
+                foreach ($usersOutput as $rawUser) {
+                    $trimmedUser = trim($rawUser);
+                    if (!$trimmedUser) continue;
                     
-                    $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+                    $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $trimmedUser);
 
                     if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) continue;
 
