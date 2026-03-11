@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -306,14 +307,17 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
-        }
+        return Cache::lock('add_custom_path_lock', 10)->block(5, function () use ($path) {
+            $cachedPaths = $this->getCustomPaths();
 
-        return true;
+            if (!in_array($path, $cachedPaths, true)) {
+                $cachedPaths[] = $path;
+                // Store in cache for persistence
+                cache()->forever('ids.custom_log_paths', $cachedPaths);
+            }
+
+            return true;
+        });
     }
 
     /**
@@ -321,7 +325,24 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        // Check new key first
+        $paths = cache()->get('ids.custom_log_paths');
+
+        if ($paths !== null) {
+            return $paths;
+        }
+
+        // Fallback to old key, migrate if present
+        $oldPaths = cache()->get('ids_custom_log_paths');
+
+        if ($oldPaths !== null) {
+            Log::warning('Migrating legacy cache key ids_custom_log_paths to ids.custom_log_paths');
+            cache()->forever('ids.custom_log_paths', $oldPaths);
+            cache()->forget('ids_custom_log_paths');
+            return $oldPaths;
+        }
+
+        return [];
     }
 
     /**
