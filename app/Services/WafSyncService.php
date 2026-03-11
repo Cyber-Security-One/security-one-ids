@@ -1557,7 +1557,7 @@ class WafSyncService
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     try {
-                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
+                        $process1 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $process1->setTimeout(60);
                         $process1->run();
                         $dsclDisableSuccess = $process1->isSuccessful();
@@ -1580,7 +1580,7 @@ class WafSyncService
                     if (!$dsclDisableSuccess) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         try {
-                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
+                            $process2 = new SymfonyProcess(['sudo', '-n', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
                             $process2->setTimeout(60);
                             $process2->run();
                             $pwpolicyDisableSuccess = $process2->isSuccessful();
@@ -1604,7 +1604,7 @@ class WafSyncService
                     if (!$dsclDisableSuccess && !$pwpolicyDisableSuccess) {
                         // Method 3: Set an impossible password hash
                         try {
-                            $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                            $process3 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
                             $process3->setTimeout(60);
                             $process3->run();
                             $dsclPasswdSuccess = $process3->isSuccessful();
@@ -1699,7 +1699,7 @@ class WafSyncService
 
                     // Remove DisabledUser from AuthenticationAuthority
                     try {
-                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                        $process1 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
                         $process1->setTimeout(60);
                         $process1->run();
                         $dsclClearExecuted = true;
@@ -1711,7 +1711,7 @@ class WafSyncService
                     
                     // Re-enable with pwpolicy  
                     try {
-                        $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                        $process2 = new SymfonyProcess(['sudo', '-n', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
                         $process2->setTimeout(60);
                         $process2->run();
                         $pwpolicyEnableExecuted = true;
