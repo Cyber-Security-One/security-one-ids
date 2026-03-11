@@ -21,7 +21,7 @@ class ValidateAgentToken
             return $next($request);
         }
 
-        if (app()->isProduction() && empty(trim(config('ids.agent_token', '') ?? ''))) {
+        if (app()->isProduction() && trim((string) config('ids.agent_token', '')) === '') {
             throw new HttpException(503, 'Service Unavailable: AGENT_TOKEN must be explicitly configured in production.');
         }
 
