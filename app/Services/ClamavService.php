@@ -84,7 +84,7 @@ class ClamavService
         }
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
-        throw new \RuntimeException('CA certificate bundle is missing, refusing to disable TLS verification.');
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
