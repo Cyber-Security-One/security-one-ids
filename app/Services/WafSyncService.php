@@ -1530,52 +1530,83 @@ class WafSyncService
                 @mkdir($logDir, 0755, true);
             }
             
-            file_put_contents($logFile, "[{$timestamp}] Disable login signal received from WAF Hub\n", FILE_APPEND);
+            $logMessages = ["[{$timestamp}] Disable login signal received from WAF Hub\n"];
             
             if (PHP_OS_FAMILY === 'Windows') {
                 echo "🚫 Disabling Windows user accounts...\n";
                 // Disable all non-system user accounts
+                $output = [];
                 exec('powershell -Command "Get-LocalUser | Where-Object {$_.Enabled -eq $true -and $_.Name -ne \'Administrator\'} | Disable-LocalUser" 2>&1', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Windows disable users result: code={$returnCode}\n", FILE_APPEND);
+                $logMessages[] = "[{$timestamp}] Windows disable users result: code={$returnCode}\n";
                 
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+                $logMessages[] = "[{$timestamp}] Console user: {$consoleUser}\n";
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                    $safeConsoleUser = escapeshellarg($consoleUser);
+                    $operationFailed = false;
+                    $method1Failed = false;
+
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
-                    exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                    exec("sudo dscl . -create /Users/{$safeConsoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
+                    $logMessages[] = "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n";
                     
-                    if ($returnCode !== 0) {
+                    // Verify user is actually disabled regardless of return code
+                    $verifyOutput = [];
+                    exec("sudo dscl . -read /Users/{$safeConsoleUser} AuthenticationAuthority 2>/dev/null | grep -q 'DisabledUser'", $verifyOutput, $verifyCode);
+                    if ($verifyCode !== 0) {
+                        $method1Failed = true;
+                    }
+
+                    $method2Failed = false;
+                    if ($method1Failed) {
                         // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
+                        $output = [];
+                        exec("sudo pwpolicy -u {$safeConsoleUser} disableuser 2>&1", $output, $returnCode);
+                        $logMessages[] = "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n";
+
+                        if ($returnCode !== 0) {
+                            $method2Failed = true;
+                        }
                     }
                     
-                    if ($returnCode !== 0) {
+                    if ($method1Failed && $method2Failed) {
                         // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                        $output = [];
+                        exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
+                        $logMessages[] = "[{$timestamp}] dscl set impossible password: code={$returnCode}\n";
+
+                        if ($returnCode !== 0) {
+                            $operationFailed = true;
+                        }
+                    }
+
+                    if ($operationFailed) {
+                        $logMessages[] = "[{$timestamp}] All methods to disable user {$consoleUser} failed.\n";
+                        file_put_contents($logFile, implode("", $logMessages), FILE_APPEND);
+                        throw new \Exception("All methods to disable user {$consoleUser} failed.");
                     }
                 } else {
-                    file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
+                    $logMessages[] = "[{$timestamp}] No valid console user found to disable\n";
                 }
                 
             } else {
                 echo "🚫 Disabling Linux user login...\n";
                 // Lock all non-root users
+                $output = [];
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -l "$user" 2>/dev/null; done', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Linux disable users result: code={$returnCode}\n", FILE_APPEND);
+                $logMessages[] = "[{$timestamp}] Linux disable users result: code={$returnCode}\n";
             }
             
             echo "✅ Login disabled\n";
             Log::info('Login disabled');
-            file_put_contents($logFile, "[{$timestamp}] Login disabled successfully\n", FILE_APPEND);
+            $logMessages[] = "[{$timestamp}] Login disabled successfully\n";
+            file_put_contents($logFile, implode("", $logMessages), FILE_APPEND);
             
         } catch (\Exception $e) {
             echo "❌ Failed to disable login: " . $e->getMessage() . "\n";
@@ -1617,17 +1648,43 @@ class WafSyncService
                 $usersOutput = [];
                 exec("dscl . -list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root' 2>/dev/null", $usersOutput, $rc);
                 
+                $logMessages = [];
+                $operationFailed = false;
+
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user) continue;
                     
-                    // Remove DisabledUser from AuthenticationAuthority
-                    exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    $safeUser = escapeshellarg($user);
                     
-                    // Re-enable with pwpolicy  
-                    exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    try {
+                        // Remove DisabledUser from AuthenticationAuthority
+                        $output = [];
+                        exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
+                        $logMessages[] = "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n";
+                        if ($returnCode !== 0) {
+                            $operationFailed = true;
+                        }
+
+                        // Re-enable with pwpolicy
+                        $output = [];
+                        exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
+                        $logMessages[] = "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n";
+                        if ($returnCode !== 0) {
+                            $operationFailed = true;
+                        }
+                    } catch (\Exception $e) {
+                        $operationFailed = true;
+                        $logMessages[] = "[{$timestamp}] Exception enabling user {$user}: " . $e->getMessage() . "\n";
+                    }
+                }
+
+                if (!empty($logMessages)) {
+                    file_put_contents($logFile, implode("", $logMessages), FILE_APPEND);
+                }
+
+                if ($operationFailed) {
+                    throw new \Exception("One or more operations failed while enabling macOS users.");
                 }
                 
             } else {
