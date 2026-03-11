@@ -1545,8 +1545,11 @@ class WafSyncService
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._\s-]*$/', $consoleUser)) {
-                        file_put_contents($logFile, "[{$timestamp}] Error: Invalid console username format detected: " . substr(preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', $consoleUser), 0, 50) . "\n", FILE_APPEND);
+                    if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._ -]*$/', $consoleUser)) {
+                        $safeLogUser = substr(str_replace(["\n", "\r"], '', $consoleUser), 0, 50);
+                        if (file_put_contents($logFile, "[{$timestamp}] Error: Invalid console username format detected: {$safeLogUser}\n", FILE_APPEND) === false) {
+                            throw new \RuntimeException("Failed to write to log file: {$logFile}");
+                        }
                         return;
                     }
                     // Method 1: Use dscl to disable user account
