@@ -1675,6 +1675,11 @@ class WafSyncService
                         $process1->run();
                         $returnCode1 = $process1->getExitCode() ?? 1;
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
+                        if ($returnCode1 !== 0) {
+                            $hasError = true;
+                            $err1 = trim($process1->getErrorOutput() . ' ' . $process1->getOutput());
+                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} failed output: {$err1}\n", FILE_APPEND);
+                        }
                     } catch (\Exception $e) {
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         $hasError = true;
@@ -1688,6 +1693,11 @@ class WafSyncService
                         $process2->run();
                         $returnCode2 = $process2->getExitCode() ?? 1;
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                        if ($returnCode2 !== 0) {
+                            $hasError = true;
+                            $err2 = trim($process2->getErrorOutput() . ' ' . $process2->getOutput());
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} failed output: {$err2}\n", FILE_APPEND);
+                        }
                     } catch (\Exception $e) {
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         $hasError = true;
