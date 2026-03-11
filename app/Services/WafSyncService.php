@@ -390,6 +390,8 @@ class WafSyncService
      */
     private function isValidConsoleUser(string $user): bool
     {
+        // Require strict alphanumeric/underscore/dot/hyphen to prevent any shell metacharacters
+        // Do not allow leading dots or hyphens to prevent flag injection.
         return !empty($user) && preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $user) && $user !== 'root' && $user !== 'daemon' && $user !== 'nobody' && $user !== '_mbsetupuser';
     }
 
@@ -1549,7 +1551,10 @@ class WafSyncService
                 $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 
                 $cleanUser = str_replace(["\r", "\n"], '', trim($user));
-                file_put_contents($logFile, "[{$timestamp}] Raw console user: " . str_replace(["\r", "\n"], '', $user) . ", Sanitized: {$cleanUser}\n", FILE_APPEND);
+
+                $safeRawUser = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', $user);
+                $safeCleanUser = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', $cleanUser);
+                file_put_contents($logFile, "[{$timestamp}] Raw console user: {$safeRawUser}, Sanitized: {$safeCleanUser}\n", FILE_APPEND);
 
                 if ($this->isValidConsoleUser($cleanUser)) {
                     // Method 1: Use dscl to disable user account
@@ -1561,15 +1566,19 @@ class WafSyncService
                         $method1Success = $process1->successful();
                         $returnCode1 = $process1->exitCode();
                         $outputStr = trim($process1->output() . ' ' . $process1->errorOutput());
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
+                        $safeOutput = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', substr($outputStr, 0, 255));
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$safeOutput}\n", FILE_APPEND);
                     } catch (\Illuminate\Process\Exceptions\ProcessTimedOutException $e) {
                         $method1Success = false;
                         $returnCode1 = 1;
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} timed out: " . $e->getMessage() . "\n", FILE_APPEND);
+                        $safeError = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', substr($e->getMessage(), 0, 255));
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} timed out: {$safeError}\n", FILE_APPEND);
                     } catch (\Exception $e) {
                         $method1Success = false;
                         $returnCode1 = 1;
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} exception: " . get_class($e) . " " . $e->getMessage() . "\n", FILE_APPEND);
+                        $safeClass = get_class($e);
+                        $safeError = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', substr($e->getMessage(), 0, 255));
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} exception: {$safeClass} {$safeError}\n", FILE_APPEND);
                     }
                     
                     if (!$method1Success) {
@@ -1671,16 +1680,17 @@ class WafSyncService
                 exec("dscl . -list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root' 2>/dev/null", $usersOutput, $rc);
                 
                 foreach ($usersOutput as $user) {
-                    $user = trim($user);
-                    if (!$user) continue;
+                    $rawUser = trim($user);
+                    if (!$rawUser) continue;
 
-                    if (!$this->isValidConsoleUser($user)) {
-                        $cleanUser = str_replace(["\r", "\n"], '', $user);
-                        Log::error('Invalid user for enable login: ' . $cleanUser);
-                        file_put_contents($logFile, "[{$timestamp}] Invalid user for enable login: {$cleanUser}\n", FILE_APPEND);
+                    $cleanUser = str_replace(["\r", "\n"], '', $rawUser);
+
+                    if (!$this->isValidConsoleUser($cleanUser)) {
+                        $safeLogUser = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', $cleanUser);
+                        Log::error("Invalid user for enable login: {$safeLogUser}");
+                        file_put_contents($logFile, "[{$timestamp}] Invalid user for enable login: {$safeLogUser}\n", FILE_APPEND);
                         continue;
                     }
-                    $cleanUser = $user;
 
                     // Remove DisabledUser from AuthenticationAuthority
                     // Primary method to re-enable a user login
