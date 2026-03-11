@@ -1613,6 +1613,7 @@ class WafSyncService
         } catch (\Exception $e) {
             echo "❌ Failed to disable login: " . $e->getMessage() . "\n";
             Log::error('Failed to disable login: ' . $e->getMessage());
+            throw $e;
         }
     }
     
@@ -1685,7 +1686,7 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
 
-                    if ($returnCode1 !== 0 && $returnCode2 !== 0) {
+                    if ($returnCode1 !== 0 || $returnCode2 !== 0) {
                         $overallSuccess = false;
                     }
                 }
@@ -1707,6 +1708,7 @@ class WafSyncService
         } catch (\Exception $e) {
             echo "❌ Failed to enable login: " . $e->getMessage() . "\n";
             Log::error('Failed to enable login: ' . $e->getMessage());
+            throw $e;
         }
     }
     
