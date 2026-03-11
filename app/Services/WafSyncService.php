@@ -1706,9 +1706,20 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
 
-                    $success = ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0);
+                    $authStillDisabled = false;
+                    try {
+                        $verifyProcess = new SymfonyProcess(['dscl', '.', '-read', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                        $verifyProcess->setTimeout(30);
+                        $verifyProcess->run();
+                        $authOutput = $verifyProcess->getOutput() . $verifyProcess->getErrorOutput();
+                        $authStillDisabled = str_contains($authOutput, 'DisabledUser');
+                    } catch (\Exception $e) {
+                        Log::warning("Could not verify AuthenticationAuthority for {$cleanUser}: " . $e->getMessage());
+                    }
+
+                    $success = ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0) && !$authStillDisabled;
                     if (!$success) {
-                        Log::error("Critical failure: Could not enable user {$cleanUser} via pwpolicy.");
+                        Log::error("Critical failure: User {$cleanUser} may still be disabled (pwpolicy_code={$pwpolicyEnableResult}, dscl_code={$dsclClearResult}, auth_still_disabled=" . ($authStillDisabled ? 'yes' : 'no') . ").");
                         $failedUsers[] = $cleanUser;
                         continue;
                     }
