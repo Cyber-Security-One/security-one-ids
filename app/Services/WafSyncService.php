@@ -1541,26 +1541,27 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-                $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
                 
-                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    $escapedConsoleUser = escapeshellarg($consoleUser);
+                if ($user && $user !== 'root' && $user !== '_mbsetupuser') {
+                    $escapedUser = escapeshellarg($user);
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
-                    exec("sudo dscl . -create /Users/{$escapedConsoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                    exec("sudo dscl . -create /Users/{$escapedUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
                     
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$escapedConsoleUser} disableuser 2>&1", $output, $returnCode);
+                        exec("sudo pwpolicy -u {$escapedUser} disableuser 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
                     }
                     
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$escapedConsoleUser} '*' 2>&1", $output, $returnCode);
+                        exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
                     }
                 } else {
@@ -1623,14 +1624,15 @@ class WafSyncService
                     if (!$user) continue;
                     
                     $escapedUser = escapeshellarg($user);
+                    $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
 
                     // Remove DisabledUser from AuthenticationAuthority
                     exec("sudo dscl . -delete /Users/{$escapedUser} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
                     exec("sudo pwpolicy -u {$escapedUser} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode}\n", FILE_APPEND);
                 }
                 
             } else {
