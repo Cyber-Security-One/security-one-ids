@@ -13,14 +13,14 @@ class LogDiscoveryServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        cache()->forget('ids.custom_log_paths');
+        cache()->forget(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS);
         config(['ids.custom_log_paths' => []]);
         $this->service = new LogDiscoveryService();
     }
 
     protected function tearDown(): void
     {
-        cache()->forget('ids.custom_log_paths');
+        cache()->forget(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS);
         config(['ids.custom_log_paths' => []]);
 
         foreach ($this->tempFiles as $file) {
@@ -74,7 +74,8 @@ class LogDiscoveryServiceTest extends TestCase
         $this->assertTrue($result);
 
         // Verify the actual cache state
-        $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
+        $this->assertTrue(cache()->has(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS));
+        $this->assertEquals([$tempPath], cache()->get(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS));
     }
 
     public function test_add_custom_path_returns_true_without_caching_when_path_already_in_config(): void
@@ -85,14 +86,14 @@ class LogDiscoveryServiceTest extends TestCase
         config(['ids.custom_log_paths' => [$tempPath]]);
 
         // Clear cache to ensure it's not set
-        cache()->forget('ids.custom_log_paths');
+        cache()->forget(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS);
 
         $result = $this->service->addCustomPath($tempPath);
 
         $this->assertTrue($result);
 
         // Verify cache is not set since it was already in config
-        $this->assertFalse(cache()->has('ids.custom_log_paths'));
+        $this->assertFalse(cache()->has(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS));
     }
 
     public function test_add_custom_path_is_idempotent_when_path_in_both_config_and_cache(): void
@@ -103,7 +104,7 @@ class LogDiscoveryServiceTest extends TestCase
         config(['ids.custom_log_paths' => [$tempPath]]);
 
         // Also mock the cache to already have it
-        cache()->forever('ids.custom_log_paths', [$tempPath]);
+        cache()->forever(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS, [$tempPath]);
 
         // Attempt to add it again
         $result = $this->service->addCustomPath($tempPath);
@@ -111,7 +112,7 @@ class LogDiscoveryServiceTest extends TestCase
         $this->assertTrue($result);
 
         // Verify it didn't do something unexpected
-        $cachedPaths = cache()->get('ids.custom_log_paths');
+        $cachedPaths = cache()->get(LogDiscoveryService::CACHE_KEY_CUSTOM_PATHS);
         $this->assertEquals([$tempPath], $cachedPaths);
         $this->assertCount(1, $cachedPaths);
     }
