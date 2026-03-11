@@ -1546,7 +1546,7 @@ class WafSyncService
                 $sanitizedUser = preg_replace('/[\r\n]+/', ' ', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$sanitizedUser}\n", FILE_APPEND);
                 
-                if (strlen($sanitizedUser) > 32) {
+                if (strlen($sanitizedUser) > 256) {
                     throw new \RuntimeException('Username too long');
                 }
 
@@ -1665,7 +1665,6 @@ class WafSyncService
 
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $sanitizedUser)) {
                         file_put_contents($logFile, "[{$timestamp}] Skip invalid username format: {$sanitizedUser}\n", FILE_APPEND);
-                        $overallSuccess = false;
                         continue;
                     }
 
@@ -1677,7 +1676,6 @@ class WafSyncService
                         $userExistsErr = $userExistsProcess->getErrorOutput() . $userExistsProcess->getOutput();
                         if (strpos($userExistsErr, 'eDSRecordNotFound') !== false) {
                             file_put_contents($logFile, "[{$timestamp}] Skip non-existent user: {$sanitizedUser}\n", FILE_APPEND);
-                            $overallSuccess = false;
                             continue;
                         }
                         throw new \RuntimeException("Failed to verify user {$sanitizedUser}: " . trim($userExistsErr));
