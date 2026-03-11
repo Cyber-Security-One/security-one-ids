@@ -4,11 +4,15 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+<<<<<<< /tmp/merge_ours_vftgpk46kaq1cYQvJFk
 use App\Jobs\UnblockIPJob;
+=======
+use App\Jobs\UnblockIPJob;
+>>>>>>> /tmp/merge_theirs_2cpheakcv5207jjFag2
 
 /**
  * Blocking Service
- * 
+ *
  * Manages IP blocking via WAF rules and iptables
  */
 class BlockingService
@@ -36,17 +40,17 @@ class BlockingService
         // Check if IPS (blocking) is enabled from WAF Hub config
         $wafConfigPath = storage_path('app/waf_config.json');
         $ipsEnabled = false;
-        
+
         if (file_exists($wafConfigPath)) {
             $wafConfig = json_decode(file_get_contents($wafConfigPath), true);
             $ipsEnabled = $wafConfig['ips_enabled'] ?? false;
         }
-        
+
         // Fall back to env if not in waf_config
         if (!$ipsEnabled) {
             $ipsEnabled = config('ids.blocking.enabled', false);
         }
-        
+
         if (!$ipsEnabled) {
             Log::info('IPS (blocking) disabled, skipping block', ['ip' => $ip]);
             return false;
@@ -90,7 +94,7 @@ class BlockingService
         // Cache the block
         if ($success) {
             $this->cacheBlock($ip, $reason, $duration);
-            
+
             // Schedule auto-unblock if temporary
             if ($duration !== null) {
                 $this->scheduleUnblock($ip, $duration);
@@ -152,10 +156,10 @@ class BlockingService
 
             if ($returnCode === 0) {
                 Log::info('IP blocked via iptables', ['ip' => $ip, 'reason' => $reason]);
-                
+
                 // Save to iptables persistent
                 $this->saveIptablesRule($ip);
-                
+
                 return true;
             }
 
@@ -208,7 +212,7 @@ class BlockingService
     {
         try {
             $response = $this->wafSync->syncUnblockIP($ip);
-            
+
             if ($response && $response->successful()) {
                 Log::info('IP unblocked via WAF', ['ip' => $ip]);
                 return true;
@@ -252,7 +256,7 @@ class BlockingService
         if (Cache::has(self::CACHE_PREFIX . $ip)) {
             return true;
         }
-        
+
         // Also check blocked IPs from WAF Hub config
         $blockedIps = $this->getBlockedIPs();
         return isset($blockedIps[$ip]);
@@ -308,8 +312,13 @@ class BlockingService
         // When cache expires, the block is automatically removed
         // For iptables, we need explicit cleanup job
         if (config('ids.blocking.mode') === 'iptables' || config('ids.blocking.mode') === 'hybrid') {
+<<<<<<< /tmp/merge_ours_vftgpk46kaq1cYQvJFk
             // Dispatch UnblockIPJob with delay
             dispatch(new UnblockIPJob($ip))->delay($duration);
+=======
+// Dispatch UnblockIPJob with delay
+dispatch(new UnblockIPJob($ip))->delay($duration);
+>>>>>>> /tmp/merge_theirs_2cpheakcv5207jjFag2
         }
     }
 
@@ -328,7 +337,7 @@ class BlockingService
     private function removeIptablesRule(string $ip): void
     {
         $rulesFile = storage_path('app/iptables_blocks.txt');
-        
+
         if (file_exists($rulesFile)) {
             $rules = file($rulesFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
             $rules = array_filter($rules, fn($rule) => $rule !== $ip);
@@ -342,13 +351,13 @@ class BlockingService
     public function restoreIptablesRules(): void
     {
         $rulesFile = storage_path('app/iptables_blocks.txt');
-        
+
         if (!file_exists($rulesFile)) {
             return;
         }
 
         $ips = file($rulesFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        
+
         foreach ($ips as $ip) {
             $this->blockViaIptables($ip, 'Restored from persistent storage');
         }
@@ -362,7 +371,7 @@ class BlockingService
     public function getBlockedIPs(): array
     {
         $blockedIps = [];
-        
+
         // Load blocked IPs from WAF Hub config file
         $configPath = storage_path('app/waf_config.json');
         if (file_exists($configPath)) {
@@ -384,7 +393,7 @@ class BlockingService
                 Log::warning('Failed to read blocked IPs from config: ' . $e->getMessage());
             }
         }
-        
+
         return $blockedIps;
     }
 }
