@@ -40,9 +40,11 @@ class UnblockIPJob implements ShouldQueue
     public function handle(BlockingService $blockingService): void
     {
         Log::info('Executing UnblockIPJob', ['ip' => $this->ip]);
+        // unblockIP returns true if an IP was actually unblocked.
+        // If it returns false, it usually means the IP was already unblocked (idempotent),
+        // so we don't want to throw an exception and cause unnecessary retries.
         if (!$blockingService->unblockIP($this->ip)) {
-            Log::error('UnblockIPJob failed to unblock IP', ['ip' => $this->ip]);
-            throw new \RuntimeException("Failed to unblock IP: {$this->ip}");
+            Log::info('UnblockIPJob: IP was not blocked or already unblocked', ['ip' => $this->ip]);
         }
     }
 }

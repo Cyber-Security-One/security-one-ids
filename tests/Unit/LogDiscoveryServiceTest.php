@@ -16,10 +16,6 @@ class LogDiscoveryServiceTest extends TestCase
     {
         parent::setUp();
 
-        if (!is_writable(sys_get_temp_dir())) {
-            $this->markTestSkipped('System temporary directory is not writable.');
-        }
-
         // Use a real array cache to avoid issues with Cache facade and locks
         $store = new \Illuminate\Cache\ArrayStore();
         $repository = new \Illuminate\Cache\Repository($store);
@@ -57,7 +53,6 @@ class LogDiscoveryServiceTest extends TestCase
 
     public function test_get_custom_paths_removes_config_paths_from_cache(): void
     {
-        // Use a legacy key to trigger migration logic which runs array_diff
         Cache::forever('ids_custom_log_paths', ['/legacy/path', '/config/path']);
 
         // Explicitly set the config

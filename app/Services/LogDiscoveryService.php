@@ -300,9 +300,6 @@ class LogDiscoveryService
         return 'unknown';
     }
 
-    /**
-     * Add a custom log path to monitor
-     */
     public function addCustomPath(string $path): bool
     {
         if (!is_readable($path)) {
@@ -359,6 +356,9 @@ class LogDiscoveryService
             return cache()->get($newKey, []);
         }
 
+        // Legacy keys to migrate from previous versions:
+        // 'ids_custom_log_paths' was the original key structure.
+        // 'ids::custom_log_paths' was briefly used before standardizing on dot notation.
         $legacyKeys = ['ids_custom_log_paths', 'ids::custom_log_paths'];
 
         $needsMigration = false;
@@ -405,7 +405,7 @@ class LogDiscoveryService
                             }
                         }
 
-                        // Remove static config values from cache
+                        // Remove static config values from cache to prevent saving redundant data
                         $configPaths = config('ids.custom_log_paths', []);
                         $merged = array_diff($merged, $configPaths);
 
