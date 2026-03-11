@@ -1547,7 +1547,7 @@ class WafSyncService
                 
                 if ($cleanUser && $cleanUser !== 'root' && $cleanUser !== '_mbsetupuser') {
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $cleanUser)) {
-                        throw new \Exception('Invalid username');
+                        throw new \Exception("Invalid username format: {$cleanUser}");
                     }
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
