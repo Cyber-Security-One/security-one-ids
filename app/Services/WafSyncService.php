@@ -1544,11 +1544,11 @@ class WafSyncService
                 $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 
                 $rawUser = trim($user);
-                $logSafeUser = str_replace(["\n", "\r"], '', $rawUser);
-                $logSafeRawUser = str_replace(["\n", "\r"], '', $user);
-                file_put_contents($logFile, "[{$timestamp}] Raw console user: {$logSafeRawUser}, Sanitized: {$logSafeUser}\n", FILE_APPEND);
+                $sanitizedUser = str_replace(["\n", "\r"], '', $rawUser);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$sanitizedUser}\n", FILE_APPEND);
 
-                if ($rawUser && preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $rawUser) && $rawUser !== 'root' && $rawUser !== 'daemon' && $rawUser !== 'nobody' && $rawUser !== '_mbsetupuser') {
+                // Restrict usernames to alphanumeric and underscore to prevent potential path traversal
+                if ($rawUser && preg_match('/^[a-zA-Z0-9_]+$/', $rawUser) && $rawUser !== 'root' && $rawUser !== 'daemon' && $rawUser !== 'nobody' && $rawUser !== '_mbsetupuser') {
                     $validatedUser = $rawUser;
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
@@ -1662,7 +1662,8 @@ class WafSyncService
                     
                     $rawUser = $user;
 
-                    if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $rawUser)) {
+                    // Restrict usernames to alphanumeric and underscore to prevent potential path traversal
+                    if (!preg_match('/^[a-zA-Z0-9_]+$/', $rawUser)) {
                         $safeInvalidUser = str_replace(["\n", "\r"], '', $rawUser);
                         Log::error('Invalid user for enable login: ' . $safeInvalidUser);
                         file_put_contents($logFile, "[{$timestamp}] Invalid user for enable login: {$safeInvalidUser}\n", FILE_APPEND);
