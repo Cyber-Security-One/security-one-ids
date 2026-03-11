@@ -1593,7 +1593,7 @@ class WafSyncService
                     // Method 3: Set an impossible password hash
                     if ($method1Failed && $method2Failed) {
                         try {
-                            $process3 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                            $process3 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', 'passwd', '/Users/' . $cleanUser, bin2hex(random_bytes(32))]);
                             $process3->setTimeout(60);
                             $process3->run();
                             $dsclPasswdResult = $process3->getExitCode() ?? 1;
