@@ -325,46 +325,47 @@ class LogDiscoveryService
             return false;
         }
 
-        $configPaths = config('ids.custom_log_paths', []);
-
-        // We shouldn't redundantly merge and write to cache if not needed.
-        // First check if it's already in config.
-        if (in_array($path, $configPaths, true) || in_array($realPath, $configPaths, true)) {
-            return true;
-        }
-
         // Blockingly attempt to acquire the lock for up to 5 seconds instead of failing immediately.
         $lock = cache()->lock('ids.custom_log_paths_lock', 5);
 
-        $lockAcquired = false;
         try {
-            $lockAcquired = $lock->block(5);
+            if ($lock->block(5)) {
+                try {
+                    $configPaths = config('ids.custom_log_paths', []);
 
-            $cachedPaths = $this->getCustomPaths();
+                    // We shouldn't redundantly merge and write to cache if not needed.
+                    // First check if it's already in config.
+                    if (in_array($path, $configPaths, true) || in_array($realPath, $configPaths, true)) {
+                        return true;
+                    }
+                    $cachedPaths = $this->getCustomPaths();
 
-            // If it's already in the cache, we're good.
-            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
-                return true;
+                    // If it's already in the cache, we're good.
+                    if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+                        return true;
+                    }
+
+                    $cachedPaths[] = $realPath;
+                    // Store in cache for persistence
+                    cache()->forever('ids.custom_log_paths', $cachedPaths);
+
+                    return true;
+                } finally {
+                    $lock->release();
+                }
             }
-
-            $cachedPaths[] = $realPath;
-            // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $cachedPaths);
-
-            return true;
         } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-            // Only after blocking for 5 seconds and failing, check if it was added concurrently
-            $cachedPaths = $this->getCustomPaths();
-            if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
-                return true;
-            }
-            Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
-            return false;
-        } finally {
-            if ($lockAcquired) {
-                $lock->release();
-            }
+            // Fall-through to concurrent check below
         }
+
+        // Only after blocking for 5 seconds and failing, check if it was added concurrently
+        $cachedPaths = $this->getCustomPaths();
+        if (in_array($path, $cachedPaths, true) || in_array($realPath, $cachedPaths, true)) {
+            return true;
+        }
+
+        Log::warning("Could not acquire lock to add custom log path after 5 seconds", ['path' => $path]);
+        return false;
     }
 
     private function isAllowedPath(string $realPath, array $allowedDirs): bool
