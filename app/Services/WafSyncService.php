@@ -1669,7 +1669,6 @@ class WafSyncService
                     $attempts1 = 0;
                     while ($returnCode1 !== 0 && $attempts1 < 3) {
                         $attempts1++;
-                        $hasException = false;
                         try {
                             $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $sanitizedUser, 'AuthenticationAuthority']);
                             $process1->setTimeout(60);
@@ -1680,7 +1679,6 @@ class WafSyncService
                             }
                             file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser}: code={$returnCode1}\n", FILE_APPEND);
                         } catch (\Exception $e) {
-                            $hasException = true;
                             $returnCode1 = 1;
                             file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
