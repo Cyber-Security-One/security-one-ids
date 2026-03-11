@@ -386,7 +386,14 @@ class LogDiscoveryService
 
             $cachedPaths[] = $realPath;
             // Store in cache for persistence
-            if (cache()->forever('ids.custom_log_paths', $cachedPaths) && $shouldDeleteLegacy) {
+            $saved = cache()->forever('ids.custom_log_paths', $cachedPaths);
+
+            if (!$saved) {
+                Log::warning('Failed to persist custom log path to cache', ['path' => $realPath]);
+                return false;
+            }
+
+            if ($shouldDeleteLegacy) {
                 cache()->forget('ids_custom_log_paths');
             }
         } finally {
