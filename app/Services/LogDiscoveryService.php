@@ -327,12 +327,6 @@ class LogDiscoveryService
             return false;
         }
 
-        // Validate that path does not contain path traversal vectors
-        $segments = explode('/', str_replace('\\', '/', urldecode($path)));
-        if (in_array('..', $segments, true)) {
-            return false;
-        }
-
         if (!$this->isAllowedPath($realPath)) {
             return false;
         }
@@ -363,13 +357,18 @@ class LogDiscoveryService
         $retries = 5;
         $delayMicroseconds = 250000; // 250ms in microseconds
 
-        for ($i = 0; $i < $retries; $i++) {
-            $acquired = $lock->get();
-            if ($acquired) {
-                break;
+        try {
+            for ($i = 0; $i < $retries; $i++) {
+                $acquired = $lock->get();
+                if ($acquired) {
+                    break;
+                }
+                usleep($delayMicroseconds);
+                $delayMicroseconds *= 2; // exponential backoff
             }
-            usleep($delayMicroseconds);
-            $delayMicroseconds *= 2; // exponential backoff
+        } catch (\Throwable $e) {
+            Log::error("Cache driver failed during lock acquisition for custom log paths: " . $e->getMessage());
+            return false;
         }
 
         if (!$acquired) {
@@ -437,45 +436,49 @@ class LogDiscoveryService
     {
         // Handle backward compatibility for old cache key
         if (cache()->has('ids_custom_log_paths')) {
-            $lock = cache()->lock('ids.custom_log_paths_migration_lock', self::LOCK_TIMEOUT_SECONDS);
-            $acquired = $lock->get();
+            try {
+                $lock = cache()->lock('ids.custom_log_paths_migration_lock', self::LOCK_TIMEOUT_SECONDS);
+                $acquired = $lock->get();
 
-            if ($acquired) {
-                try {
-                    // Re-verify existence after acquiring lock to avoid race conditions
-                    if (cache()->has('ids_custom_log_paths')) {
-                        $legacyPaths = cache()->get('ids_custom_log_paths', []);
+                if ($acquired) {
+                    try {
+                        // Re-verify existence after acquiring lock to avoid race conditions
+                        if (cache()->has('ids_custom_log_paths')) {
+                            $legacyPaths = cache()->get('ids_custom_log_paths', []);
 
-                        if (!is_array($legacyPaths)) {
-                            Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
-                                'type' => gettype($legacyPaths)
-                            ]);
-                            $legacyPaths = [];
-                        }
-
-                        $currentPaths = cache()->get('ids.custom_log_paths', []);
-                        $currentPaths = is_array($currentPaths) ? $currentPaths : [];
-
-                        if (!empty($legacyPaths)) {
-                            $validatedLegacyPaths = [];
-
-                            foreach ($legacyPaths as $legacyPath) {
-                                $resolvedPath = is_string($legacyPath) ? realpath($legacyPath) : false;
-                                if ($resolvedPath !== false && is_file($resolvedPath) && is_readable($resolvedPath) && $this->isAllowedPath($resolvedPath)) {
-                                    $validatedLegacyPaths[] = $resolvedPath;
-                                }
+                            if (!is_array($legacyPaths)) {
+                                Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
+                                    'type' => gettype($legacyPaths)
+                                ]);
+                                $legacyPaths = [];
                             }
 
-                            $mergedPaths = array_values(array_unique(array_merge($currentPaths, $validatedLegacyPaths)));
-                            cache()->forever('ids.custom_log_paths', $mergedPaths);
-                        }
+                            $currentPaths = cache()->get('ids.custom_log_paths', []);
+                            $currentPaths = is_array($currentPaths) ? $currentPaths : [];
 
-                        // Delete legacy key only after successful migration
-                        cache()->forget('ids_custom_log_paths');
+                            if (!empty($legacyPaths)) {
+                                $validatedLegacyPaths = [];
+
+                                foreach ($legacyPaths as $legacyPath) {
+                                    $resolvedPath = is_string($legacyPath) ? realpath($legacyPath) : false;
+                                    if ($resolvedPath !== false && is_file($resolvedPath) && is_readable($resolvedPath) && $this->isAllowedPath($resolvedPath)) {
+                                        $validatedLegacyPaths[] = $resolvedPath;
+                                    }
+                                }
+
+                                $mergedPaths = array_values(array_unique(array_merge($currentPaths, $validatedLegacyPaths)));
+                                cache()->forever('ids.custom_log_paths', $mergedPaths);
+                            }
+
+                            // Delete legacy key only after successful migration
+                            cache()->forget('ids_custom_log_paths');
+                        }
+                    } finally {
+                        $lock->release();
                     }
-                } finally {
-                    $lock->release();
                 }
+            } catch (\Throwable $e) {
+                Log::error("Cache driver failed during migration lock acquisition: " . $e->getMessage());
             }
         }
 
