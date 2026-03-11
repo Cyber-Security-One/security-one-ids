@@ -1545,7 +1545,8 @@ class WafSyncService
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
+                    // Validates macOS usernames: permits alphanumeric, underscores, dots, hyphens, and spaces
+                    if (!preg_match('/^[a-zA-Z0-9_. -]+$/', $consoleUser)) {
                         Log::error("Invalid user name: " . $consoleUser);
                         file_put_contents($logFile, "[{$timestamp}] Invalid console user: {$consoleUser}\n", FILE_APPEND);
                     } else {
@@ -1633,7 +1634,8 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
-                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
+                    // Validates macOS usernames: permits alphanumeric, underscores, dots, hyphens, and spaces
+                    if (!preg_match('/^[a-zA-Z0-9_. -]+$/', $user)) {
                         Log::error("Invalid user name: " . $user);
                         file_put_contents($logFile, "[{$timestamp}] Invalid user: {$user}\n", FILE_APPEND);
                         continue;
