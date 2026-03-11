@@ -306,9 +306,9 @@ class LogDiscoveryService
      * Add a custom log path to monitor
      *
      * @param string $path
-     * @return bool|string True on success, false if unreadable, 'LOCK_FAILED' if lock acquisition failed
+     * @return bool True on success, false if unreadable or lock acquisition failed
      */
-    public function addCustomPath(string $path)
+    public function addCustomPath(string $path): bool
     {
         if (!is_readable($path)) {
             return false;
@@ -334,7 +334,7 @@ class LogDiscoveryService
 
         if (!$acquired) {
             Log::warning('addCustomPath lock contention, failing gracefully', ['path' => $path]);
-            return 'LOCK_FAILED';
+            return false;
         }
 
         try {
