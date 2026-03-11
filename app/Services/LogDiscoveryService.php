@@ -331,18 +331,22 @@ class LogDiscoveryService
             return $paths;
         }
 
-        return cache()->lock('ids.custom_log_paths_migration_lock')->block(5, function () use ($newKey, $oldKey) {
-            $paths = cache()->get($newKey);
-            if (is_array($paths)) {
-                return $paths;
-            }
+        try {
+            return cache()->lock('ids.custom_log_paths_migration_lock', 10)->block(5, function () use ($newKey, $oldKey) {
+                $paths = cache()->get($newKey);
+                if (is_array($paths)) {
+                    return $paths;
+                }
 
-            $legacyPaths = cache()->get($oldKey, []);
-            cache()->forever($newKey, $legacyPaths);
-            cache()->forget($oldKey);
+                $legacyPaths = cache()->get($oldKey, []);
+                cache()->forever($newKey, $legacyPaths);
+                cache()->forget($oldKey);
 
-            return $legacyPaths;
-        });
+                return $legacyPaths;
+            });
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            return cache()->get($newKey, []);
+        }
     }
 
     /**

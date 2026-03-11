@@ -76,7 +76,7 @@ class LogDiscoveryServiceTest extends TestCase
         $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
     }
 
-    public function test_add_custom_path_returns_true_without_caching_when_path_already_in_config(): void
+    public function test_add_custom_path_returns_true_without_caching_when_path_already_in_cache(): void
     {
         $tempPath = $this->createTempLogFile();
 
