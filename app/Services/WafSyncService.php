@@ -1539,9 +1539,9 @@ class WafSyncService
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
-
+--- Resolution #1 ---
                 if ($consoleUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-$dsclDisableExecuted = false;
+                    $dsclDisableExecuted = false;
                     $dsclDisableResult = null;
                     $pwpolicyDisableExecuted = false;
                     $pwpolicyDisableResult = null;
@@ -1564,7 +1564,7 @@ $dsclDisableExecuted = false;
 
                     if ($method1Failed) {
                         // Method 2: Lock the user's password (they won't be able to login)
-try {
+                        try {
                             $process2 = new \Symfony\Component\Process\Process(['sudo', 'pwpolicy', '-u', $consoleUser, 'disableuser']);
                             $process2->setTimeout(60);
                             $process2->run();
@@ -1574,12 +1574,7 @@ try {
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$safeConsoleUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
-                    }
-
-                    $method2Failed = !$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0;
-
-                    if ($method1Failed && $method2Failed) {
-                        // Method 3: Set an impossible password hash
+--- Resolution #2 ---
 try {
                             $process3 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-passwd', '/Users/' . $consoleUser, '*']);
                             $process3->setTimeout(60);
@@ -1589,6 +1584,63 @@ try {
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
+--- Resolution #3 ---
+
+                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
+
+                    $dsclClearExecuted = false;
+                    $dsclClearResult = null;
+                    $pwpolicyEnableExecuted = false;
+                    $pwpolicyEnableResult = null;
+
+                    // Remove DisabledUser from AuthenticationAuthority
+                    try {
+                        $process1 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-delete', '/Users/' . $user, 'AuthenticationAuthority']);
+                        $process1->setTimeout(60);
+                        $process1->run();
+                        $dsclClearExecuted = true;
+                        $dsclClearResult = $process1->getExitCode() ?? 1;
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$dsclClearResult}\n", FILE_APPEND);
+                    } catch (\Exception $e) {
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                    }
+
+                    // Re-enable with pwpolicy
+                    try {
+                        $process2 = new \Symfony\Component\Process\Process(['sudo', 'pwpolicy', '-u', $user, 'enableuser']);
+                        $process2->setTimeout(60);
+                        $process2->run();
+                        $pwpolicyEnableExecuted = true;
+                        $pwpolicyEnableResult = $process2->getExitCode() ?? 1;
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$pwpolicyEnableResult}\n", FILE_APPEND);
+                    } catch (\Exception $e) {
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                    }
+
+                    if ((!$dsclClearExecuted || $dsclClearResult !== 0) && (!$pwpolicyEnableExecuted || $pwpolicyEnableResult !== 0)) {
+                        throw new \Exception("Critical failure: Could not enable user {$safeUser} via dscl or pwpolicy.");
+                    }
+--- Resolution #4 ---
+                    }
+
+                    $method2Failed = !$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0;
+
+                    if ($method1Failed && $method2Failed) {
+                        // Method 3: Set an impossible password hash
+<<<<<<< /tmp/merge_ours_oqttismg9n436o7LaOj
+                        exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
+                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+=======
+try {
+                            $process3 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-passwd', '/Users/' . $consoleUser, '*']);
+                            $process3->setTimeout(60);
+                            $process3->run();
+                            $dsclPasswdResult = $process3->getExitCode() ?? 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$dsclPasswdResult}\n", FILE_APPEND);
+                        } catch (\Exception $e) {
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        }
+>>>>>>> /tmp/merge_theirs_nsc7spd8bqb77KFSmae
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1648,6 +1700,18 @@ try {
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+<<<<<<< /tmp/merge_ours_oqttismg9n436o7LaOj
+
+                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
+
+                    // Remove DisabledUser from AuthenticationAuthority
+                    exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
+
+                    // Re-enable with pwpolicy
+                    exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode}\n", FILE_APPEND);
+=======
 
                     $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
 
@@ -1683,6 +1747,7 @@ $dsclClearExecuted = false;
                     if ((!$dsclClearExecuted || $dsclClearResult !== 0) && (!$pwpolicyEnableExecuted || $pwpolicyEnableResult !== 0)) {
                         throw new \Exception("Critical failure: Could not enable user {$safeUser} via dscl or pwpolicy.");
                     }
+>>>>>>> /tmp/merge_theirs_nsc7spd8bqb77KFSmae
                 }
 
             } else {
@@ -2962,7 +3027,11 @@ $dsclClearExecuted = false;
                 return $path;
             }
         }
+<<<<<<< /tmp/merge_ours_oqttismg9n436o7LaOj
 
+=======
+
+>>>>>>> /tmp/merge_theirs_nsc7spd8bqb77KFSmae
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
