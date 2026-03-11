@@ -2894,7 +2894,7 @@ class WafSyncService
     /**
      * Get CA certificate path for Windows SSL verification
      *
-     * @throws \App\Exceptions\CertificateBundleMissingException
+     * @throws \RuntimeException
      */
     protected function getCaCertPath(): string
     {
@@ -2935,7 +2935,7 @@ class WafSyncService
         }
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
-        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+        throw new \RuntimeException("CA certificate bundle missing: {$bundledPath}");
     }
 
     /**
