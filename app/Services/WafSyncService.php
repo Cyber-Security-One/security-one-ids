@@ -1580,16 +1580,17 @@ class WafSyncService
                         if (!$method2Success) {
                             // Method 3: Set an impossible password hash
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', 'LocalDirectorySecurity']);
+                                $impossiblePassword = bin2hex(random_bytes(32));
+                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, $impossiblePassword]);
                                 $returnCode3 = $process3->exitCode();
-                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible auth authority: code={$returnCode3}\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password for {$cleanUser}: code={$returnCode3}\n", FILE_APPEND);
 
                                 if ($returnCode3 !== 0) {
                                     file_put_contents($logFile, "[{$timestamp}] all disable methods failed for user {$cleanUser}\n", FILE_APPEND);
                                 }
                             } catch (\Exception $e) {
                                 $returnCode3 = 1;
-                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible auth authority exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password exception: " . $e->getMessage() . "\n", FILE_APPEND);
                                 file_put_contents($logFile, "[{$timestamp}] all disable methods failed for user {$cleanUser}\n", FILE_APPEND);
                             }
                         }
