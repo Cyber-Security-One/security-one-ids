@@ -1530,52 +1530,71 @@ class WafSyncService
                 @mkdir($logDir, 0755, true);
             }
             
-            file_put_contents($logFile, "[{$timestamp}] Disable login signal received from WAF Hub\n", FILE_APPEND);
+            $writeLog = function($message) use ($logFile) {
+                if (file_put_contents($logFile, $message, FILE_APPEND) === false) {
+                    throw new \RuntimeException("Failed to write to login control log file: {$logFile}");
+                }
+            };
+
+            $writeLog("[{$timestamp}] Disable login signal received from WAF Hub\n");
             
             if (PHP_OS_FAMILY === 'Windows') {
                 echo "🚫 Disabling Windows user accounts...\n";
                 // Disable all non-system user accounts
                 exec('powershell -Command "Get-LocalUser | Where-Object {$_.Enabled -eq $true -and $_.Name -ne \'Administrator\'} | Disable-LocalUser" 2>&1', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Windows disable users result: code={$returnCode}\n", FILE_APPEND);
+                $writeLog("[{$timestamp}] Windows disable users result: code={$returnCode}\n");
                 
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+                $writeLog("[{$timestamp}] Console user: {$consoleUser}\n");
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                    $userDisabled = false;
+
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
+                    $returnCode = 0;
                     exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                    $writeLog("[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n");
                     
-                    if ($returnCode !== 0) {
+                    if ($returnCode === 0) {
+                        $userDisabled = true;
+                    } else {
                         // Method 2: Lock the user's password (they won't be able to login)
+                        $output = [];
+                        $returnCode = 0;
                         exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
+                        $writeLog("[{$timestamp}] pwpolicy disable user: code={$returnCode}\n");
+
+                        if ($returnCode === 0) {
+                            $userDisabled = true;
+                        }
                     }
                     
-                    if ($returnCode !== 0) {
+                    if (!$userDisabled) {
                         // Method 3: Set an impossible password hash
+                        $output = [];
+                        $returnCode = 0;
                         exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                        $writeLog("[{$timestamp}] dscl set impossible password: code={$returnCode}\n");
                     }
                 } else {
-                    file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
+                    $writeLog("[{$timestamp}] No valid console user found to disable\n");
                 }
                 
             } else {
                 echo "🚫 Disabling Linux user login...\n";
                 // Lock all non-root users
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -l "$user" 2>/dev/null; done', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Linux disable users result: code={$returnCode}\n", FILE_APPEND);
+                $writeLog("[{$timestamp}] Linux disable users result: code={$returnCode}\n");
             }
             
             echo "✅ Login disabled\n";
             Log::info('Login disabled');
-            file_put_contents($logFile, "[{$timestamp}] Login disabled successfully\n", FILE_APPEND);
+            $writeLog("[{$timestamp}] Login disabled successfully\n");
             
         } catch (\Exception $e) {
             echo "❌ Failed to disable login: " . $e->getMessage() . "\n";
@@ -1603,13 +1622,19 @@ class WafSyncService
                 @mkdir($logDir, 0755, true);
             }
             
-            file_put_contents($logFile, "[{$timestamp}] Enable login signal received from WAF Hub\n", FILE_APPEND);
+            $writeLog = function($message) use ($logFile) {
+                if (file_put_contents($logFile, $message, FILE_APPEND) === false) {
+                    throw new \RuntimeException("Failed to write to login control log file: {$logFile}");
+                }
+            };
+
+            $writeLog("[{$timestamp}] Enable login signal received from WAF Hub\n");
             
             if (PHP_OS_FAMILY === 'Windows') {
                 echo "✅ Enabling Windows user accounts...\n";
                 // Enable previously disabled users, but exclude system accounts (Guest, Administrator)
                 exec('powershell -Command "Get-LocalUser | Where-Object {$_.Enabled -eq $false -and $_.Name -ne \'Guest\' -and $_.Name -ne \'Administrator\'} | Enable-LocalUser" 2>&1', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Windows enable users result: code={$returnCode}\n", FILE_APPEND);
+                $writeLog("[{$timestamp}] Windows enable users result: code={$returnCode}\n");
                 
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "✅ Enabling macOS user login...\n";
@@ -1622,23 +1647,27 @@ class WafSyncService
                     if (!$user) continue;
                     
                     // Remove DisabledUser from AuthenticationAuthority
+                    $output = [];
+                    $returnCode = 0;
                     exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    $writeLog("[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n");
                     
                     // Re-enable with pwpolicy  
+                    $output = [];
+                    $returnCode = 0;
                     exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    $writeLog("[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n");
                 }
                 
             } else {
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Linux enable users result: code={$returnCode}\n", FILE_APPEND);
+                $writeLog("[{$timestamp}] Linux enable users result: code={$returnCode}\n");
             }
             
             echo "✅ Login enabled\n";
             Log::info('Login enabled');
-            file_put_contents($logFile, "[{$timestamp}] Login enabled successfully\n", FILE_APPEND);
+            $writeLog("[{$timestamp}] Login enabled successfully\n");
             
         } catch (\Exception $e) {
             echo "❌ Failed to enable login: " . $e->getMessage() . "\n";
