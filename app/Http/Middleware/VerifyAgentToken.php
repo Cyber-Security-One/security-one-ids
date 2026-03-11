@@ -9,14 +9,28 @@ class VerifyAgentToken
 {
     public function handle(Request $request, Closure $next)
     {
-        $token = (string) ($request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken());
+        $token = $request->input('token') ?? $request->header('X-Agent-Token') ?? $request->bearerToken();
         $agentToken = (string) config('ids.agent_token', env('AGENT_TOKEN'));
 
         // To prevent information leakage (e.g., revealing via different response times
         // or codes that the system is misconfigured), we enforce a generic 401 response
         // for both missing configuration and invalid tokens.
-        // We also check length to ensure hash_equals does not leak timing info based on length.
-        if ($agentToken === '' || strlen($agentToken) !== strlen($token) || !hash_equals($agentToken, $token)) {
+        if (!is_scalar($token)) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
+        $token = (string) $token;
+        $configured = $agentToken !== '';
+        $expectedSeed = $configured ? $agentToken : str_repeat("\0", 32);
+
+        $isValid = $configured
+            && $token !== ''
+            && hash_equals(
+                hash('sha256', $expectedSeed, true),
+                hash('sha256', $token, true)
+            );
+
+        if (!$isValid) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
