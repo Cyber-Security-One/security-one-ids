@@ -8,14 +8,14 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Log Discovery Service
- * 
+ *
  * Auto-discovers web server log files on the system
  */
 class LogDiscoveryService
 {
-    private const LOCK_TIMEOUT = 5;
-    private const LOCK_BLOCK_SECONDS = 3;
-    private const MAX_RETRIES = 3;
+private const LOCK_TIMEOUT = 5;
+        private const LOCK_BLOCK_SECONDS = 3;
+        private const MAX_RETRIES = 3;
 
     /**
      * Common web server log file locations to scan
@@ -27,7 +27,7 @@ class LogDiscoveryService
         '/var/log/nginx/*-access.log',
         '/var/log/nginx/error.log',
         '/usr/local/nginx/logs/access.log',
-        
+
         // === Linux Apache ===
         '/var/log/apache2/access.log',
         '/var/log/apache2/*/access.log',
@@ -35,7 +35,7 @@ class LogDiscoveryService
         '/var/log/apache2/other_vhosts_access.log',
         '/var/log/httpd/access_log',
         '/var/log/httpd/*/access_log',
-        
+
         // === macOS ===
         '/var/log/apache2/access_log',
         '/var/log/apache2/error_log',
@@ -46,7 +46,7 @@ class LogDiscoveryService
         '/opt/homebrew/var/log/httpd/access_log',
         '/private/var/log/apache2/access_log',
         '/private/var/log/apache2/error_log',
-        
+
         // === Docker / Container ===
         '/var/log/host-nginx/access.log',
         '/var/log/host-nginx/*/access.log',
@@ -56,7 +56,7 @@ class LogDiscoveryService
         '/var/log/host-httpd/access_log',
         '/var/log/custom-logs-*/access.log',
         '/var/log/custom-logs-*/*.log',
-        
+
         // === Common custom paths ===
         '/var/www/*/logs/access.log',
         '/home/*/logs/access.log',
@@ -76,13 +76,13 @@ class LogDiscoveryService
         '/var/log/ufw.log',
         '/var/log/fail2ban.log',
         '/var/log/firewalld',
-        
+
         // === macOS system logs ===
         '/var/log/system.log',
         '/var/log/install.log',
         '/private/var/log/system.log',
         '/private/var/log/asl/*.asl',
-        
+
         // === Application logs ===
         '/var/log/mysql/error.log',
         '/var/log/postgresql/*.log',
@@ -241,7 +241,7 @@ class LogDiscoveryService
         }
 
         $type = $this->detectServerType($path);
-        
+
         return [
             'path' => $path,
             'type' => $type,
@@ -278,7 +278,7 @@ class LogDiscoveryService
 
         // Try to match against known formats
         $sampleLine = end($lines);
-        
+
         foreach (self::LOG_FORMATS as $name => $pattern) {
             if (preg_match($pattern, $sampleLine)) {
                 return $name;
@@ -311,39 +311,40 @@ class LogDiscoveryService
             return false;
         }
 
-        $attempts = 0;
+$attempts = 0;
 
-        while ($attempts < self::MAX_RETRIES) {
-            try {
-                return Cache::lock('add_custom_path_lock', self::LOCK_TIMEOUT)->block(self::LOCK_BLOCK_SECONDS, function () use ($path) {
-                    $cachedPaths = $this->getCustomPaths();
+            while ($attempts < self::MAX_RETRIES) {
+                try {
+                    return Cache::lock('add_custom_path_lock', self::LOCK_TIMEOUT)->block(self::LOCK_BLOCK_SECONDS, function () use ($path) {
+                        $cachedPaths = $this->getCustomPaths();
 
-                    if (!in_array($path, $cachedPaths, true)) {
-                        $cachedPaths[] = $path;
-                        // Store in cache for persistence
-                        cache()->forever('ids.custom_log_paths', $cachedPaths);
+                        if (!in_array($path, $cachedPaths, true)) {
+                            $cachedPaths[] = $path;
+                            // Store in cache for persistence
+                            cache()->forever('ids.custom_log_paths', $cachedPaths);
+                        }
+
+                        return true;
+                    });
+                } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+                    $attempts++;
+                    if ($attempts >= self::MAX_RETRIES) {
+                        Log::warning('Failed to acquire lock when adding custom log path after retries', [
+                            'path' => $path,
+                            'error' => $e->getMessage(),
+                        ]);
+                        return false;
                     }
 
-                    return true;
-                });
-            } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-                $attempts++;
-                if ($attempts >= self::MAX_RETRIES) {
-                    Log::warning('Failed to acquire lock when adding custom log path after retries', [
+                    // Exponential backoff
+                    usleep((2 ** $attempts) * 100000); // 200ms, 400ms...
+                } catch (\Exception $e) {
+                    Log::warning('Unexpected cache error when adding custom log path', [
                         'path' => $path,
                         'error' => $e->getMessage(),
                     ]);
                     return false;
                 }
-
-                // Exponential backoff
-                usleep((2 ** $attempts) * 100000); // 200ms, 400ms...
-            } catch (\Exception $e) {
-                Log::warning('Unexpected cache error when adding custom log path', [
-                    'path' => $path,
-                    'error' => $e->getMessage(),
-                ]);
-                return false;
             }
         }
 
@@ -355,24 +356,24 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        // Check new key first
-        $paths = cache()->get('ids.custom_log_paths');
+// Check new key first
+            $paths = cache()->get('ids.custom_log_paths');
 
-        if ($paths !== null) {
-            return $paths;
-        }
+            if ($paths !== null) {
+                return $paths;
+            }
 
-        // Fallback to old key, migrate if present
-        $oldPaths = cache()->get('ids_custom_log_paths');
+            // Fallback to old key, migrate if present
+            $oldPaths = cache()->get('ids_custom_log_paths');
 
-        if ($oldPaths !== null) {
-            Log::warning('Migrating legacy cache key ids_custom_log_paths to ids.custom_log_paths');
-            cache()->forever('ids.custom_log_paths', $oldPaths);
-            cache()->forget('ids_custom_log_paths');
-            return $oldPaths;
-        }
+            if ($oldPaths !== null) {
+                Log::warning('Migrating legacy cache key ids_custom_log_paths to ids.custom_log_paths');
+                cache()->forever('ids.custom_log_paths', $oldPaths);
+                cache()->forget('ids_custom_log_paths');
+                return $oldPaths;
+            }
 
-        return [];
+            return [];
     }
 
     /**
