@@ -17,11 +17,11 @@ class ValidateAgentToken
     public function handle(Request $request, Closure $next): Response
     {
         // Skip health check routes to ensure probes pass even if misconfigured
-        if ($request->is('up') || $request->is('health')) {
+        if (in_array($request->path(), ['up', 'health'], true)) {
             return $next($request);
         }
 
-        if (app()->isProduction() && trim((string) config('ids.agent_token', '')) === '') {
+        if (app()->isProduction() && empty(trim(config('ids.agent_token', '') ?? ''))) {
             throw new HttpException(503, 'Service Unavailable: AGENT_TOKEN must be explicitly configured in production.');
         }
 
