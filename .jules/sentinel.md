@@ -8,12 +8,12 @@
 **Learning:** Due to a lack of shared middleware for the `api` route group, new API endpoints were added sequentially without considering global authentication. Security logic was duplicated and omitted on dangerous operational endpoints.
 **Prevention:** Implement group-level authentication middleware for related protected endpoints. Ensure that all routes executing high-privilege operations or modifying global state require strict authentication tokens. Avoid applying authentication only inside route closures where it can be easily missed on subsequent additions.
 
-## 2025-03-10 - [OS Command Injection via Unsanitized User Inputs in Shell Execution]
-**Vulnerability:** Unsanitized system variables (like `$consoleUser` and `$user`) derived from dynamic system states were directly interpolated into string commands passed to `exec()` functions (e.g., `exec("sudo dscl . -delete /Users/{$user} ...")`).
-**Learning:** Any variable that is incorporated into a shell command, even if originating from a seemingly trustworthy system query (such as listing user accounts), poses a command injection risk or syntax error risk if the data contains spaces, quotes, or shell metacharacters.
-**Prevention:** Always use `escapeshellarg()` on any dynamic variable before inserting it into a shell command executed via `exec()`, `shell_exec()`, or `system()`.
-
 ## 2025-02-28 - Insecure Token Comparison (Timing Attack)
 **Vulnerability:** API routes protecting agent updates and settings were secured with `!==` string comparison on `AGENT_TOKEN`, which opens a side-channel for timing attacks.
 **Learning:** Checking secure tokens with standard operators (`==` or `===`) stops comparison on the first mismatched character, leading to timing variations that can be measured and exploited to extract a token.
 **Prevention:** Always use `hash_equals()` for token or password verification and cast values to strings beforehand.
+
+## 2025-03-10 - [OS Command Injection via Unsanitized User Inputs in Shell Execution]
+**Vulnerability:** Unsanitized system variables (like `$consoleUser` and `$user`) derived from dynamic system states were directly interpolated into string commands passed to `exec()` functions (e.g., `exec("sudo dscl . -delete /Users/{$user} ...")`).
+**Learning:** Any variable that is incorporated into a shell command, even if originating from a seemingly trustworthy system query (such as listing user accounts), poses a command injection risk or syntax error risk if the data contains spaces, quotes, or shell metacharacters.
+**Prevention:** Always use `escapeshellarg()` on any dynamic variable before inserting it into a shell command executed via `exec()`, `shell_exec()`, or `system()`.
