@@ -1560,6 +1560,7 @@ class WafSyncService
                     
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
+                        $output = [];
                         exec("sudo pwpolicy -u {$safeConsoleUser} disableuser 2>&1", $output, $returnCode);
                         $safeLogOutput = preg_replace('/[\r\n]+/', ' ', implode(" ", $output));
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}, output={$safeLogOutput}\n", FILE_APPEND);
@@ -1567,6 +1568,7 @@ class WafSyncService
                     
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
+                        $output = [];
                         exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
                         $safeLogOutput = preg_replace('/[\r\n]+/', ' ', implode(" ", $output));
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}, output={$safeLogOutput}\n", FILE_APPEND);
@@ -1637,11 +1639,13 @@ class WafSyncService
                     $safeUser = escapeshellarg($user);
 
                     // Remove DisabledUser from AuthenticationAuthority
+                    $output = [];
                     exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
                     $safeLogOutput = preg_replace('/[\r\n]+/', ' ', implode(" ", $output));
                     file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUserLog}: code={$returnCode}, output={$safeLogOutput}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
+                    $output = [];
                     exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
                     $safeLogOutput = preg_replace('/[\r\n]+/', ' ', implode(" ", $output));
                     file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUserLog}: code={$returnCode}, output={$safeLogOutput}\n", FILE_APPEND);
