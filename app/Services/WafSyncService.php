@@ -1549,6 +1549,7 @@ class WafSyncService
                 exec("dscl . -list /Users 2>/dev/null", $validUsers);
                 $validUsers = array_map('trim', $validUsers);
 
+                // Note: There is a potential race condition between listing valid users and checking if the console user is in that list.
                 if ($cleanUser && in_array($cleanUser, $validUsers, true) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
@@ -1583,7 +1584,8 @@ class WafSyncService
                             // Method 3: Set an impossible password hash
                             $method3Success = false;
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                                $impossiblePassword = bin2hex(random_bytes(32));
+                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, $impossiblePassword]);
                                 $method3Success = $process3->successful();
                                 $returnCode3 = $process3->exitCode();
                                 file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
