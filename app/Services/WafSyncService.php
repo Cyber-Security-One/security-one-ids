@@ -1545,7 +1545,7 @@ class WafSyncService
                 
                 $excludedUsers = ['root', 'daemon', 'nobody', '_mbsetupuser'];
 
-                if ($user && preg_match('/^[a-zA-Z0-9._-]+$/', $user) && !in_array($user, $excludedUsers)) {
+                if ($user && preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $user) && !in_array($user, $excludedUsers)) {
                     $cleanUser = $user;
                     file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
                     // Method 1: Use dscl to disable user account
@@ -1655,7 +1655,7 @@ class WafSyncService
                     
                     $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
 
-                    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) continue;
+                    if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $cleanUser)) continue;
 
                     try {
                         // Remove DisabledUser from AuthenticationAuthority
