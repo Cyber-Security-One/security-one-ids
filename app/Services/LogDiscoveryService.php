@@ -13,6 +13,8 @@ use Illuminate\Support\Facades\Log;
 class LogDiscoveryService
 {
     private const LOCK_TIMEOUT_SECONDS = 5;
+    private const INITIAL_RETRY_DELAY_US = 100000; // 100ms
+    private const MAX_RETRY_DELAY_US = 1000000; // 1s
 
     /**
      * Allowed base directories for custom log paths
@@ -349,8 +351,7 @@ class LogDiscoveryService
 
         $lock = cache()->lock('ids.custom_log_paths_lock', self::LOCK_TIMEOUT_SECONDS);
         $acquired = false;
-        $delayMicroseconds = 100000; // 100ms
-        $maxDelayMicroseconds = 1000000; // 1s
+        $delayMicroseconds = self::INITIAL_RETRY_DELAY_US;
         $deadline = microtime(true) + self::LOCK_TIMEOUT_SECONDS;
 
         while (microtime(true) < $deadline) {
@@ -365,7 +366,7 @@ class LogDiscoveryService
             }
 
             usleep(min($delayMicroseconds, $remainingMicroseconds));
-            $delayMicroseconds = min($delayMicroseconds * 2, $maxDelayMicroseconds);
+            $delayMicroseconds = min($delayMicroseconds * 2, self::MAX_RETRY_DELAY_US);
         }
 
         if (!$acquired) {
