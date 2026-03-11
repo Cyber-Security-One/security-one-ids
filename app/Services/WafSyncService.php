@@ -1550,7 +1550,7 @@ class WafSyncService
                     $output = [];
                     $safeConsoleUser = escapeshellarg($consoleUser);
                     exec("sudo dscl . -create /Users/{$safeConsoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
                     
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
@@ -1625,11 +1625,11 @@ class WafSyncService
                     // Remove DisabledUser from AuthenticationAuthority
                     $safeUser = escapeshellarg($user);
                     exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
                     exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode}\n", FILE_APPEND);
                 }
                 
             } else {
