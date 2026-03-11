@@ -1541,12 +1541,6 @@ class WafSyncService
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
 
 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    // Validate username format to prevent shell injection
-                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
-                        file_put_contents($logFile, "[{$timestamp}] Invalid console user name: {$consoleUser}\n", FILE_APPEND);
-                        continue;
-                    }
-
                     $escapedUser = escapeshellarg($consoleUser);
 
                     // Method 1: Use dscl to disable user account
@@ -1631,12 +1625,6 @@ exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3
                          Log::warning('User does not exist: ' . $user);
                          file_put_contents($logFile, "[{$timestamp}] User does not exist: {$user}\n", FILE_APPEND);
                          continue;
-                    }
-
-                    // Validate username format to prevent shell injection
-                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
-                        file_put_contents($logFile, "[{$timestamp}] Invalid user name: {$user}\n", FILE_APPEND);
-                        continue;
                     }
 
                     $escapedUser = escapeshellarg($user);
