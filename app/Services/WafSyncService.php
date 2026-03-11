@@ -1574,19 +1574,18 @@ class WafSyncService
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$safeConsoleUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
-
 --- Resolution #2 ---
 try {
-                    $process3 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-passwd', '/Users/' . $consoleUser, '*']);
-                    $process3->setTimeout(60);
-                    $process3->run();
-                    $dsclPasswdResult = $process3->getExitCode() ?? 1;
-                    file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$dsclPasswdResult}\n", FILE_APPEND);
-                } catch (\Exception $e) {
-                    file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
-                }
-
+                            $process3 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-passwd', '/Users/' . $consoleUser, '*']);
+                            $process3->setTimeout(60);
+                            $process3->run();
+                            $dsclPasswdResult = $process3->getExitCode() ?? 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$dsclPasswdResult}\n", FILE_APPEND);
+                        } catch (\Exception $e) {
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        }
 --- Resolution #3 ---
+
                     $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
 
                     $dsclClearExecuted = false;
@@ -1621,7 +1620,6 @@ try {
                     if ((!$dsclClearExecuted || $dsclClearResult !== 0) && (!$pwpolicyEnableExecuted || $pwpolicyEnableResult !== 0)) {
                         throw new \Exception("Critical failure: Could not enable user {$safeUser} via dscl or pwpolicy.");
                     }
-
 --- Resolution #4 ---
                     }
 
@@ -1629,7 +1627,7 @@ try {
 
                     if ($method1Failed && $method2Failed) {
                         // Method 3: Set an impossible password hash
-<<<<<<< /tmp/merge_ours_p5qh0j011ghgeuud9gb
+<<<<<<< /tmp/merge_ours_5eajm75boc1icNX6TIf
                         exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
 =======
@@ -1642,7 +1640,7 @@ try {
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
->>>>>>> /tmp/merge_theirs_e8qkpfckbdit6NcA2q9
+>>>>>>> /tmp/merge_theirs_d0ean4nq75r85Tiqh97
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1702,7 +1700,7 @@ try {
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
-<<<<<<< /tmp/merge_ours_p5qh0j011ghgeuud9gb
+<<<<<<< /tmp/merge_ours_5eajm75boc1icNX6TIf
 
                     $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
 
@@ -1749,7 +1747,7 @@ $dsclClearExecuted = false;
                     if ((!$dsclClearExecuted || $dsclClearResult !== 0) && (!$pwpolicyEnableExecuted || $pwpolicyEnableResult !== 0)) {
                         throw new \Exception("Critical failure: Could not enable user {$safeUser} via dscl or pwpolicy.");
                     }
->>>>>>> /tmp/merge_theirs_e8qkpfckbdit6NcA2q9
+>>>>>>> /tmp/merge_theirs_d0ean4nq75r85Tiqh97
                 }
 
             } else {
@@ -3029,11 +3027,11 @@ $dsclClearExecuted = false;
                 return $path;
             }
         }
-<<<<<<< /tmp/merge_ours_p5qh0j011ghgeuud9gb
+<<<<<<< /tmp/merge_ours_5eajm75boc1icNX6TIf
 
 =======
 
->>>>>>> /tmp/merge_theirs_e8qkpfckbdit6NcA2q9
+>>>>>>> /tmp/merge_theirs_d0ean4nq75r85Tiqh97
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
