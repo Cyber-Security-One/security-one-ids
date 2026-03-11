@@ -398,19 +398,32 @@ class LogDiscoveryService
 
                     if ($needsMigration) {
                         $merged = cache()->get($newKey, []);
+                        $merged = is_array($merged) ? $merged : [];
 
+                        $legacyPaths = [];
                         foreach ($legacyKeys as $legacyKey) {
                             if (cache()->has($legacyKey)) {
                                 $legacyData = cache()->get($legacyKey, []);
                                 if (is_array($legacyData)) {
-                                    $merged = array_merge($merged, $legacyData);
+                                    $legacyPaths = array_merge($legacyPaths, $legacyData);
                                 }
+                            }
+                        }
+
+                        $normalized = [];
+                        foreach (array_merge($merged, $legacyPaths) as $candidate) {
+                            if (!is_string($candidate)) {
+                                continue;
+                            }
+                            $real = realpath($candidate);
+                            if ($real !== false && is_file($real) && is_readable($real)) {
+                                $normalized[] = $real;
                             }
                         }
 
                         // Remove static config values from cache
                         $configPaths = config('ids.custom_log_paths', []);
-                        $merged = array_diff($merged, $configPaths);
+                        $merged = array_diff($normalized, $configPaths);
 
                         $merged = array_values(array_unique($merged));
                         cache()->forever($newKey, $merged);

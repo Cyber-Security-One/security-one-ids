@@ -15,6 +15,9 @@ class VerifyAgentToken
         }
         if ($token === null || $token === '') {
             $token = $request->input('token');
+            if ($token !== null && $token !== '') {
+                \Illuminate\Support\Facades\Log::warning('AGENT_TOKEN passed via query string or body parameter. This is deprecated and will be removed. Please use the Authorization Bearer header or X-Agent-Token header.');
+            }
         }
         $agentToken = (string) config('ids.agent_token', env('AGENT_TOKEN'));
 

@@ -29,16 +29,23 @@ class LogDiscoveryServiceTest extends TestCase
 
     public function test_get_custom_paths_migrates_legacy_keys(): void
     {
+        $path1 = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'legacy1_' . uniqid() . '.log';
+        $path2 = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'legacy2_' . uniqid() . '.log';
+        touch($path1);
+        touch($path2);
+        $this->tempFiles[] = $path1;
+        $this->tempFiles[] = $path2;
+
         // Set up legacy keys
-        Cache::forever('ids_custom_log_paths', ['/legacy/path/1']);
-        Cache::forever('ids.custom_log_paths', ['/legacy/path/2']);
+        Cache::forever('ids_custom_log_paths', [$path1]);
+        Cache::forever('ids.custom_log_paths', [$path2]);
 
         Config::set('ids.custom_log_paths', []);
 
         $paths = $this->service->getCustomPaths();
 
-        $this->assertContains('/legacy/path/1', $paths);
-        $this->assertContains('/legacy/path/2', $paths);
+        $this->assertContains(realpath($path1), $paths);
+        $this->assertContains(realpath($path2), $paths);
         $this->assertCount(2, $paths);
 
         // Verify the legacy keys are deleted and new key is used
@@ -47,26 +54,33 @@ class LogDiscoveryServiceTest extends TestCase
         $this->assertTrue(Cache::has('ids::custom_log_paths'));
 
         $newPaths = Cache::get('ids::custom_log_paths');
-        $this->assertContains('/legacy/path/1', $newPaths);
-        $this->assertContains('/legacy/path/2', $newPaths);
+        $this->assertContains(realpath($path1), $newPaths);
+        $this->assertContains(realpath($path2), $newPaths);
     }
 
     public function test_get_custom_paths_removes_config_paths_from_cache(): void
     {
-        Cache::forever('ids_custom_log_paths', ['/legacy/path', '/config/path']);
+        $legacyPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'legacy_' . uniqid() . '.log';
+        $configPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'config_' . uniqid() . '.log';
+        touch($legacyPath);
+        touch($configPath);
+        $this->tempFiles[] = $legacyPath;
+        $this->tempFiles[] = $configPath;
+
+        Cache::forever('ids_custom_log_paths', [$legacyPath, $configPath]);
 
         // Explicitly set the config
-        Config::set('ids.custom_log_paths', ['/config/path']);
+        Config::set('ids.custom_log_paths', [$configPath]);
 
         $paths = $this->service->getCustomPaths();
 
         // The returned paths are from cache (which should no longer have /config/path)
-        $this->assertContains('/legacy/path', $paths);
-        $this->assertNotContains('/config/path', $paths);
+        $this->assertContains(realpath($legacyPath), $paths);
+        $this->assertNotContains($configPath, $paths);
 
         $newPaths = Cache::get('ids::custom_log_paths');
-        $this->assertContains('/legacy/path', $newPaths);
-        $this->assertNotContains('/config/path', $newPaths);
+        $this->assertContains(realpath($legacyPath), $newPaths);
+        $this->assertNotContains($configPath, $newPaths);
     }
 
     public function test_add_custom_path_uses_new_key_and_avoids_duplicates(): void
