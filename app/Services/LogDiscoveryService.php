@@ -306,14 +306,17 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
-        }
+        return cache()->lock('ids.custom_log_paths.lock', 10)->block(5, function () use ($path) {
+            $cachePaths = $this->getCustomPaths();
+            $configPaths = config('ids.custom_log_paths', []);
 
-        return true;
+            if (!in_array($path, $cachePaths) && !in_array($path, $configPaths)) {
+                $cachePaths[] = $path;
+                cache()->forever('ids.custom_log_paths', $cachePaths);
+            }
+
+            return true;
+        });
     }
 
     /**
@@ -321,7 +324,22 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $paths = cache()->get('ids.custom_log_paths');
+        if ($paths !== null) {
+            return $paths;
+        }
+
+        return cache()->lock('ids.custom_log_paths.migration_lock', 10)->block(5, function () {
+            $paths = cache()->get('ids.custom_log_paths');
+            if ($paths !== null) {
+                return $paths;
+            }
+
+            $legacyPaths = cache()->get('ids_custom_log_paths', []);
+            cache()->forever('ids.custom_log_paths', $legacyPaths);
+
+            return $legacyPaths;
+        });
     }
 
     /**
