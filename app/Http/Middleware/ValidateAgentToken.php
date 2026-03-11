@@ -16,7 +16,7 @@ class ValidateAgentToken
      */
     public function handle(Request $request, Closure $next): Response
     {
-        if (app()->environment('production') && trim((string) config('ids.agent_token', '')) === '') {
+        if (app()->environment('production') && (config('ids.agent_token') === null || trim((string) config('ids.agent_token')) === '')) {
             throw new MissingAgentTokenException();
         }
 
