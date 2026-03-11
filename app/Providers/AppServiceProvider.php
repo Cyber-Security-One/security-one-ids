@@ -28,11 +28,8 @@ class AppServiceProvider extends ServiceProvider
      */
     private function ensureAgentTokenConfigured(): void
     {
-        // We use the application instance injected into the provider to allow for easier testing.
-        $app = $this->app;
-
-        if ($app->environment('production') && trim((string) config('ids.agent_token', '')) === '') {
-            if (!$app->runningInConsole()) {
+        if ($this->app->environment('production') && trim((string) config('ids.agent_token', '')) === '') {
+            if (!$this->app->runningInConsole()) {
                 throw new \RuntimeException('AGENT_TOKEN must be set in production environment.');
             }
 

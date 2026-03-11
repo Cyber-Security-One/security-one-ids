@@ -6,7 +6,6 @@ use Tests\TestCase;
 use App\Providers\AppServiceProvider;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\App;
 
 class AppServiceProviderTest extends TestCase
 {
@@ -21,7 +20,7 @@ class AppServiceProviderTest extends TestCase
     {
         Config::set('ids.agent_token', '');
 
-        $appMock = \Mockery::mock($this->app)->makePartial();
+        $appMock = \Mockery::spy(\Illuminate\Foundation\Application::class);
         $appMock->shouldReceive('runningInConsole')->andReturn(false);
         $appMock->shouldReceive('environment')->with('production')->andReturn(true);
 
@@ -37,7 +36,7 @@ class AppServiceProviderTest extends TestCase
     {
         Config::set('ids.agent_token', '');
 
-        $appMock = \Mockery::mock($this->app)->makePartial();
+        $appMock = \Mockery::spy(\Illuminate\Foundation\Application::class);
         $appMock->shouldReceive('runningInConsole')->andReturn(true);
         $appMock->shouldReceive('environment')->with('production')->andReturn(true);
 
@@ -46,7 +45,6 @@ class AppServiceProviderTest extends TestCase
             ->with('AGENT_TOKEN is empty in production environment during console command. This may lead to an insecure configuration cache.');
 
         $provider = new AppServiceProvider($appMock);
-
         $provider->boot();
     }
 
@@ -54,8 +52,9 @@ class AppServiceProviderTest extends TestCase
     {
         Config::set('ids.agent_token', 'valid-token');
 
-        $appMock = \Mockery::mock($this->app)->makePartial();
+        $appMock = \Mockery::spy(\Illuminate\Foundation\Application::class);
         $appMock->shouldReceive('environment')->with('production')->andReturn(true);
+        $appMock->shouldReceive('runningInConsole')->andReturn(true); // Default mock fallback
 
         Log::shouldReceive('warning')->never();
 
@@ -69,8 +68,9 @@ class AppServiceProviderTest extends TestCase
     {
         Config::set('ids.agent_token', '');
 
-        $appMock = \Mockery::mock($this->app)->makePartial();
+        $appMock = \Mockery::spy(\Illuminate\Foundation\Application::class);
         $appMock->shouldReceive('environment')->with('production')->andReturn(false);
+        $appMock->shouldReceive('runningInConsole')->andReturn(true); // Default mock fallback
 
         Log::shouldReceive('warning')->never();
 
