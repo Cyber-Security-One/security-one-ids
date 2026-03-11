@@ -4,10 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-<<<<<<< HEAD
 use App\Jobs\UnblockIPJob;
-=======
->>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
 
 /**
  * Blocking Service
@@ -311,13 +308,8 @@ class BlockingService
         // When cache expires, the block is automatically removed
         // For iptables, we need explicit cleanup job
         if (config('ids.blocking.mode') === 'iptables' || config('ids.blocking.mode') === 'hybrid') {
-<<<<<<< HEAD
             // Dispatch UnblockIPJob with delay
             dispatch(new UnblockIPJob($ip))->delay($duration);
-=======
-            // TODO: Dispatch UnblockIPJob with delay
-            // dispatch(new UnblockIPJob($ip))->delay($duration);
->>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
         }
     }
 

@@ -13,6 +13,7 @@ return [
     // if set in a production console environment without a value.
     // AGENT_TOKEN must be explicitly set in production environments.
     'agent_token' => env('AGENT_TOKEN', ''),
+
     'agent_name' => env('AGENT_NAME', gethostname()),
     'install_token' => env('INSTALL_TOKEN', ''),
 

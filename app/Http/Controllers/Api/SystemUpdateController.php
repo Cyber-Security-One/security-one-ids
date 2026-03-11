@@ -27,7 +27,6 @@ class SystemUpdateController extends Controller
                 Artisan::call('config:clear');
                 Artisan::call('cache:clear');
 
-                
                 Log::info('System update completed', [
                     'output' => implode("\n", $output),
                 ]);
@@ -76,7 +75,6 @@ class SystemUpdateController extends Controller
             exec('git rev-parse HEAD 2>/dev/null', $hashOutput);
             exec('git rev-parse --abbrev-ref HEAD 2>/dev/null', $branchOutput);
 
-            
             $gitHash = !empty($hashOutput) ? substr($hashOutput[0], 0, 7) : 'unknown';
             $gitBranch = !empty($branchOutput) ? $branchOutput[0] : 'unknown';
         } catch (\Exception $e) {

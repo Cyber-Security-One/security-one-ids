@@ -31,20 +31,9 @@ class ClamavService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-<<<<<<< HEAD
             $http = $http->withOptions([
                 'verify' => $cacertPath,
             ]);
-=======
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
->>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
         }
 
         return $http;
@@ -52,15 +41,10 @@ class ClamavService
 
     /**
      * Get CA certificate path for Windows SSL verification
-<<<<<<< HEAD
      *
      * @throws \App\Exceptions\CertificateBundleMissingException
      */
     protected function getCaCertPath(): string
-=======
-     */
-    protected function getCaCertPath(): ?string
->>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -89,7 +73,6 @@ class ClamavService
             }
         }
 
-<<<<<<< HEAD
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
@@ -99,31 +82,6 @@ class ClamavService
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
         throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
-=======
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                // Ignore
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
-        }
-
-        return null;
->>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
     }
 
     /**
