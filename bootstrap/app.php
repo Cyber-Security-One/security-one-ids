@@ -11,7 +11,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        $middleware->alias([
+            'validate_agent_token' => \App\Http\Middleware\ValidateAgentToken::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //
