@@ -1523,13 +1523,22 @@ class WafSyncService
             $logFile = PHP_OS_FAMILY === 'Windows' 
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\login_control.log'
                 : base_path('storage/logs/login_control.log');
-            $timestamp = date('Y-m-d H:i:s');
-            
+
+            $expectedDir = PHP_OS_FAMILY === 'Windows'
+                ? 'C:\\ProgramData\\SecurityOneIDS\\logs'
+                : base_path('storage/logs');
+
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
                 @mkdir($logDir, 0755, true);
             }
             
+            if (!str_starts_with(realpath($logDir) ?: $logDir, realpath($expectedDir) ?: $expectedDir)) {
+                throw new \RuntimeException('Invalid log directory');
+            }
+
+            $timestamp = date('Y-m-d H:i:s');
+
             file_put_contents($logFile, "[{$timestamp}] Disable login signal received from WAF Hub\n", FILE_APPEND);
             
             if (PHP_OS_FAMILY === 'Windows') {
@@ -1542,18 +1551,25 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+
+                if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
+                    $consoleUser = '';
+                }
+
+                $safeConsoleUser = preg_replace('/[\r\n]+/', ' ', $consoleUser);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                    $escapedConsoleUser = escapeshellarg($consoleUser);
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
                     exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
                     
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
+                        exec("sudo pwpolicy -u {$escapedConsoleUser} disableuser 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
                     }
                     
@@ -1596,13 +1612,22 @@ class WafSyncService
             $logFile = PHP_OS_FAMILY === 'Windows' 
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\login_control.log'
                 : base_path('storage/logs/login_control.log');
-            $timestamp = date('Y-m-d H:i:s');
-            
+
+            $expectedDir = PHP_OS_FAMILY === 'Windows'
+                ? 'C:\\ProgramData\\SecurityOneIDS\\logs'
+                : base_path('storage/logs');
+
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
                 @mkdir($logDir, 0755, true);
             }
             
+            if (!str_starts_with(realpath($logDir) ?: $logDir, realpath($expectedDir) ?: $expectedDir)) {
+                throw new \RuntimeException('Invalid log directory');
+            }
+
+            $timestamp = date('Y-m-d H:i:s');
+
             file_put_contents($logFile, "[{$timestamp}] Enable login signal received from WAF Hub\n", FILE_APPEND);
             
             if (PHP_OS_FAMILY === 'Windows') {
@@ -1621,13 +1646,18 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
+                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+
+                    $safeUser = preg_replace('/[\r\n]+/', ' ', $user);
+                    $escapedUser = escapeshellarg($user);
+
                     // Remove DisabledUser from AuthenticationAuthority
                     exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
-                    exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    exec("sudo pwpolicy -u {$escapedUser} enableuser 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode}\n", FILE_APPEND);
                 }
                 
             } else {
