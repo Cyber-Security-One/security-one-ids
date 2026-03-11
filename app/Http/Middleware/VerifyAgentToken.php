@@ -29,12 +29,12 @@ class VerifyAgentToken
         $configured = $agentToken !== '';
         $expectedSeed = $configured ? $agentToken : str_repeat("\0", 32);
 
-        $isValid = $configured
-            && $token !== ''
-            && hash_equals(
-                hash('sha256', $expectedSeed, true),
-                hash('sha256', $token, true)
-            );
+        $providedHash = hash('sha256', $token, true);
+        $expectedHash = hash('sha256', $expectedSeed, true);
+
+        $isValid = hash_equals($expectedHash, $providedHash)
+            && $configured
+            && $token !== '';
 
         if (!$isValid) {
             return response()->json(['error' => 'Unauthorized'], 401);

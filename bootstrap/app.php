@@ -13,7 +13,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
-            'agent_auth' => \App\Http\Middleware\AgentAuth::class,
+            'agent_auth' => \App\Http\Middleware\VerifyAgentToken::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

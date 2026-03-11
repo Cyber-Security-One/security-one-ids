@@ -29,7 +29,7 @@ class WafSyncService
         if (empty($this->wafUrl) || empty($this->agentToken)) {
             $envFile = base_path('.env');
             if (file_exists($envFile)) {
-                $envValues = parse_ini_file($envFile);
+                $envValues = @parse_ini_file($envFile);
                 if ($envValues) {
                     if (empty($this->wafUrl) && !empty($envValues['WAF_URL'])) {
                         $this->wafUrl = rtrim($envValues['WAF_URL'], '/');
@@ -99,7 +99,7 @@ class WafSyncService
             if (empty($installToken)) {
                 $envFile = base_path('.env');
                 if (file_exists($envFile)) {
-                    $envValues = parse_ini_file($envFile);
+                    $envValues = @parse_ini_file($envFile);
                     $installToken = $envValues['INSTALL_TOKEN'] ?? '';
                 }
             }
@@ -1540,7 +1540,7 @@ class WafSyncService
                 $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
 
-                if ($consoleUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                if ($consoleUser && $this->isValidUsername($consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     $safeConsoleUser = $consoleUser;
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
@@ -1616,7 +1616,7 @@ class WafSyncService
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+                    if (!$user || !$this->isValidUsername($user)) continue;
 
                     $safeUser = $user;
 
@@ -3114,6 +3114,16 @@ class WafSyncService
 
         // Linux (desktop and server unified as 'linux')
         return 'linux';
+    }
+
+    /**
+     * Validate if a username is safe for shell commands
+     * Allowed: letters, numbers, underscores, dots, hyphens
+     * Disallowed: spaces, quotes, shell operators (|, &, ;, >, <, $, `, etc.)
+     */
+    public function isValidUsername(string $username): bool
+    {
+        return (bool) preg_match('/^[a-zA-Z0-9_.-]+$/', $username);
     }
 
     /**

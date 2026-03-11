@@ -2,38 +2,52 @@
 
 namespace Tests\Unit;
 
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 
 class WafSyncServiceUserValidationTest extends TestCase
 {
     /**
      * Test valid macOS usernames according to the regex pattern
      */
-    public function testValidMacOsUsernames()
+    public function test_it_allows_valid_username_via_service_behavior()
     {
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'john.doe'));
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'user_123'));
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin-user'));
-        $this->assertTrue((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'johndoe'));
+        $service = app(\App\Services\WafSyncService::class);
+
+        $this->assertTrue($service->isValidUsername('john.doe'));
+        $this->assertTrue($service->isValidUsername('user_123'));
+        $this->assertTrue($service->isValidUsername('admin-user'));
+        $this->assertTrue($service->isValidUsername('johndoe'));
     }
 
     /**
      * Test invalid macOS usernames according to the regex pattern
      * These should be rejected to prevent shell injection while preserving path parsing
      */
-    public function testInvalidMacOsUsernames()
+    public function test_it_rejects_invalid_username_via_service_behavior(): void
     {
-        // Reject spaces
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'john doe'));
+        $service = app(\App\Services\WafSyncService::class);
 
-        // Reject quotes and shell metacharacters
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'user"name'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', "user'name"));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin;ls'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin|ls'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin&ls'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin$user'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin`ls`'));
-        $this->assertFalse((bool) preg_match('/^[a-zA-Z0-9_.-]+$/', 'admin>file'));
+        $invalidUsernames = [
+            'john doe',
+            'user"name',
+            "user'name",
+            'admin;ls',
+            'admin|ls',
+            'admin&ls',
+            'admin$user',
+            'admin`ls`',
+            'admin>file',
+            'bad user',
+            'evil$',
+            '中文',
+            'a/b',
+        ];
+
+        foreach ($invalidUsernames as $username) {
+            $this->assertFalse(
+                $service->isValidUsername($username),
+                "Failed asserting that username [{$username}] is rejected by WafSyncService."
+            );
+        }
     }
 }
