@@ -13,6 +13,16 @@ use Illuminate\Support\Facades\Log;
 class LogDiscoveryService
 {
     /**
+     * Cache key for custom log paths
+     */
+    private const CACHE_KEY = 'ids.custom_log_paths';
+
+    /**
+     * Legacy cache key for custom log paths
+     */
+    private const LEGACY_CACHE_KEY = 'ids_custom_log_paths';
+
+    /**
      * Common web server log file locations to scan
      */
     private const LOG_PATHS = [
@@ -306,14 +316,34 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
-        }
+        $lock = cache()->lock(self::CACHE_KEY . '_lock', 5);
 
-        return true;
+        try {
+            // Wait up to 5 seconds for the lock
+            if ($lock->block(5)) {
+                $cachedPaths = $this->getCustomPaths();
+
+                if (!in_array($path, $cachedPaths, true)) {
+                    $cachedPaths[] = $path;
+                    // Store in cache for persistence
+                    cache()->forever(self::CACHE_KEY, $cachedPaths);
+                }
+
+                return true;
+            }
+
+            return false;
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            // Lock acquisition timed out, re-verify the cache state
+            $cachedPaths = $this->getCustomPaths();
+            if (in_array($path, $cachedPaths, true)) {
+                return true;
+            }
+
+            return false;
+        } finally {
+            optional($lock)->release();
+        }
     }
 
     /**
@@ -321,7 +351,24 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        // Check new key first
+        $paths = cache()->get(self::CACHE_KEY);
+
+        if ($paths !== null) {
+            return $paths;
+        }
+
+        // Fallback to old key, migrate if present
+        $oldPaths = cache()->get(self::LEGACY_CACHE_KEY);
+
+        if ($oldPaths !== null) {
+            Log::warning(sprintf('Migrating legacy cache key %s to %s', self::LEGACY_CACHE_KEY, self::CACHE_KEY));
+            cache()->forever(self::CACHE_KEY, $oldPaths);
+            cache()->forget(self::LEGACY_CACHE_KEY);
+            return $oldPaths;
+        }
+
+        return [];
     }
 
     /**
