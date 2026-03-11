@@ -16,7 +16,7 @@ use App\Traits\DetectsPlatform;
  */
 class SuricataEngine
 {
-    use DetectsPlatform;
+use \App\Traits\DetectsPlatform;
 
     private string $suricataPath;
     private string $configPath;
