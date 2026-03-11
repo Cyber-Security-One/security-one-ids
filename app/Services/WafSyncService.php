@@ -1576,7 +1576,7 @@ class WafSyncService
                         }
 
                         if (!$method2Success) {
-                            // Method 3: Set an impossible password hash
+                            // Method 3: Set password expiration to immediate past
                             try {
                                 $process3 = Process::timeout(60)->run(['sudo', 'chpass', '-e', '0', $cleanUser]);
                                 $returnCode3 = $process3->exitCode();
@@ -1646,9 +1646,9 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
-                    $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+                    $cleanUser = str_replace(["\r", "\n"], '', $user);
 
-                    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) continue;
+                    if (!preg_match('/^[a-zA-Z0-9._\s-]+$/', $cleanUser)) continue;
 
                     // Remove DisabledUser from AuthenticationAuthority
                     $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
