@@ -302,18 +302,25 @@ class LogDiscoveryService
      */
     public function addCustomPath(string $path): bool
     {
-        if (!is_readable($path)) {
+        if (!is_readable($path) || !is_file($path)) {
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
-        }
+        return \Illuminate\Support\Facades\Cache::lock('add_custom_path_lock')->block(5, function () use ($path) {
+            $cachedPaths = $this->getCustomPaths();
+            $configPaths = config('ids.custom_log_paths', []);
 
-        return true;
+            if (in_array($path, $cachedPaths, true) || in_array($path, $configPaths, true)) {
+                return true;
+            }
+
+            $cachedPaths[] = $path;
+
+            // Store in cache for persistence
+            \Illuminate\Support\Facades\Cache::forever('ids.custom_log_paths', $cachedPaths);
+
+            return true;
+        });
     }
 
     /**
@@ -321,7 +328,22 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $newKey = 'ids.custom_log_paths';
+        $oldKey = 'ids_custom_log_paths';
+
+        $paths = \Illuminate\Support\Facades\Cache::get($newKey);
+        if (is_array($paths)) {
+            return $paths;
+        }
+
+        $legacyPaths = \Illuminate\Support\Facades\Cache::get($oldKey, []);
+        if (!empty($legacyPaths)) {
+            \Illuminate\Support\Facades\Cache::forever($newKey, $legacyPaths);
+            \Illuminate\Support\Facades\Cache::forget($oldKey);
+            return $legacyPaths;
+        }
+
+        return [];
     }
 
     /**
