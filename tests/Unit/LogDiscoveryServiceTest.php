@@ -55,12 +55,12 @@ class LogDiscoveryServiceTest extends TestCase
             ->andReturn($lockMock);
 
         Cache::shouldReceive('get')
-            ->with('ids::custom_log_paths', [])
+            ->with('ids.custom_log_paths', [])
             ->andReturn([]);
 
         Cache::shouldReceive('forever')
             ->once()
-            ->with('ids::custom_log_paths', [$tempPath]);
+            ->with('ids.custom_log_paths', [$tempPath]);
 
         try {
             file_put_contents($tempPath, 'test log content');
@@ -93,7 +93,7 @@ class LogDiscoveryServiceTest extends TestCase
             ->andReturn($lockMock);
 
         Cache::shouldReceive('get')
-            ->with('ids::custom_log_paths', [])
+            ->with('ids.custom_log_paths', [])
             ->andReturn([]);
 
         Cache::shouldReceive('forever')->never();

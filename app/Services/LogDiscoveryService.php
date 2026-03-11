@@ -327,7 +327,7 @@ $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
                 if (!in_array($path, $customPaths)) {
                     $customPaths[] = $path;
                     // Store in cache for persistence
-                    cache()->forever('ids::custom_log_paths', $customPaths);
+                    cache()->forever('ids.custom_log_paths', $customPaths);
                 }
             } else {
                 return false;
