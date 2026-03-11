@@ -3126,7 +3126,7 @@ class WafSyncService
         
         if ($this->isWindows()) {
             return 'windows';
-        } elseif (stripos(PHP_OS, 'Darwin') !== false) {
+        } elseif ($this->isMac()) {
             return 'macos';
         }
         

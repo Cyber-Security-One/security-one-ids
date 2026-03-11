@@ -28,7 +28,7 @@ class DesktopLogCollector
     {
         if ($this->isWindows()) {
             return 'windows';
-        } elseif (stripos(PHP_OS, 'Darwin') !== false) {
+        } elseif ($this->isMac()) {
             return 'macos';
         }
         return 'linux';

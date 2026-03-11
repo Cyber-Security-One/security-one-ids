@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Traits\DetectsPlatform;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 
@@ -12,6 +13,8 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    use DetectsPlatform;
+
     /**
      * Common web server log file locations to scan
      */
@@ -141,7 +144,7 @@ class LogDiscoveryService
             $this->scanDirectory('/var/log', $discovered, 2);
 
             // macOS: also scan /private/var/log
-            if (PHP_OS_FAMILY === 'Darwin') {
+            if ($this->isMac()) {
                 $this->scanDirectory('/private/var/log', $discovered, 2);
             }
         }

@@ -1169,7 +1169,7 @@ class ClamavService
      */
     protected function getPlatform(): string
     {
-        if (stripos(PHP_OS, 'Darwin') !== false) {
+        if ($this->isMac()) {
             return 'macos';
         }
 
@@ -1178,7 +1178,7 @@ class ClamavService
             return 'windows';
         }
 
-        if (stripos(PHP_OS, 'Linux') !== false) {
+        if ($this->isLinux()) {
             // Detect Linux distribution
             // Check Alpine first (Docker containers typically use Alpine)
             if (file_exists('/etc/alpine-release')) {
