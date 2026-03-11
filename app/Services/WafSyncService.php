@@ -1654,7 +1654,7 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-<<<<<<< /tmp/merge_ours_2aadijuiuqru7dtf6C9
+<<<<<<< /tmp/merge_ours_c3ln9nqfnu6q5bRafDt
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
@@ -1709,13 +1709,13 @@ class WafSyncService
                         } catch (\Exception $e) {
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
->>>>>>> /tmp/merge_theirs_pdcbk2h4k5h1a8ce4Ka
+>>>>>>> /tmp/merge_theirs_1qrolpo4teuu7GTdwcG
                     }
 
                     $method2Failed = $method1Failed && (!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0);
                     if ($method2Failed) {
                         // Method 3: Set an impossible password hash
-<<<<<<< /tmp/merge_ours_2aadijuiuqru7dtf6C9
+<<<<<<< /tmp/merge_ours_c3ln9nqfnu6q5bRafDt
                         exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
 =======
@@ -1733,7 +1733,7 @@ class WafSyncService
                     $method3Failed = $method2Failed && $dsclPasswdResult !== 0;
                     if ($method3Failed) {
                         Log::error("Critical failure: Could not disable user {$cleanUser} via any method.");
->>>>>>> /tmp/merge_theirs_pdcbk2h4k5h1a8ce4Ka
+>>>>>>> /tmp/merge_theirs_1qrolpo4teuu7GTdwcG
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1793,7 +1793,7 @@ class WafSyncService
                 $failedUsers = [];
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-<<<<<<< /tmp/merge_ours_2aadijuiuqru7dtf6C9
+<<<<<<< /tmp/merge_ours_c3ln9nqfnu6q5bRafDt
                     if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
 
                     $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
@@ -1855,7 +1855,7 @@ class WafSyncService
                     Log::error("Critical failure: Could not enable the following users: " . implode(', ', $failedUsers));
                 }
 
->>>>>>> /tmp/merge_theirs_pdcbk2h4k5h1a8ce4Ka
+>>>>>>> /tmp/merge_theirs_1qrolpo4teuu7GTdwcG
             } else {
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
@@ -3133,11 +3133,11 @@ class WafSyncService
                 return $path;
             }
         }
-<<<<<<< /tmp/merge_ours_2aadijuiuqru7dtf6C9
+<<<<<<< /tmp/merge_ours_c3ln9nqfnu6q5bRafDt
 
 =======
 
->>>>>>> /tmp/merge_theirs_pdcbk2h4k5h1a8ce4Ka
+>>>>>>> /tmp/merge_theirs_1qrolpo4teuu7GTdwcG
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
@@ -3146,11 +3146,11 @@ class WafSyncService
         }
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
-<<<<<<< /tmp/merge_ours_2aadijuiuqru7dtf6C9
+<<<<<<< /tmp/merge_ours_c3ln9nqfnu6q5bRafDt
         throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
 =======
         throw new \RuntimeException('CA certificate bundle missing: ' . $bundledPath);
->>>>>>> /tmp/merge_theirs_pdcbk2h4k5h1a8ce4Ka
+>>>>>>> /tmp/merge_theirs_1qrolpo4teuu7GTdwcG
     }
 
     /**
