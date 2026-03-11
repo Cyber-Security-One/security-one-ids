@@ -148,43 +148,35 @@ class SnortEngine
             }
         }
 
-        $interface = $interface ?? $this->detectDefaultInterface();
+        try {
+            $interface = $interface ?? $this->detectDefaultInterface();
+        } catch (\RuntimeException $e) {
+            // On Windows, if no valid interface was found, attempt recovery by starting Npcap services
+            if ($this->isWindows()) {
+                // Ensure Npcap DLLs are findable (PATH may not be updated in this process)
+                $npcapDir = 'C:\\Windows\\System32\\Npcap';
+                if (is_dir($npcapDir) && !str_contains(getenv('PATH') ?: '', 'Npcap')) {
+                    putenv('PATH=' . getenv('PATH') . ';' . $npcapDir);
+                }
 
-        // On Windows, if no valid interface was found (Npcap missing), don't attempt start.
-        // '1' is treated as a special case because detectDefaultInterface() returns '1' as a fallback when no routable IP is detected.
-        if ($this->isWindows() && $interface === '1') {
-            // Ensure Npcap DLLs are findable (PATH may not be updated in this process)
-            $npcapDir = 'C:\\Windows\\System32\\Npcap';
-            if (is_dir($npcapDir) && !str_contains(getenv('PATH') ?: '', 'Npcap')) {
-                putenv('PATH=' . getenv('PATH') . ';' . $npcapDir);
-            }
-            // Verify interface 1 actually exists
-            try {
-                $result = Process::timeout(10)->run('"' . $this->snortPath . '" -W 2>&1');
-                $output = $result->output();
-                Log::debug('snort -W verify in start()', [
-                    'output_length' => strlen($output),
-                    'output_preview' => substr($output, 0, 500),
-                ]);
-                if (!preg_match('/\d+\s+\S+\s+\d+\.\d+\.\d+\.\d+/', $output)) {
-                    // Try starting Npcap services before giving up
-                    Log::info('No interfaces found, attempting to start Npcap services...');
-                    Process::timeout(10)->run('net start npcap 2>&1');
-                    Process::timeout(10)->run('net start npf 2>&1');
-                    sleep(2);
+                Log::info('No interfaces found, attempting to start Npcap services...');
+                Process::timeout(10)->run('net start npcap 2>&1');
+                Process::timeout(10)->run('net start npf 2>&1');
+                sleep(2);
 
-                    // Re-check interfaces after service start
+                // Re-check interfaces after service start
+                try {
                     $retryResult = Process::timeout(10)->run('"' . $this->snortPath . '" -W 2>&1');
                     $retryOutput = $retryResult->output();
                     Log::debug('snort -W retry after service start', [
                         'output_preview' => substr($retryOutput, 0, 500),
                     ]);
 
-                    if (preg_match('/\d+\s+\S+\s+\d+\.\d+\.\d+\.\d+/', $retryOutput)) {
+                    if (preg_match('/(\d+)\s+\S+\s+\d+\.\d+\.\d+\.\d+/', $retryOutput, $matches)) {
                         Log::info('Npcap services started successfully, interfaces now available');
                         // Re-detect interface now that Npcap is running
                         $this->cachedInterface = null;
-                        $interface = $this->detectDefaultInterface();
+                        $interface = $matches[1];
                         Log::info('Re-detected interface after Npcap start', ['interface' => $interface]);
                     } else {
                         // Invalidate Npcap cache so ensureNpcapInstalled() retries
@@ -196,9 +188,11 @@ class SnortEngine
                             'snort_w_output' => substr($retryOutput, 0, 500),
                         ];
                     }
+                } catch (\Exception $retryException) {
+                    return ['success' => false, 'error' => $retryException->getMessage()];
                 }
-            } catch (\Exception $e) {
-                // Continue with attempt
+            } else {
+                return ['success' => false, 'error' => $e->getMessage()];
             }
         }
 
@@ -1679,11 +1673,11 @@ LUA;
                 }
                 // No interfaces found — likely Npcap not installed
                 Log::warning('No Snort network interfaces detected (Npcap may not be installed). Install from https://npcap.com');
+                throw new \RuntimeException('No active network interfaces detected. Npcap may not be installed. Please install from https://npcap.com');
             } catch (\Exception $e) {
                 Log::debug('Failed to detect Windows interface: ' . $e->getMessage());
+                throw new \RuntimeException('Failed to detect Windows interface: ' . $e->getMessage());
             }
-            $this->cachedInterface = '1';
-            return $this->cachedInterface;
         }
 
         $isMac = PHP_OS === 'Darwin';
