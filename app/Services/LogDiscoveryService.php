@@ -96,6 +96,11 @@ class LogDiscoveryService
     ];
 
     /**
+     * Cache key for custom log paths
+     */
+    public const CACHE_KEY_CUSTOM_PATHS = 'ids.custom_log_paths';
+
+    /**
      * Discover all accessible log files
      */
     public function discoverLogFiles(bool $includeSystemLogs = true): Collection
@@ -306,11 +311,16 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
+        $cachedPaths = $this->getCustomPaths();
+
+        if (!in_array($path, $cachedPaths, true)) {
+            $cachedPaths[] = $path;
+
+            // Clean up array keys just in case and deduplicate paths
+            $pathsToCache = array_values(array_unique($cachedPaths));
+
             // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+            cache()->forever(self::CACHE_KEY_CUSTOM_PATHS, $pathsToCache);
         }
 
         return true;
@@ -321,7 +331,20 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        $paths = cache()->get(self::CACHE_KEY_CUSTOM_PATHS);
+        if (is_array($paths)) {
+            return $paths;
+        }
+
+        $legacyPaths = cache()->get('ids_custom_log_paths', []);
+        if (is_array($legacyPaths) && !empty($legacyPaths)) {
+            $normalized = array_values(array_unique($legacyPaths));
+            cache()->forever(self::CACHE_KEY_CUSTOM_PATHS, $normalized);
+            cache()->forget('ids_custom_log_paths');
+            return $normalized;
+        }
+
+        return [];
     }
 
     /**
