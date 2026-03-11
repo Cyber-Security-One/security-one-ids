@@ -355,7 +355,9 @@ class LogDiscoveryService
     {
         $newKey = 'ids::custom_log_paths';
 
-        if (self::$migrated) {
+        if (self::$migrated
+            && !cache()->has('ids_custom_log_paths')
+            && !cache()->has('ids.custom_log_paths')) {
             return cache()->get($newKey, []);
         }
 

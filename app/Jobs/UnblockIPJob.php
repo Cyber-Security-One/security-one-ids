@@ -40,7 +40,9 @@ class UnblockIPJob implements ShouldQueue
     public function handle(BlockingService $blockingService): void
     {
         Log::info('Executing UnblockIPJob', ['ip' => $this->ip]);
-        if (!$blockingService->unblockIP($this->ip)) {
+
+        $unblocked = $blockingService->unblockIP($this->ip);
+        if (!$unblocked && $blockingService->isBlocked($this->ip)) {
             Log::error('UnblockIPJob failed to unblock IP', ['ip' => $this->ip]);
             throw new \RuntimeException("Failed to unblock IP: {$this->ip}");
         }
