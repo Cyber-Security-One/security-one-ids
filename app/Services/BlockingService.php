@@ -4,6 +4,10 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+<<<<<<< HEAD
+use App\Jobs\UnblockIPJob;
+=======
+>>>>>>> 44fde90 (Fix SymfonyProcess instantiation in WafSyncService)
 
 /**
  * Blocking Service
@@ -307,8 +311,13 @@ class BlockingService
         // When cache expires, the block is automatically removed
         // For iptables, we need explicit cleanup job
         if (config('ids.blocking.mode') === 'iptables' || config('ids.blocking.mode') === 'hybrid') {
+<<<<<<< HEAD
+            // Dispatch UnblockIPJob with delay
+            dispatch(new UnblockIPJob($ip))->delay($duration);
+=======
             // TODO: Dispatch UnblockIPJob with delay
             // dispatch(new UnblockIPJob($ip))->delay($duration);
+>>>>>>> 44fde90 (Fix SymfonyProcess instantiation in WafSyncService)
         }
     }
 
