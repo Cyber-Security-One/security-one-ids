@@ -6,7 +6,6 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Artisan;
-use Symfony\Component\Process\Process as SymfonyProcess;
 
 class WafSyncService
 {
@@ -60,14 +59,9 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
         
         return $http;
@@ -1542,11 +1536,11 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
+                $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
                 
-                if ($cleanUser && preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
+                if ($consoleUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     $dsclDisableExecuted = false;
                     $dsclDisableResult = null;
                     $pwpolicyDisableExecuted = false;
@@ -1555,15 +1549,15 @@ class WafSyncService
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     try {
-                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
+                        $process1 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-create', '/Users/' . $consoleUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $process1->setTimeout(60);
                         $process1->run();
                         $dsclDisableExecuted = true;
                         $dsclDisableResult = $process1->getExitCode() ?? 1;
                         $outputStr = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$dsclDisableResult}, output={$outputStr}\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser}: code={$dsclDisableResult}, output={$outputStr}\n", FILE_APPEND);
                     } catch (\Exception $e) {
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
                     $method1Failed = !$dsclDisableExecuted || $dsclDisableResult !== 0;
@@ -1571,14 +1565,14 @@ class WafSyncService
                     if ($method1Failed) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         try {
-                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
+                            $process2 = new \Symfony\Component\Process\Process(['sudo', 'pwpolicy', '-u', $consoleUser, 'disableuser']);
                             $process2->setTimeout(60);
                             $process2->run();
                             $pwpolicyDisableExecuted = true;
                             $pwpolicyDisableResult = $process2->getExitCode() ?? 1;
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$pwpolicyDisableResult}\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$safeConsoleUser}: code={$pwpolicyDisableResult}\n", FILE_APPEND);
                         } catch (\Exception $e) {
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$safeConsoleUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                     }
                     
@@ -1587,7 +1581,7 @@ class WafSyncService
                     if ($method1Failed && $method2Failed) {
                         // Method 3: Set an impossible password hash
                         try {
-                            $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                            $process3 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-passwd', '/Users/' . $consoleUser, '*']);
                             $process3->setTimeout(60);
                             $process3->run();
                             $dsclPasswdResult = $process3->getExitCode() ?? 1;
@@ -1653,11 +1647,9 @@ class WafSyncService
                 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user) continue;
+                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
                     
-                    $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
-
-                    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $cleanUser)) continue;
+                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
 
                     $dsclClearExecuted = false;
                     $dsclClearResult = null;
@@ -1666,30 +1658,30 @@ class WafSyncService
 
                     // Remove DisabledUser from AuthenticationAuthority
                     try {
-                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                        $process1 = new \Symfony\Component\Process\Process(['sudo', 'dscl', '.', '-delete', '/Users/' . $user, 'AuthenticationAuthority']);
                         $process1->setTimeout(60);
                         $process1->run();
                         $dsclClearExecuted = true;
                         $dsclClearResult = $process1->getExitCode() ?? 1;
-                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$dsclClearResult}\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$dsclClearResult}\n", FILE_APPEND);
                     } catch (\Exception $e) {
-                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
                     // Re-enable with pwpolicy  
                     try {
-                        $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                        $process2 = new \Symfony\Component\Process\Process(['sudo', 'pwpolicy', '-u', $user, 'enableuser']);
                         $process2->setTimeout(60);
                         $process2->run();
                         $pwpolicyEnableExecuted = true;
                         $pwpolicyEnableResult = $process2->getExitCode() ?? 1;
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$pwpolicyEnableResult}\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$pwpolicyEnableResult}\n", FILE_APPEND);
                     } catch (\Exception $e) {
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
 
                     if ((!$dsclClearExecuted || $dsclClearResult !== 0) && (!$pwpolicyEnableExecuted || $pwpolicyEnableResult !== 0)) {
-                        throw new \Exception("Critical failure: Could not enable user {$cleanUser} via dscl or pwpolicy.");
+                        throw new \Exception("Critical failure: Could not enable user {$safeUser} via dscl or pwpolicy.");
                     }
                 }
                 
@@ -2937,8 +2929,10 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2969,31 +2963,15 @@ class WafSyncService
             }
         }
         
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
+        // If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
         }
-        
-        return null;
+
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
