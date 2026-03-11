@@ -320,8 +320,11 @@ class LogDiscoveryService
             return false;
         }
 
-        $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', []);
-        if (is_array($allowedBaseDirs) && !empty($allowedBaseDirs) && !$this->isAllowedPath($realPath, $allowedBaseDirs)) {
+        $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', self::ALLOWED_BASE_DIRS);
+        if (!is_array($allowedBaseDirs) || empty($allowedBaseDirs)) {
+            $allowedBaseDirs = self::ALLOWED_BASE_DIRS;
+        }
+        if (!$this->isAllowedPath($realPath, $allowedBaseDirs)) {
             return false;
         }
 
@@ -422,6 +425,12 @@ class LogDiscoveryService
                 // Re-add the pulled legacy paths so they can be migrated later.
                 cache()->put('ids_custom_log_paths', $legacyPaths);
                 Log::warning("Could not acquire lock to migrate legacy custom log paths");
+            } catch (\Throwable $e) {
+                cache()->put('ids_custom_log_paths', $legacyPaths);
+                Log::warning('Unexpected error while migrating legacy custom log paths', [
+                    'error' => $e->getMessage(),
+                ]);
+                throw $e;
             }
         }
 
