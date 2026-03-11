@@ -1553,11 +1553,11 @@ class WafSyncService
                     $method1Success = false;
                     try {
                         $process1 = Process::timeout(60)->run(['sudo', '-n', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
-                        $method1Success = $process1->successful();
+                        $method1Success = $process1->successful() && $process1->exitCode() === 0;
                         $returnCode1 = $process1->exitCode();
                         $outputStr = preg_replace('/[\r\n]+/', ' ', trim($process1->output() . ' ' . $process1->errorOutput()));
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
-                    } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException | \Exception $e) {
+                    } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException $e) {
                         $method1Success = false;
                         $returnCode1 = 1;
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} exception (" . get_class($e) . "): " . $e->getMessage() . "\n", FILE_APPEND);
@@ -1568,10 +1568,10 @@ class WafSyncService
                         $method2Success = false;
                         try {
                             $process2 = Process::timeout(60)->run(['sudo', '-n', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
-                            $method2Success = $process2->successful();
+                            $method2Success = $process2->successful() && $process2->exitCode() === 0;
                             $returnCode2 = $process2->exitCode();
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
-                        } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException | \Exception $e) {
+                        } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException $e) {
                             $method2Success = false;
                             $returnCode2 = 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} exception (" . get_class($e) . "): " . $e->getMessage() . "\n", FILE_APPEND);
@@ -1582,10 +1582,10 @@ class WafSyncService
                             $method3Success = false;
                             try {
                                 $process3 = Process::timeout(60)->run(['sudo', '-n', 'chpass', '-e', '0', $cleanUser]);
-                                $method3Success = $process3->successful();
+                                $method3Success = $process3->successful() && $process3->exitCode() === 0;
                                 $returnCode3 = $process3->exitCode();
                                 file_put_contents($logFile, "[{$timestamp}] chpass set expire immediately: code={$returnCode3}\n", FILE_APPEND);
-                            } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException | \Exception $e) {
+                            } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException $e) {
                                 $method3Success = false;
                                 $returnCode3 = 1;
                                 file_put_contents($logFile, "[{$timestamp}] chpass set expire immediately exception (" . get_class($e) . "): " . $e->getMessage() . "\n", FILE_APPEND);
@@ -1669,10 +1669,10 @@ class WafSyncService
                     $returnCode1 = null;
                     try {
                         $process1 = Process::timeout(60)->run(['sudo', '-n', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
-                        $method1Success = $process1->successful();
+                        $method1Success = $process1->successful() && $process1->exitCode() === 0;
                         $returnCode1 = $process1->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
-                    } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException | \Exception $e) {
+                    } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException $e) {
                         $returnCode1 = 1;
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} exception (" . get_class($e) . "): " . $e->getMessage() . "\n", FILE_APPEND);
                     }
@@ -1682,10 +1682,10 @@ class WafSyncService
                     $returnCode2 = null;
                     try {
                         $process2 = Process::timeout(60)->run(['sudo', '-n', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
-                        $method2Success = $process2->successful();
+                        $method2Success = $process2->successful() && $process2->exitCode() === 0;
                         $returnCode2 = $process2->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
-                    } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException | \Exception $e) {
+                    } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException $e) {
                         $returnCode2 = 1;
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} exception (" . get_class($e) . "): " . $e->getMessage() . "\n", FILE_APPEND);
                     }
