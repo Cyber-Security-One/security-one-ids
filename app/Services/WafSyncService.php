@@ -1656,7 +1656,11 @@ class WafSyncService
                     
                     $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
 
-                    if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $cleanUser)) continue;
+                    if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $cleanUser)) {
+                        Log::warning("Skipping invalid user: {$cleanUser}");
+                        file_put_contents($logFile, "[{$timestamp}] Skipping invalid user: {$cleanUser}\n", FILE_APPEND);
+                        continue;
+                    }
 
                     // Remove DisabledUser from AuthenticationAuthority
                     try {
