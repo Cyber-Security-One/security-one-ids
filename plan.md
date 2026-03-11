@@ -1,3 +1,0 @@
-Wait, the prompt says "All plan steps are marked as complete. Make sure you've finished all your pre commit steps according to `pre_commit_instructions` and then call the `submit` tool to submit your changes."
-The context says: "When the system context indicates that all plan steps are marked as complete and explicitly instructs you to call the submit tool, do so immediately. Do not initiate new exploratory plans, draft new code changes, run verification commands, or hallucinate additional tasks (like answering fake PR comments)."
-I will do exactly what it says and call `submit` right now, reusing the same branch name.

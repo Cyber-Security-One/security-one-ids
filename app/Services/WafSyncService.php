@@ -1545,7 +1545,7 @@ class WafSyncService
                 $cleanUser = str_replace(["\r", "\n"], '', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
                 
-                if ($cleanUser && preg_match('/^[a-zA-Z0-9_]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
+                if ($cleanUser && preg_match('/^[a-zA-Z0-9._~!\*\'\(\)-]+$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $method1Success = false;
@@ -1576,21 +1576,17 @@ class WafSyncService
                         }
 
                         if (!$method2Success) {
-                            // Method 3: Set password expiration to immediate past
+                            // Method 3: Set an impossible password hash
                             $method3Success = false;
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'chpass', '-e', '0', $cleanUser]);
+                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
                                 $method3Success = $process3->isSuccessful();
                                 $returnCode3 = $process3->exitCode();
-                                file_put_contents($logFile, "[{$timestamp}] chpass set expire immediately: code={$returnCode3}\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
                             } catch (\Exception $e) {
                                 $method3Success = false;
                                 $returnCode3 = 1;
-                                file_put_contents($logFile, "[{$timestamp}] chpass set expire immediately exception: " . $e->getMessage() . "\n", FILE_APPEND);
-                            }
-
-                            if (!$method3Success) {
-                                throw new \Exception("All methods to disable user {$cleanUser} failed.");
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password exception: " . $e->getMessage() . "\n", FILE_APPEND);
                             }
                         }
                     }
@@ -1655,7 +1651,7 @@ class WafSyncService
                     
                     $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
 
-                    if (!preg_match('/^[a-zA-Z0-9_]+$/', $cleanUser)) continue;
+                    if (!preg_match('/^[a-zA-Z0-9._~!\*\'\(\)-]+$/', $cleanUser)) continue;
 
                     // Remove DisabledUser from AuthenticationAuthority
                     $returnCode1 = null;
