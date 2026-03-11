@@ -12,6 +12,9 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+    public static bool $migrated = false;
+    private const LOCK_TIMEOUT = 30;
+
     /**
      * Common web server log file locations to scan
      */
@@ -306,11 +309,36 @@ class LogDiscoveryService
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $customPaths);
+$lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
+        $acquired = false;
+        $delayMicroseconds = 10000;
+
+        try {
+            for ($i = 0; $i < 10; $i++) {
+                if ($acquired = $lock->get()) {
+                    break;
+                }
+                usleep($delayMicroseconds);
+                $delayMicroseconds = min($delayMicroseconds * 2, 100000);
+            }
+
+            if ($acquired) {
+                $customPaths = config('ids.custom_log_paths', []);
+                if (!in_array($path, $customPaths)) {
+                    $customPaths[] = $path;
+                    // Store in cache for persistence
+                    cache()->forever('ids::custom_log_paths', $customPaths);
+                }
+            } else {
+                return false;
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
+            return false;
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
         }
 
         return true;
@@ -321,7 +349,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        // Migrate legacy key if it exists
+// Migrate legacy key if it exists
         if (cache()->has('ids_custom_log_paths')) {
             $legacyPaths = cache()->pull('ids_custom_log_paths');
             if (is_array($legacyPaths)) {
