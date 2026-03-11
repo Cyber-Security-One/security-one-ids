@@ -22,8 +22,6 @@ class LogDiscoveryServiceTest extends TestCase
 
         Cache::swap($repository);
 
-        LogDiscoveryService::$migrated = false;
-
         $this->service = new LogDiscoveryService();
     }
 

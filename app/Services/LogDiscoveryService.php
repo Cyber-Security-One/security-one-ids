@@ -12,7 +12,6 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-    public static bool $migrated = false;
     private const LOCK_TIMEOUT = 30;
 
     /**
@@ -369,10 +368,11 @@ class LogDiscoveryService
             $lock = cache()->lock('lock::ids::custom_log_paths_migrate', self::LOCK_TIMEOUT);
             $acquired = false;
             $delayMicroseconds = 10000;
+            $startTime = microtime(true);
 
             try {
-                for ($i = 0; $i < 10; $i++) {
-                    if ($acquired = $lock->get()) {
+                while (!($acquired = $lock->get())) {
+                    if ((microtime(true) - $startTime) >= self::LOCK_TIMEOUT) {
                         break;
                     }
                     usleep($delayMicroseconds);
@@ -412,7 +412,6 @@ class LogDiscoveryService
                             cache()->forget($legacyKey);
                         }
                     }
-                    self::$migrated = true;
                 }
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning("Failed to migrate custom paths: " . $e->getMessage());
@@ -421,8 +420,6 @@ class LogDiscoveryService
                     $lock->release();
                 }
             }
-        } else {
-            self::$migrated = true;
         }
 
         return cache()->get($newKey, []);
