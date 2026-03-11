@@ -1553,10 +1553,6 @@ class WafSyncService
                     $returnCode2 = -1;
                     $returnCode3 = -1;
 
-                    if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) {
-                        throw new \RuntimeException("Invalid user format");
-                    }
-
                     try {
                         $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $process1->setTimeout(60);
@@ -1573,12 +1569,9 @@ class WafSyncService
                         $returnCode2 = 0;
                         $returnCode3 = 0;
                     }
-                    
+
                     if ($returnCode1 !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
-                        if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) {
-                            throw new \RuntimeException("Invalid user format");
-                        }
                         try {
                             $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
                             $process2->setTimeout(60);
@@ -1594,12 +1587,9 @@ class WafSyncService
                     if ($returnCode2 === 0) {
                         $returnCode3 = 0;
                     }
-                    
+
                     if ($returnCode2 !== -1 && $returnCode2 !== 0) {
                         // Method 3: Set an impossible password hash
-                        if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) {
-                            throw new \RuntimeException("Invalid user format");
-                        }
                         try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
                             $process3->setTimeout(60);
@@ -1683,10 +1673,6 @@ class WafSyncService
                     $attempts1 = 0;
                     while ($returnCode1 !== 0 && $attempts1 < 3) {
                         $attempts1++;
-                        $hasException = false;
-                        if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) {
-                            throw new \RuntimeException("Invalid user format");
-                        }
                         try {
                             $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
                             $process1->setTimeout(60);
@@ -1697,11 +1683,11 @@ class WafSyncService
                             }
                             file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
                         } catch (\Exception $e) {
-                            $hasException = true;
                             $returnCode1 = 1;
                             file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                            break;
                         }
-                        if ($returnCode1 !== 0 && $attempts1 < 3) usleep(100000 * (2 ** $attempts1));
+                        if ($returnCode1 !== 0 && $attempts1 < 3) usleep(100000 * (1 << $attempts1));
                     }
                     
                     // Re-enable with pwpolicy  
@@ -1709,9 +1695,6 @@ class WafSyncService
                     $attempts2 = 0;
                     while ($returnCode2 !== 0 && $attempts2 < 3) {
                         $attempts2++;
-                        if (!preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) {
-                            throw new \RuntimeException("Invalid user format");
-                        }
                         try {
                             $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
                             $process2->setTimeout(60);
@@ -1721,8 +1704,9 @@ class WafSyncService
                         } catch (\Exception $e) {
                             $returnCode2 = 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                            break;
                         }
-                        if ($returnCode2 !== 0 && $attempts2 < 3) usleep(100000 * (2 ** $attempts2));
+                        if ($returnCode2 !== 0 && $attempts2 < 3) usleep(100000 * (1 << $attempts2));
                     }
 
                     if ($returnCode1 !== 0 || $returnCode2 !== 0) {
