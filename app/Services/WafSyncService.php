@@ -1544,11 +1544,11 @@ class WafSyncService
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
-                if ($consoleUser && preg_match('/^[a-zA-Z0-9._-][a-zA-Z0-9._-]*$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                // Validate username to prevent injection, allowing valid macOS characters like @ and +
+                if ($consoleUser && preg_match('/^[a-zA-Z0-9._@+-][a-zA-Z0-9._@+-]*$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
-
                     $safeUser = escapeshellarg($consoleUser);
                     exec("sudo dscl . -create /Users/{$safeUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
@@ -1621,7 +1621,7 @@ class WafSyncService
                 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9._-][a-zA-Z0-9._-]*$/', $user)) continue;
+                    if (!$user || !preg_match('/^[a-zA-Z0-9._@+-][a-zA-Z0-9._@+-]*$/', $user)) continue;
                     
                     $safeUser = escapeshellarg($user);
                     // Remove DisabledUser from AuthenticationAuthority
