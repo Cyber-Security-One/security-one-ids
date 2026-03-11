@@ -1537,8 +1537,7 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
---- Resolution #1 ---
-                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+$user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
 
                 if ($user && preg_match('/^[a-zA-Z0-9._-]+$/', $user)) {
                     $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
@@ -1618,93 +1617,10 @@ class WafSyncService
                                 }
                             }
                         }
-
---- Resolution #2 ---
-                        try {
-                            $process3 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
-                            $process3->setTimeout(60);
-                            $process3->run();
-                            $dsclPasswdSuccess = $process3->isSuccessful();
-                            $dsclPasswdResult = $process3->getExitCode() ?? 1;
-                            $outputStr = trim($process3->getOutput() . ' ' . $process3->getErrorOutput());
-                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$dsclPasswdResult}, output={$outputStr}\n", FILE_APPEND);
-
-                            if (!$dsclPasswdSuccess && (stripos($outputStr, 'password') !== false || stripos($outputStr, 'authentication') !== false)) {
-                                Log::error("Sudo authentication failure while setting impossible password for {$cleanUser}: " . $outputStr);
-                            }
-                        } catch (\Exception $e) {
-                            $dsclPasswdSuccess = false;
-                            $dsclPasswdResult = 1;
-                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
-                            if (stripos($e->getMessage(), 'password') !== false || stripos($e->getMessage(), 'authentication') !== false) {
-                                Log::error("Sudo authentication failure while setting impossible password for {$cleanUser}: " . $e->getMessage());
-                            }
-                        }
-
-                        if (!$dsclDisableSuccess && !$pwpolicyDisableSuccess && !$dsclPasswdSuccess) {
-                            Log::error("Critical failure: Could not disable user {$cleanUser} via any available method.");
-                            throw new \Exception("Failed to completely disable macOS user login for {$cleanUser}.");
-                        }
-
---- Resolution #3 ---
-                if (!$user || !preg_match('/^[a-zA-Z0-9._-]+$/', $user)) continue;
-
-                $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
-
-                try {
-                    $dsclClearExecuted = false;
-                    $dsclClearResult = null;
-                    $pwpolicyEnableExecuted = false;
-                    $pwpolicyEnableResult = null;
-
-                    // Remove DisabledUser from AuthenticationAuthority
-                    try {
-                        $process1 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
-                        $process1->setTimeout(60);
-                        $process1->run();
-                        $dsclClearExecuted = true;
-                        $dsclClearResult = $process1->getExitCode() ?? 1;
-                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$dsclClearResult}\n", FILE_APPEND);
-                    } catch (\Exception $e) {
-                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
-                    }
-
-                    // Re-enable with pwpolicy
-                    try {
-                        $process2 = new SymfonyProcess(['sudo', '-n', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
-                        $process2->setTimeout(60);
-                        $process2->run();
-                        $pwpolicyEnableExecuted = true;
-                        $pwpolicyEnableResult = $process2->getExitCode() ?? 1;
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$pwpolicyEnableResult}\n", FILE_APPEND);
-                    } catch (\Exception $e) {
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
-                    }
-
-                    $success = ($dsclClearExecuted && $dsclClearResult === 0) || ($pwpolicyEnableExecuted && $pwpolicyEnableResult === 0);
-                    if (!$success) {
-                        Log::error("Critical failure: Could not enable user {$cleanUser} via dscl or pwpolicy.");
-                        $failedUsers[] = $cleanUser;
-                    }
-                } catch (\Exception $e) {
-                    Log::error("Exception while enabling user {$cleanUser}: " . $e->getMessage());
-                    $failedUsers[] = $cleanUser;
-                }
-
-                if (!empty($failedUsers)) {
-                    $failedUsersStr = implode(', ', $failedUsers);
-                    throw new \Exception("Failed to completely enable macOS user login for the following users: {$failedUsersStr}.");
-                }
-
---- Resolution #4 ---
                     }
 
                     if (!$dsclDisableSuccess && !$pwpolicyDisableSuccess) {
                         // Method 3: Set an impossible password hash
-<<<<<<< /tmp/merge_ours_oahi9e5ctp9u0skFHcS
-                        exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
-=======
 try {
                             $process3 = new SymfonyProcess(['sudo', '-n', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
                             $process3->setTimeout(60);
@@ -1730,11 +1646,11 @@ try {
                             Log::error("Critical failure: Could not disable user {$cleanUser} via any available method.");
                             throw new \Exception("Failed to completely disable macOS user login for {$cleanUser}.");
                         }
->>>>>>> /tmp/merge_theirs_hs0gf57ptn5caVyeVJq
                     }
-                } else {
-                    file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
                 }
+            } else {
+                file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
+            }
 
             } else {
                 echo "🚫 Disabling Linux user login...\n";
@@ -1790,21 +1706,6 @@ try {
                 $failedUsers = [];
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-<<<<<<< /tmp/merge_ours_oahi9e5ctp9u0skFHcS
-                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
-
-                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
-
-                    // Remove DisabledUser from AuthenticationAuthority
-                    exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
-
-                    // Re-enable with pwpolicy
-                    exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode}\n", FILE_APPEND);
-                }
-
-=======
 if (!$user || !preg_match('/^[a-zA-Z0-9._-]+$/', $user)) continue;
 
                     $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
@@ -1854,8 +1755,6 @@ if (!$user || !preg_match('/^[a-zA-Z0-9._-]+$/', $user)) continue;
                     $failedUsersStr = implode(', ', $failedUsers);
                     throw new \Exception("Failed to completely enable macOS user login for the following users: {$failedUsersStr}.");
                 }
-
->>>>>>> /tmp/merge_theirs_hs0gf57ptn5caVyeVJq
             } else {
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
@@ -3133,11 +3032,30 @@ if (!$user || !preg_match('/^[a-zA-Z0-9._-]+$/', $user)) continue;
                 return $path;
             }
         }
-<<<<<<< /tmp/merge_ours_oahi9e5ctp9u0skFHcS
+// If not found, try to download it
+        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
+        if (!file_exists($downloadPath)) {
+            try {
+                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
+                $context = stream_context_create([
+                    'ssl' => [
+                        'verify_peer' => false,
+                        'verify_peer_name' => false,
+                    ],
+                ]);
+                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
+                if ($cacert) {
+                    file_put_contents($downloadPath, $cacert);
+                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
+                    return $downloadPath;
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
+            }
+        } elseif (file_exists($downloadPath)) {
+            return $downloadPath;
+        }
 
-=======
-
->>>>>>> /tmp/merge_theirs_hs0gf57ptn5caVyeVJq
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
