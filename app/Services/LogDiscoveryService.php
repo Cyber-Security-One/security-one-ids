@@ -336,15 +336,7 @@ $paths = cache()->get('ids.custom_log_paths', []);
         $needsMigration = false;
 
         if (self::$migrated) {
-            return $paths;
-        }
-
-        // Check for legacy keys to trigger migration logic below
-        foreach ($legacyKeys as $legacyKey) {
-            if (cache()->has($legacyKey)) {
-                $needsMigration = true;
-                break;
-            }
+            return cache()->get('ids.custom_log_paths', []);
         }
         foreach ($legacyKeys as $legacyKey) {
             if (cache()->has($legacyKey)) {
@@ -355,40 +347,39 @@ $paths = cache()->get('ids.custom_log_paths', []);
 
         if ($needsMigration) {
 try {
-            $lock = cache()->lock('ids.custom_log_paths_migration_lock', 5);
-            $acquired = $lock->get();
+                $lock = cache()->lock('ids.custom_log_paths_migration_lock', 5);
+                $acquired = $lock->get();
 
-            if ($acquired) {
-                try {
-                    // Always fetch latest paths inside lock
-                    $paths = cache()->get('ids.custom_log_paths', []);
-                    $migrated = false;
+                if ($acquired) {
+                    try {
+                        // Always fetch latest paths inside lock
+                        $paths = cache()->get('ids.custom_log_paths', []);
+                        $migrated = false;
 
-                    foreach ($legacyKeys as $legacyKey) {
-                        if (cache()->has($legacyKey)) {
-                            $legacyPaths = cache()->get($legacyKey, []);
-                            $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
-                            cache()->forget($legacyKey);
-                            $migrated = true;
+                        foreach ($legacyKeys as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $legacyPaths = cache()->get($legacyKey, []);
+                                $paths = array_values(array_unique(array_merge($paths, $legacyPaths)));
+                                cache()->forget($legacyKey);
+                                $migrated = true;
+                            }
                         }
-                    }
 
-                    if ($migrated) {
-                        cache()->forever('ids.custom_log_paths', $paths);
+                        if ($migrated) {
+                            cache()->forever('ids.custom_log_paths', $paths);
+                        }
+                    } finally {
+                        $lock->release();
                     }
-                } finally {
-                    $lock->release();
+                } else {
+                    // Re-fetch in case another process migrated it while we were waiting
+                    $paths = cache()->get('ids.custom_log_paths', []);
                 }
-            } else {
-                // Re-fetch in case another process migrated it while we were waiting
-                $paths = cache()->get('ids.custom_log_paths', []);
+            } catch (\Exception $e) {
+                // Handle cache infrastructure failures gracefully
+                Log::warning('Failed to acquire cache lock or migrate legacy custom log paths: ' . $e->getMessage());
             }
-        } catch (\Exception $e) {
-            // Handle cache infrastructure failures gracefully
-            \Illuminate\Support\Facades\Log::warning('Failed to acquire cache lock or migrate legacy custom log paths: ' . $e->getMessage());
         }
-
-        self::$migrated = true;
 
         return $paths;
     }
