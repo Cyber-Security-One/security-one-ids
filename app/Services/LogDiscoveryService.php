@@ -12,12 +12,9 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-<<<<<<< HEAD
-=======
     public static bool $migrated = false;
     private const LOCK_TIMEOUT = 30;
 
->>>>>>> origin/main
     /**
      * Common web server log file locations to scan
      */
@@ -312,13 +309,6 @@ class LogDiscoveryService
             return false;
         }
 
-<<<<<<< HEAD
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
-=======
         $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
         $acquired = false;
         $delayMicroseconds = 10000;
@@ -353,7 +343,6 @@ class LogDiscoveryService
             if ($acquired) {
                 $lock->release();
             }
->>>>>>> origin/main
         }
 
         return true;
@@ -364,9 +353,6 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-<<<<<<< HEAD
-        return cache()->get('ids_custom_log_paths', []);
-=======
         $newKey = 'ids::custom_log_paths';
 
         if (self::$migrated) {
@@ -444,7 +430,6 @@ class LogDiscoveryService
         }
 
         return cache()->get($newKey, []);
->>>>>>> origin/main
     }
 
     /**

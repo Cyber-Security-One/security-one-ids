@@ -4,10 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-<<<<<<< HEAD
-=======
 use App\Jobs\UnblockIPJob;
->>>>>>> origin/main
 
 /**
  * Blocking Service
@@ -311,13 +308,8 @@ class BlockingService
         // When cache expires, the block is automatically removed
         // For iptables, we need explicit cleanup job
         if (config('ids.blocking.mode') === 'iptables' || config('ids.blocking.mode') === 'hybrid') {
-<<<<<<< HEAD
-            // TODO: Dispatch UnblockIPJob with delay
-            // dispatch(new UnblockIPJob($ip))->delay($duration);
-=======
             // Dispatch UnblockIPJob with delay
             dispatch(new UnblockIPJob($ip))->delay($duration);
->>>>>>> origin/main
         }
     }
 

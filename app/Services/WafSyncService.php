@@ -59,20 +59,9 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-<<<<<<< HEAD
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
-=======
             $http = $http->withOptions([
                 'verify' => $cacertPath,
             ]);
->>>>>>> origin/main
         }
         
         return $http;
@@ -1548,20 +1537,6 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-<<<<<<< HEAD
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
-                
-                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    // Method 1: Use dscl to disable user account
-                    // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $output = [];
-                    exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
-                    
-                    if ($returnCode !== 0) {
-                        // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-=======
                 $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
 
@@ -1575,17 +1550,12 @@ class WafSyncService
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         exec("sudo pwpolicy -u {$safeConsoleUser} disableuser 2>&1", $output, $returnCode);
->>>>>>> origin/main
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
                     }
                     
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
-<<<<<<< HEAD
-                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-=======
                         exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
->>>>>>> origin/main
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
                     }
                 } else {
@@ -1645,17 +1615,6 @@ class WafSyncService
                 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-<<<<<<< HEAD
-                    if (!$user) continue;
-                    
-                    // Remove DisabledUser from AuthenticationAuthority
-                    exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
-                    
-                    // Re-enable with pwpolicy  
-                    exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
-=======
                     if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
 
                     $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
@@ -1667,7 +1626,6 @@ class WafSyncService
                     // Re-enable with pwpolicy
                     exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode}\n", FILE_APPEND);
->>>>>>> origin/main
                 }
                 
             } else {
@@ -2914,15 +2872,10 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
-<<<<<<< HEAD
-     */
-    protected function getCaCertPath(): ?string
-=======
      *
      * @throws \App\Exceptions\CertificateBundleMissingException
      */
     protected function getCaCertPath(): string
->>>>>>> origin/main
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2953,33 +2906,6 @@ class WafSyncService
             }
         }
         
-<<<<<<< HEAD
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
-        }
-        
-        return null;
-=======
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
@@ -2989,7 +2915,6 @@ class WafSyncService
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
         throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
->>>>>>> origin/main
     }
 
     /**

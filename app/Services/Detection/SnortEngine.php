@@ -5,10 +5,7 @@ namespace App\Services\Detection;
 use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
-<<<<<<< HEAD
-=======
 use App\Traits\DetectsPlatform;
->>>>>>> origin/main
 
 /**
  * Snort 3 IPS Detection Engine

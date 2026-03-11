@@ -2,17 +2,11 @@
 
 namespace App\Http\Controllers\Api;
 
-<<<<<<< HEAD
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\Log;
-=======
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use App\Http\Controllers\Controller;
->>>>>>> origin/main
 
 class SystemUpdateController extends Controller
 {
@@ -25,26 +19,15 @@ class SystemUpdateController extends Controller
 
         // Run update command in background
         $command = 'cd /var/www/html && git pull origin main 2>&1';
-<<<<<<< HEAD
-        
-        try {
-            exec($command, $output, $returnCode);
-            
-=======
 
         try {
             exec($command, $output, $returnCode);
 
->>>>>>> origin/main
             if ($returnCode === 0) {
                 // Clear caches
                 Artisan::call('config:clear');
                 Artisan::call('cache:clear');
-<<<<<<< HEAD
-                
-=======
 
->>>>>>> origin/main
                 Log::info('System update completed', [
                     'output' => implode("\n", $output),
                 ]);
@@ -92,11 +75,7 @@ class SystemUpdateController extends Controller
             // Get git info
             exec('git rev-parse HEAD 2>/dev/null', $hashOutput);
             exec('git rev-parse --abbrev-ref HEAD 2>/dev/null', $branchOutput);
-<<<<<<< HEAD
-            
-=======
 
->>>>>>> origin/main
             $gitHash = !empty($hashOutput) ? substr($hashOutput[0], 0, 7) : 'unknown';
             $gitBranch = !empty($branchOutput) ? $branchOutput[0] : 'unknown';
         } catch (\Exception $e) {
@@ -134,8 +113,4 @@ class SystemUpdateController extends Controller
             ], 500);
         }
     }
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> origin/main

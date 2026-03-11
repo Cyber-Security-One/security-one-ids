@@ -1,9 +1,3 @@
-<<<<<<< HEAD
-## 2024-05-15 - [Unauthenticated Endpoints Executing Shell Commands]
-**Vulnerability:** Several endpoints in `routes/api.php` (`/api/system/update`, `/api/system/version`, `/api/system/restart`, `/api/rules/update`) exposed functionality to trigger OS-level commands (like `git pull` or `supervisorctl restart all`) completely unauthenticated. Authentication was only applied inline within one specific route (`/api/settings/sync`).
-**Learning:** Due to a lack of shared middleware for the `api` route group, new API endpoints were added sequentially without considering global authentication. Security logic was duplicated and omitted on dangerous operational endpoints.
-**Prevention:** Implement group-level authentication middleware for related protected endpoints. Ensure that all routes executing high-privilege operations or modifying global state require strict authentication tokens. Avoid applying authentication only inside route closures where it can be easily missed on subsequent additions.
-=======
 ## 2024-05-15 - [Fixed: Disabled SSL Peer Verification for Downloads]
 **Vulnerability:** SSL peer verification was explicitly disabled (`'verify_peer' => false`, `'verify_peer_name' => false`) in stream context creation when downloading the CA certificate bundle (`cacert.pem`) in `ClamavService` and `WafSyncService`. This allows Man-in-the-Middle (MitM) attacks.
 **Learning:** Disabling SSL verification to bootstrap trust (downloading a CA bundle to establish secure connections) creates a Catch-22 and exposes the application to MitM attacks where a malicious CA bundle could be injected.
@@ -18,4 +12,3 @@
 **Vulnerability:** API routes protecting agent updates and settings were secured with `!==` string comparison on `AGENT_TOKEN`, which opens a side-channel for timing attacks.
 **Learning:** Checking secure tokens with standard operators (`==` or `===`) stops comparison on the first mismatched character, leading to timing variations that can be measured and exploited to extract a token.
 **Prevention:** Always use `hash_equals()` for token or password verification and cast values to strings beforehand.
->>>>>>> origin/main
