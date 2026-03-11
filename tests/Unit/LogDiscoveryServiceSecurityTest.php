@@ -37,14 +37,23 @@ class LogDiscoveryServiceSecurityTest extends TestCase
         $method = $reflector->getMethod('isAllowedPath');
         $method->setAccessible(true);
 
+        $allowedDirs = [
+            '/var/log',
+            '/var/www',
+            '/usr/local',
+            '/opt',
+            '/home',
+            '/private/var',
+        ];
+
         // Exact match of allowed directory should pass now
-        $this->assertTrue($method->invoke($this->service, '/var/log'), 'Exact directory match should be allowed.');
-        $this->assertTrue($method->invoke($this->service, '/var/log/nginx/access.log'));
+        $this->assertTrue($method->invoke($this->service, '/var/log', $allowedDirs), 'Exact directory match should be allowed.');
+        $this->assertTrue($method->invoke($this->service, '/var/log/nginx/access.log', $allowedDirs));
 
         // Ensure path outside allowed dir fails
-        $this->assertFalse($method->invoke($this->service, '/etc/passwd'));
+        $this->assertFalse($method->invoke($this->service, '/etc/passwd', $allowedDirs));
 
         // Similar but different boundary check shouldn't match
-        $this->assertFalse($method->invoke($this->service, '/var/logo'));
+        $this->assertFalse($method->invoke($this->service, '/var/logo', $allowedDirs));
     }
 }
