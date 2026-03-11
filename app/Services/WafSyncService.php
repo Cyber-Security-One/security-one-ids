@@ -1548,17 +1548,22 @@ class WafSyncService
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
+                    $returnCode = -1;
                     exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
                     
-                    if ($returnCode !== 0) {
+                    if ($returnCode !== -1 && $returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
+                        $output = [];
+                        $returnCode = -1;
                         exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
                     }
                     
-                    if ($returnCode !== 0) {
+                    if ($returnCode !== -1 && $returnCode !== 0) {
                         // Method 3: Set an impossible password hash
+                        $output = [];
+                        $returnCode = -1;
                         exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
                     }
