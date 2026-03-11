@@ -1542,12 +1542,13 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+                $safeConsoleUser = preg_replace('/[\r\n]+/', ' ', $consoleUser);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
-                        Log::warning("Skipping macOS user disable: invalid username format '{$consoleUser}'");
-                        file_put_contents($logFile, "[{$timestamp}] Invalid username format for {$consoleUser}, skipping\n", FILE_APPEND);
+                        Log::warning("Skipping macOS user disable: invalid username format '{$safeConsoleUser}'");
+                        file_put_contents($logFile, "[{$timestamp}] Invalid username format for {$safeConsoleUser}, skipping\n", FILE_APPEND);
                     } else {
                         // Method 1: Use dscl to disable user account
                         // The correct way is to set AuthenticationAuthority to DisabledUser
@@ -1647,8 +1648,9 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
-                        Log::warning("Skipping macOS user enable: invalid username format '{$user}'");
-                        file_put_contents($logFile, "[{$timestamp}] Invalid username format for {$user}, skipping\n", FILE_APPEND);
+                        $safeUser = preg_replace('/[\r\n]+/', ' ', $user);
+                        Log::warning("Skipping macOS user enable: invalid username format '{$safeUser}'");
+                        file_put_contents($logFile, "[{$timestamp}] Invalid username format for {$safeUser}, skipping\n", FILE_APPEND);
                         continue;
                     }
                     
@@ -1658,6 +1660,7 @@ class WafSyncService
                         $returnCode = $process->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
                     } catch (\Exception $e) {
+                        $returnCode = 1;
                         Log::error("Process run failed for dscl delete: " . $e->getMessage());
                         file_put_contents($logFile, "[{$timestamp}] Exception running dscl delete for {$user}: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
@@ -1668,6 +1671,7 @@ class WafSyncService
                         $returnCode = $process->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
                     } catch (\Exception $e) {
+                        $returnCode = 1;
                         Log::error("Process run failed for pwpolicy enable: " . $e->getMessage());
                         file_put_contents($logFile, "[{$timestamp}] Exception running pwpolicy enable for {$user}: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
