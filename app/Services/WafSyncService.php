@@ -1581,7 +1581,8 @@ class WafSyncService
                         }
                     }
                     
-                    if ((!$pwpolicyDisableExecuted || $pwpolicyDisableResult !== 0)) {
+                    $disableSuccess = ($dsclDisableExecuted && $dsclDisableResult === 0) || ($pwpolicyDisableExecuted && $pwpolicyDisableResult === 0);
+                    if (!$disableSuccess) {
                         // Method 3: Set an impossible password hash
                         try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
