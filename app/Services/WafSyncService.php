@@ -1544,7 +1544,7 @@ class WafSyncService
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
-                if ($consoleUser && preg_match('/^[a-zA-Z0-9._-][a-zA-Z0-9._-]*$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                if ($consoleUser && preg_match('/^[a-zA-Z0-9._-]+$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     $escapedUser = escapeshellarg($consoleUser);
 
                     // Method 1: Use dscl to disable user account
@@ -1623,7 +1623,7 @@ class WafSyncService
                 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9._-][a-zA-Z0-9._-]*$/', $user)) continue;
+                    if (!$user || !preg_match('/^[a-zA-Z0-9._-]+$/', $user)) continue;
                     
                     $escapedUser = escapeshellarg($user);
 
