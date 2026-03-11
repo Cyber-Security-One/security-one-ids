@@ -1546,16 +1546,15 @@ class WafSyncService
                 $sanitizedUser = preg_replace('/[\r\n]+/', ' ', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$sanitizedUser}\n", FILE_APPEND);
                 
-                if (strlen($sanitizedUser) > 256) {
+                if (strlen($sanitizedUser) > 32) {
                     throw new \RuntimeException('Username too long');
                 }
 
                 if ($sanitizedUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $sanitizedUser) && $sanitizedUser !== 'root' && $sanitizedUser !== 'daemon' && $sanitizedUser !== 'nobody' && $sanitizedUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $returnCode1 = -1;
-                    $returnCode2 = -1;
-                    $returnCode3 = -1;
+                    $success = false;
+
                     try {
                         $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $sanitizedUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $process1->setTimeout(60);
@@ -1564,12 +1563,14 @@ class WafSyncService
                         $outputRaw = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
                         $outputStr = htmlspecialchars((string) preg_replace('/[\r\n\t]+/', ' ', $outputRaw), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$sanitizedUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
+                        if ($returnCode1 === 0) {
+                            $success = true;
+                        }
                     } catch (\Exception $e) {
-                        $returnCode1 = 1;
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
-                    if ($returnCode1 !== 0) {
+                    if (!$success) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         try {
                             $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $sanitizedUser, 'disableuser']);
@@ -1577,13 +1578,15 @@ class WafSyncService
                             $process2->run();
                             $returnCode2 = $process2->getExitCode() ?? 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$sanitizedUser}: code={$returnCode2}\n", FILE_APPEND);
+                            if ($returnCode2 === 0) {
+                                $success = true;
+                            }
                         } catch (\Exception $e) {
-                            $returnCode2 = 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                     }
                     
-                    if ($returnCode2 !== -1 && $returnCode2 !== 0) {
+                    if (!$success) {
                         // Method 3: Set an impossible password hash
                         try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $sanitizedUser, '*']);
@@ -1591,13 +1594,15 @@ class WafSyncService
                             $process3->run();
                             $returnCode3 = $process3->getExitCode() ?? 1;
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
+                            if ($returnCode3 === 0) {
+                                $success = true;
+                            }
                         } catch (\Exception $e) {
-                            $returnCode3 = 1;
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
                     }
 
-                    if ($returnCode1 !== 0 && $returnCode2 !== 0 && $returnCode3 !== 0) {
+                    if (!$success) {
                         throw new \RuntimeException("All methods failed to disable user {$sanitizedUser}");
                     }
                 } else {
@@ -1696,6 +1701,10 @@ class WafSyncService
                                 $returnCode1 = 0;
                             }
                             file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser}: code={$returnCode1}\n", FILE_APPEND);
+                        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException $e) {
+                            $hasException = true;
+                            $returnCode1 = 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$sanitizedUser} timed out\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $hasException = true;
                             $returnCode1 = 1;
@@ -1715,6 +1724,9 @@ class WafSyncService
                             $process2->run();
                             $returnCode2 = $process2->getExitCode() ?? 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$sanitizedUser}: code={$returnCode2}\n", FILE_APPEND);
+                        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException $e) {
+                            $returnCode2 = 1;
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$sanitizedUser} timed out\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $returnCode2 = 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$sanitizedUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
