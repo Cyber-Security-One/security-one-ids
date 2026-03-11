@@ -90,4 +90,18 @@ class LogDiscoveryServiceTest extends TestCase
         // Verify cache is set even if it was already in config
         $this->assertEquals([$tempPath], cache()->get('ids.custom_log_paths'));
     }
+
+    public function test_get_custom_paths_migrates_legacy_cache_key(): void
+    {
+        $legacyPath = '/tmp/legacy-access.log';
+
+        cache()->forever('ids_custom_log_paths', [$legacyPath]);
+        cache()->forget('ids.custom_log_paths');
+
+        $paths = $this->service->getCustomPaths();
+
+        $this->assertSame([$legacyPath], $paths);
+        $this->assertSame([$legacyPath], cache()->get('ids.custom_log_paths'));
+        $this->assertFalse(cache()->has('ids_custom_log_paths'));
+    }
 }
