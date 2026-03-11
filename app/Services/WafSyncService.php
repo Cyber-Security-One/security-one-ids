@@ -1523,7 +1523,15 @@ class WafSyncService
             $logFile = PHP_OS_FAMILY === 'Windows' 
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\login_control.log'
                 : base_path('storage/logs/login_control.log');
+
+            // Sanitize log file path to prevent traversal
+            if (strpos($logFile, '..') !== false) {
+                throw new \Exception("Invalid log file path");
+            }
+
             $timestamp = date('Y-m-d H:i:s');
+            // Sanitize timestamp just in case
+            $timestamp = preg_replace('/[^0-9:\-\s]/', '', $timestamp);
             
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
@@ -1542,6 +1550,7 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                $consoleUser = preg_replace('/[\r\n]+/', ' ', $consoleUser);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
@@ -1597,7 +1606,15 @@ class WafSyncService
             $logFile = PHP_OS_FAMILY === 'Windows' 
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\login_control.log'
                 : base_path('storage/logs/login_control.log');
+
+            // Sanitize log file path to prevent traversal
+            if (strpos($logFile, '..') !== false) {
+                throw new \Exception("Invalid log file path");
+            }
+
             $timestamp = date('Y-m-d H:i:s');
+            // Sanitize timestamp just in case
+            $timestamp = preg_replace('/[^0-9:\-\s]/', '', $timestamp);
             
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
@@ -1622,6 +1639,7 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
+                    $user = preg_replace('/[\r\n]+/', ' ', $user);
                     $safeUser = escapeshellarg($user);
                     // Remove DisabledUser from AuthenticationAuthority
                     exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
