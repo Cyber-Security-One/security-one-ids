@@ -7,11 +7,14 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Log Discovery Service
- * 
+ *
  * Auto-discovers web server log files on the system
  */
 class LogDiscoveryService
 {
+    public static bool $migrated = false;
+    private const LOCK_TIMEOUT = 30;
+
     /**
      * Common web server log file locations to scan
      */
@@ -22,7 +25,7 @@ class LogDiscoveryService
         '/var/log/nginx/*-access.log',
         '/var/log/nginx/error.log',
         '/usr/local/nginx/logs/access.log',
-        
+
         // === Linux Apache ===
         '/var/log/apache2/access.log',
         '/var/log/apache2/*/access.log',
@@ -30,7 +33,7 @@ class LogDiscoveryService
         '/var/log/apache2/other_vhosts_access.log',
         '/var/log/httpd/access_log',
         '/var/log/httpd/*/access_log',
-        
+
         // === macOS ===
         '/var/log/apache2/access_log',
         '/var/log/apache2/error_log',
@@ -41,7 +44,7 @@ class LogDiscoveryService
         '/opt/homebrew/var/log/httpd/access_log',
         '/private/var/log/apache2/access_log',
         '/private/var/log/apache2/error_log',
-        
+
         // === Docker / Container ===
         '/var/log/host-nginx/access.log',
         '/var/log/host-nginx/*/access.log',
@@ -51,7 +54,7 @@ class LogDiscoveryService
         '/var/log/host-httpd/access_log',
         '/var/log/custom-logs-*/access.log',
         '/var/log/custom-logs-*/*.log',
-        
+
         // === Common custom paths ===
         '/var/www/*/logs/access.log',
         '/home/*/logs/access.log',
@@ -71,13 +74,13 @@ class LogDiscoveryService
         '/var/log/ufw.log',
         '/var/log/fail2ban.log',
         '/var/log/firewalld',
-        
+
         // === macOS system logs ===
         '/var/log/system.log',
         '/var/log/install.log',
         '/private/var/log/system.log',
         '/private/var/log/asl/*.asl',
-        
+
         // === Application logs ===
         '/var/log/mysql/error.log',
         '/var/log/postgresql/*.log',
@@ -236,7 +239,7 @@ class LogDiscoveryService
         }
 
         $type = $this->detectServerType($path);
-        
+
         return [
             'path' => $path,
             'type' => $type,
@@ -273,7 +276,7 @@ class LogDiscoveryService
 
         // Try to match against known formats
         $sampleLine = end($lines);
-        
+
         foreach (self::LOG_FORMATS as $name => $pattern) {
             if (preg_match($pattern, $sampleLine)) {
                 return $name;
@@ -314,7 +317,7 @@ class LogDiscoveryService
             return false;
         }
 
-        $acquired = false;
+$acquired = false;
         $delayMicroseconds = 10000; // 10ms
         $lock = null;
 
@@ -351,6 +354,12 @@ class LogDiscoveryService
             if ($acquired && $lock) {
                 $lock->release();
             }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
+            return false;
+        }
+                $lock->release();
+            }
         }
 
         return true;
@@ -361,7 +370,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        $hasLegacy1 = cache()->has('ids_custom_log_paths');
+$hasLegacy1 = cache()->has('ids_custom_log_paths');
         $hasLegacy2 = cache()->has('ids.custom_log_paths');
 
         if ($hasLegacy1 || $hasLegacy2) {
@@ -385,6 +394,7 @@ class LogDiscoveryService
 
             if ($acquired) {
                 try {
+                    // Double check after acquiring lock
                     $hasLegacy1 = cache()->has('ids_custom_log_paths');
                     $hasLegacy2 = cache()->has('ids.custom_log_paths');
 
@@ -400,6 +410,7 @@ class LogDiscoveryService
                         if ($hasLegacy1) cache()->forget('ids_custom_log_paths');
                         if ($hasLegacy2) cache()->forget('ids.custom_log_paths');
 
+                        self::$migrated = true;
                         return $merged;
                     }
                 } finally {
@@ -410,13 +421,14 @@ class LogDiscoveryService
             }
 
             // Fallback: Return merged state if lock acquisition failed but legacies exist
-            $legacyPaths1 = $hasLegacy1 ? cache()->get('ids_custom_log_paths', []) : [];
-            $legacyPaths2 = $hasLegacy2 ? cache()->get('ids.custom_log_paths', []) : [];
+            $legacyPaths1 = cache()->get('ids_custom_log_paths', []);
+            $legacyPaths2 = cache()->get('ids.custom_log_paths', []);
             $currentPaths = cache()->get('ids::custom_log_paths', []);
 
             return array_values(array_unique(array_merge($legacyPaths1, $legacyPaths2, $currentPaths)));
         }
 
+        self::$migrated = true;
         return cache()->get('ids::custom_log_paths', []);
     }
 
