@@ -1511,6 +1511,40 @@ class WafSyncService
     }
     
     /**
+     * Helper to disable macOS user login using fallback methods.
+     */
+    private function disableMacOsUser(string $consoleUser, string $logFile, string $timestamp): void
+    {
+        if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
+            file_put_contents($logFile, "[{$timestamp}] Invalid console user format: {$consoleUser}\n", FILE_APPEND);
+            return;
+        }
+
+        // Method 1: Use dscl to disable user account
+        // The correct way is to set AuthenticationAuthority to DisabledUser
+        $output1 = [];
+        $returnCode1 = 0;
+        exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output1, $returnCode1);
+        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode1}, output=" . implode(" ", $output1) . "\n", FILE_APPEND);
+
+        if ($returnCode1 !== 0) {
+            // Method 2: Lock the user's password (they won't be able to login)
+            $output2 = [];
+            $returnCode2 = 0;
+            exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output2, $returnCode2);
+            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$consoleUser}: code={$returnCode2}, output=" . implode(" ", $output2) . "\n", FILE_APPEND);
+
+            if ($returnCode2 !== 0) {
+                // Method 3: Set an impossible password hash
+                $output3 = [];
+                $returnCode3 = 0;
+                exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output3, $returnCode3);
+                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password for {$consoleUser}: code={$returnCode3}, output=" . implode(" ", $output3) . "\n", FILE_APPEND);
+            }
+        }
+    }
+
+    /**
      * Handle disable login signal from WAF Hub
      * Disables password authentication for all users
      */
@@ -1545,23 +1579,7 @@ class WafSyncService
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    // Method 1: Use dscl to disable user account
-                    // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $output = [];
-                    exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
-                    
-                    if ($returnCode !== 0) {
-                        // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
-                    }
-                    
-                    if ($returnCode !== 0) {
-                        // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
-                    }
+                    $this->disableMacOsUser($consoleUser, $logFile, $timestamp);
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
                 }
