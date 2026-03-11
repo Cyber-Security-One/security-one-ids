@@ -341,7 +341,7 @@ $lock = cache()->lock(self::CACHE_KEY . '_lock', 5);
             \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
             return false;
         } finally {
-            if ($lock->isOwned()) {
+            if ($lock->isLocked()) {
                 $lock->release();
             }
         }
@@ -386,9 +386,24 @@ $lock = cache()->lock(self::CACHE_KEY . '_lock', 5);
 
         if ($oldPaths !== null) {
             Log::warning(sprintf('Migrating legacy cache key %s to %s', self::LEGACY_CACHE_KEY, self::CACHE_KEY));
-            cache()->forever(self::CACHE_KEY, $oldPaths);
-            cache()->forget(self::LEGACY_CACHE_KEY);
-            return $oldPaths;
+            
+            // Ensure migration lock is used for consistency with other operations
+            $lock = cache()->lock(self::CACHE_KEY . '_migrate_lock', 5);
+            if ($lock->block(5)) {
+                try {
+                    // Double check after acquiring lock
+                    $currentPaths = cache()->get(self::CACHE_KEY);
+                    if ($currentPaths === null) {
+                        cache()->forever(self::CACHE_KEY, $oldPaths);
+                        cache()->forget(self::LEGACY_CACHE_KEY);
+                    }
+                } finally {
+                    if ($lock->isLocked()) {
+                        $lock->release();
+                    }
+                }
+            }
+            return is_array($oldPaths) ? $oldPaths : [];
         }
 
         return [];
