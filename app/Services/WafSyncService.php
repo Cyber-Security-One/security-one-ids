@@ -59,14 +59,9 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
         
         return $http;
@@ -1542,30 +1537,34 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+
+                // Safely log the console user without CRLF injection
+                $logSafeConsoleUser = (string) preg_replace('/[\r\n]+/', ' ', $consoleUser);
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$logSafeConsoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
-                        file_put_contents($logFile, "[{$timestamp}] Invalid console user format: {$consoleUser}, skipping disable operation\n", FILE_APPEND);
-                        Log::warning("Invalid console user format detected: {$consoleUser}");
+                        file_put_contents($logFile, "[{$timestamp}] Invalid console user format: {$logSafeConsoleUser}, skipping disable operation\n", FILE_APPEND);
+                        Log::warning("Invalid console user format detected: {$logSafeConsoleUser}");
                     } else {
+                        // Prevent OS command injection attacks by escaping the user input
+                        $safeConsoleUser = escapeshellarg($consoleUser);
+
                         // Method 1: Use dscl to disable user account
                         // The correct way is to set AuthenticationAuthority to DisabledUser
                         $output = [];
-                        $safeConsoleUser = escapeshellarg($consoleUser);
-
                         exec("sudo dscl . -create /Users/{$safeConsoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$logSafeConsoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
 
                         if ($returnCode !== 0) {
                             // Method 2: Lock the user's password (they won't be able to login)
                             exec("sudo pwpolicy -u {$safeConsoleUser} disableuser 2>&1", $output, $returnCode);
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$logSafeConsoleUser}: code={$returnCode}\n", FILE_APPEND);
 
                             if ($returnCode !== 0) {
                                 // Method 3: Set an impossible password hash
                                 exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
-                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password {$logSafeConsoleUser}: code={$returnCode}\n", FILE_APPEND);
                             }
                         }
                     }
@@ -1630,20 +1629,24 @@ class WafSyncService
                     
                     // Allow alphanumeric, underscore, hyphen, and period (standard macOS username format)
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
-                        file_put_contents($logFile, "[{$timestamp}] Invalid user format: {$user}, skipping enable operation\n", FILE_APPEND);
-                        Log::warning("Invalid user format detected: {$user}");
+                        $logSafeUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+                        file_put_contents($logFile, "[{$timestamp}] Invalid user format: {$logSafeUser}, skipping enable operation\n", FILE_APPEND);
+                        Log::warning("Invalid user format detected: {$logSafeUser}");
                         continue;
                     }
 
+                    $logSafeUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+
+                    // Prevent OS command injection attacks by escaping the user input
                     $safeUser = escapeshellarg($user);
 
                     // Remove DisabledUser from AuthenticationAuthority
                     exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$logSafeUser}: code={$returnCode}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
                     exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$logSafeUser}: code={$returnCode}\n", FILE_APPEND);
                 }
                 
             } else {
@@ -2890,8 +2893,10 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2922,31 +2927,15 @@ class WafSyncService
             }
         }
         
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
+        // If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
         }
-        
-        return null;
+
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
