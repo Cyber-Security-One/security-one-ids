@@ -1545,7 +1545,7 @@ class WafSyncService
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    if (!preg_match('/^\S+$/', $consoleUser)) {
+                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
                         Log::warning('Invalid username detected in handleDisableLogin: ' . $consoleUser);
                         return;
                     }
@@ -1627,7 +1627,7 @@ class WafSyncService
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user) continue;
-                    if (!preg_match('/^\S+$/', $user)) {
+                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
                         Log::warning('Invalid username detected in handleEnableLogin: ' . $user);
                         continue;
                     }
