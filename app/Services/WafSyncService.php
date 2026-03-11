@@ -1697,9 +1697,9 @@ class WafSyncService
                         Log::warning("Partial success: dscl=" . ($dsclSuccess ? 'success' : 'failed') . " pwpolicy=" . ($pwpolicySuccess ? 'success' : 'failed') . " for user {$cleanUser}");
                     }
 
-                    $success = $dsclSuccess && $pwpolicySuccess;
+                    $success = $dsclSuccess || $pwpolicySuccess;
                     if (!$success) {
-                        Log::error("Critical failure: Could not fully enable user {$cleanUser} via dscl and pwpolicy.");
+                        Log::error("Critical failure: Could not enable user {$cleanUser} via dscl or pwpolicy.");
                         $failedUsers[] = $cleanUser;
                         continue;
                     }
