@@ -307,13 +307,16 @@ class LogDiscoveryService
         }
 
         $cachedPaths = $this->getCustomPaths();
+        $configPaths = config('ids.custom_log_paths', []);
 
-        if (!in_array($path, $cachedPaths, true)) {
-            $cachedPaths[] = $path;
-
-            // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $cachedPaths);
+        if (in_array($path, $cachedPaths, true) || in_array($path, $configPaths, true)) {
+            return true;
         }
+
+        $cachedPaths[] = $path;
+
+        // Store in cache for persistence
+        cache()->forever('ids.custom_log_paths', $cachedPaths);
 
         return true;
     }
