@@ -1536,7 +1536,7 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-$user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
 
                 $excludedUsers = ['root', 'daemon', 'nobody', '_mbsetupuser'];
 
@@ -1590,8 +1590,7 @@ $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                             }
                         }
                     }
-                }
-                    }
+
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
                 }
@@ -1649,9 +1648,10 @@ $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+                    if (!$user) continue;
 
-$cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
+                    $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
+
 
                     if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $cleanUser)) continue;
 
@@ -1674,6 +1674,7 @@ $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
                         file_put_contents($logFile, "[{$timestamp}] exception enabling user {$cleanUser}: " . $e->getMessage() . "\n", FILE_APPEND);
                         Log::warning("WAF Sync: Exception re-enabling macOS user {$cleanUser}");
                     }
+
                 }
 
             } else {
@@ -2924,6 +2925,7 @@ $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
      * @throws \App\Exceptions\CertificateBundleMissingException
      */
     protected function getCaCertPath(): string
+
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2963,6 +2965,7 @@ $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
         throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+
     }
 
     /**
