@@ -1552,19 +1552,21 @@ class WafSyncService
                         // Method 1: Use dscl to disable user account
                         // The correct way is to set AuthenticationAuthority to DisabledUser
                         $output = [];
-                        exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                        $safeConsoleUser = escapeshellarg($consoleUser);
 
-                        if ($returnCode !== 0) {
+                        exec("sudo dscl . -create /Users/" . $safeConsoleUser . " AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode1);
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode1}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+
+                        if ($returnCode1 !== 0) {
                             // Method 2: Lock the user's password (they won't be able to login)
-                            exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
-                        }
+                            exec("sudo pwpolicy -u " . $safeConsoleUser . " disableuser 2>&1", $output, $returnCode2);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode2}\n", FILE_APPEND);
 
-                        if ($returnCode !== 0) {
-                            // Method 3: Set an impossible password hash
-                            exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                            if ($returnCode2 !== 0) {
+                                // Method 3: Set an impossible password hash
+                                exec("sudo dscl . -passwd /Users/" . $safeConsoleUser . " '*' 2>&1", $output, $returnCode3);
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
+                            }
                         }
                     }
                 } else {
@@ -1626,19 +1628,22 @@ class WafSyncService
                     $user = trim($user);
                     if (!$user) continue;
                     
+                    // Allow alphanumeric, underscore, and hyphen (standard macOS username format)
                     if (!preg_match('/^[a-zA-Z0-9_-]+$/', $user)) {
                         file_put_contents($logFile, "[{$timestamp}] Invalid user format: {$user}, skipping enable operation\n", FILE_APPEND);
                         Log::warning("Invalid user format detected: {$user}");
                         continue;
                     }
 
+                    $safeUser = escapeshellarg($user);
+
                     // Remove DisabledUser from AuthenticationAuthority
-                    exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    exec("sudo dscl . -delete /Users/" . $safeUser . " AuthenticationAuthority 2>&1", $output, $returnCode1);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode1}\n", FILE_APPEND);
                     
                     // Re-enable with pwpolicy  
-                    exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    exec("sudo pwpolicy -u " . $safeUser . " enableuser 2>&1", $output, $returnCode2);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode2}\n", FILE_APPEND);
                 }
                 
             } else {
