@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Log Discovery Service
@@ -331,12 +332,6 @@ class LogDiscoveryService
             return false;
         }
 
-        // Additionally verify that basename of realpath matches basename of path
-        // to prevent linking an allowed file to an unexpected name in the symlink attacks where the target is outside
-        if (basename($path) !== basename($realPath)) {
-            return false;
-        }
-
         if (!$this->isAllowedPath($realPath)) {
             return false;
         }
@@ -349,9 +344,22 @@ class LogDiscoveryService
             return true;
         }
 
-        $lock = cache()->lock('ids.custom_log_paths_lock', 5);
+        $lock = Cache::lock('ids.custom_log_paths_lock', 10);
+        $attempts = 0;
+        $acquired = false;
+        $sleepMicroseconds = 100000; // 100ms
 
-        if (!$lock->get()) {
+        while ($attempts < 5) {
+            if ($lock->get()) {
+                $acquired = true;
+                break;
+            }
+            usleep($sleepMicroseconds);
+            $sleepMicroseconds *= 2; // exponential backoff
+            $attempts++;
+        }
+
+        if (!$acquired) {
             Log::warning("Could not acquire lock to add custom log path", ['path' => $path]);
             return false;
         }
@@ -366,7 +374,7 @@ class LogDiscoveryService
 
             $cachedPaths[] = $realPath;
             // Store in cache for persistence
-            cache()->forever('ids.custom_log_paths', $cachedPaths);
+            Cache::forever('ids.custom_log_paths', $cachedPaths);
         } finally {
             $lock->release();
         }
@@ -402,8 +410,8 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         // Handle backward compatibility for old cache key
-        if (cache()->has('ids_custom_log_paths')) {
-            $legacyPaths = cache()->pull('ids_custom_log_paths', []);
+        if (Cache::has('ids_custom_log_paths')) {
+            $legacyPaths = Cache::pull('ids_custom_log_paths', []);
 
             if (!is_array($legacyPaths)) {
                 Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
@@ -412,16 +420,16 @@ class LogDiscoveryService
                 $legacyPaths = [];
             }
 
-            $currentPaths = cache()->get('ids.custom_log_paths', []);
+            $currentPaths = Cache::get('ids.custom_log_paths', []);
             $currentPaths = is_array($currentPaths) ? $currentPaths : [];
 
             if (!empty($legacyPaths)) {
                 $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
-                cache()->forever('ids.custom_log_paths', $mergedPaths);
+                Cache::forever('ids.custom_log_paths', $mergedPaths);
             }
         }
 
-        $paths = cache()->get('ids.custom_log_paths', []);
+        $paths = Cache::get('ids.custom_log_paths', []);
 
         if (!is_array($paths)) {
             Log::warning('Corrupted custom log paths cache key encountered and discarded.', [
