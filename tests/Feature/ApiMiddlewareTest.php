@@ -6,6 +6,27 @@ use Tests\TestCase;
 
 class ApiMiddlewareTest extends TestCase
 {
+    private string|false $originalAgentToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->originalAgentToken = getenv('AGENT_TOKEN');
+        putenv('AGENT_TOKEN');
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->originalAgentToken === false) {
+            putenv('AGENT_TOKEN');
+        } else {
+            putenv('AGENT_TOKEN=' . $this->originalAgentToken);
+        }
+
+        parent::tearDown();
+    }
+
     /**
      * Test when AGENT_TOKEN is empty.
      */

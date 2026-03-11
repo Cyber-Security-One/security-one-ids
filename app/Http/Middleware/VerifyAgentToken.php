@@ -28,11 +28,14 @@ class VerifyAgentToken
         }
 
         $token = (string) $token;
+        if ($token === '' || strlen($token) > 256) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+
         $configured = $agentToken !== '';
         $expectedSeed = $configured ? $agentToken : str_repeat("\0", 32);
 
         $isValid = $configured
-            && $token !== ''
             && hash_equals(
                 hash('sha256', $expectedSeed, true),
                 hash('sha256', $token, true)
