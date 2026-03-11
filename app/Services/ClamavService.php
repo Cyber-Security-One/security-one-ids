@@ -35,9 +35,6 @@ class ClamavService
                 $http = $http->withOptions([
                     'verify' => $cacertPath,
                 ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
             }
         }
 
@@ -49,6 +46,12 @@ class ClamavService
      */
     protected function getCaCertPath(): ?string
     {
+        // Use bundled trusted CA store directly
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            return $bundledPath;
+        }
+
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
 
@@ -74,28 +77,6 @@ class ClamavService
             if (file_exists($path)) {
                 return $path;
             }
-        }
-
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                // Ignore
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
         }
 
         return null;
