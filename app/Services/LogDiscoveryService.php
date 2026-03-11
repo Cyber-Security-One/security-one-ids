@@ -388,6 +388,16 @@ class LogDiscoveryService
 
                 if ($acquired) {
                     $this->migrateCustomPaths();
+                } else {
+                    $fallback = cache()->get($newKey, []);
+                    foreach ($legacyKeys as $legacyKey) {
+                        $legacyData = cache()->get($legacyKey, []);
+                        if (is_array($legacyData)) {
+                            $fallback = array_merge($fallback, $legacyData);
+                        }
+                    }
+
+                    return array_values(array_unique($fallback));
                 }
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning("Failed to migrate custom paths: " . $e->getMessage());
