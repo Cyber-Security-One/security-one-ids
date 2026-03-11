@@ -2929,7 +2929,7 @@ class WafSyncService
         } elseif (file_exists($downloadPath)) {
             return $downloadPath;
         }
-        
+
         return null;
     }
 

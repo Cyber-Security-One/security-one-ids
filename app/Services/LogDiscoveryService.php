@@ -300,7 +300,7 @@ class LogDiscoveryService
     /**
      * Common cache lock key to prevent concurrent operations overriding each other
      */
-    private const CUSTOM_PATHS_LOCK_KEY = 'custom_log_paths_lock';
+    private const CUSTOM_PATHS_LOCK_KEY = 'ids::custom_log_paths_lock';
 
     /**
      * Add a custom log path to monitor
@@ -333,7 +333,8 @@ class LogDiscoveryService
         }
 
         if (!$acquired) {
-            Log::warning('addCustomPath lock contention, falling back to non-locked write', ['path' => $path]);
+            Log::warning('addCustomPath lock contention, aborting write to prevent data loss', ['path' => $path]);
+            return false;
         }
 
         try {
