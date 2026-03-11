@@ -1548,38 +1548,24 @@ class WafSyncService
                     if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
                         if (file_put_contents($logFile, "[{$timestamp}] Invalid console user format: {$consoleUser}\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
                     } else {
-                        $userDisabled = false;
-
                         // Method 1: Use dscl to disable user account
                         // The correct way is to set AuthenticationAuthority to DisabledUser
                         $output = [];
-                        $returnCode = 0;
-                        exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                        if (file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
+                        $returnCode1 = 0;
+                        exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode1);
+                        if (file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode1}, output=" . implode(" ", $output) . "\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
 
-                        if ($returnCode === 0) {
-                            $userDisabled = true;
-                        }
+                        // Method 2: Lock the user's password (they won't be able to login)
+                        $output = [];
+                        $returnCode2 = 0;
+                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode2);
+                        if (file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode2}\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
 
-                        if (!$userDisabled) {
-                            // Method 2: Lock the user's password (they won't be able to login)
-                            $output = [];
-                            $returnCode = 0;
-                            exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                            if (file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
-
-                            if ($returnCode === 0) {
-                                $userDisabled = true;
-                            }
-                        }
-
-                        if (!$userDisabled) {
-                            // Method 3: Set an impossible password hash
-                            $output = [];
-                            $returnCode = 0;
-                            exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                            if (file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
-                        }
+                        // Method 3: Set an impossible password hash
+                        $output = [];
+                        $returnCode3 = 0;
+                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode3);
+                        if (file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
                     }
                 } else {
                     if (file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND) === false) { Log::critical("Failed to write to log file: {$logFile}"); }
