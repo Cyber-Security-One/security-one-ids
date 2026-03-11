@@ -327,7 +327,27 @@ class LogDiscoveryService
             }
 
             if (!$acquired) {
-                return false;
+                Log::warning('Could not acquire migration lock in addCustomPath, fallback to best-effort write.');
+
+                $legacyPaths1 = cache()->get('ids_custom_log_paths', []);
+                $legacyPaths2 = cache()->get('ids.custom_log_paths', []);
+                $currentPaths = cache()->get('ids::custom_log_paths', []);
+
+                $cachedPaths = array_values(array_unique(array_merge(
+                    is_array($legacyPaths1) ? $legacyPaths1 : [],
+                    is_array($legacyPaths2) ? $legacyPaths2 : [],
+                    is_array($currentPaths) ? $currentPaths : []
+                )));
+
+                $unifiedList = array_values(array_unique(array_merge($configPaths, $cachedPaths)));
+
+                if (!in_array($path, $unifiedList, true)) {
+                    $currentPaths = is_array($currentPaths) ? $currentPaths : [];
+                    $currentPaths[] = $path;
+                    cache()->forever('ids::custom_log_paths', array_values(array_unique($currentPaths)));
+                }
+
+                return true;
             }
 
             $legacyPaths1 = cache()->get('ids_custom_log_paths', []);
