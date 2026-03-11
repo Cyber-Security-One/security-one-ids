@@ -320,7 +320,7 @@ class LogDiscoveryService
             return false;
         }
 
-        $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', self::ALLOWED_BASE_DIRS);
+        $allowedBaseDirs = config('ids.allowed_custom_log_base_dirs', []);
         if (is_array($allowedBaseDirs) && !empty($allowedBaseDirs) && !$this->isAllowedPath($realPath, $allowedBaseDirs)) {
             return false;
         }
