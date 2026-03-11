@@ -1530,52 +1530,71 @@ class WafSyncService
                 @mkdir($logDir, 0755, true);
             }
             
-            file_put_contents($logFile, "[{$timestamp}] Disable login signal received from WAF Hub\n", FILE_APPEND);
+            if (file_put_contents($logFile, "[{$timestamp}] Disable login signal received from WAF Hub\n", FILE_APPEND) === false) {
+                throw new \Exception("Failed to write to log file: {$logFile}");
+            }
             
             if (PHP_OS_FAMILY === 'Windows') {
                 echo "🚫 Disabling Windows user accounts...\n";
                 // Disable all non-system user accounts
                 exec('powershell -Command "Get-LocalUser | Where-Object {$_.Enabled -eq $true -and $_.Name -ne \'Administrator\'} | Disable-LocalUser" 2>&1', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Windows disable users result: code={$returnCode}\n", FILE_APPEND);
+                if (file_put_contents($logFile, "[{$timestamp}] Windows disable users result: code={$returnCode}\n", FILE_APPEND) === false) {
+                    throw new \Exception("Failed to write to log file: {$logFile}");
+                }
                 
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+                if (file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND) === false) {
+                    throw new \Exception("Failed to write to log file: {$logFile}");
+                }
                 
                 if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $output = [];
-                    exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
+                    $escapedUser = escapeshellarg($consoleUser);
+                    exec("sudo dscl . -create /Users/{$escapedUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
+                    if (file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND) === false) {
+                        throw new \Exception("Failed to write to log file: {$logFile}");
+                    }
                     
                     if ($returnCode !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
+                        exec("sudo pwpolicy -u {$escapedUser} disableuser 2>&1", $output, $returnCode);
+                        if (file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND) === false) {
+                            throw new \Exception("Failed to write to log file: {$logFile}");
+                        }
                     }
                     
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                        exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode);
+                        if (file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND) === false) {
+                            throw new \Exception("Failed to write to log file: {$logFile}");
+                        }
                     }
                 } else {
-                    file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
+                    if (file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND) === false) {
+                        throw new \Exception("Failed to write to log file: {$logFile}");
+                    }
                 }
                 
             } else {
                 echo "🚫 Disabling Linux user login...\n";
                 // Lock all non-root users
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -l "$user" 2>/dev/null; done', $output, $returnCode);
-                file_put_contents($logFile, "[{$timestamp}] Linux disable users result: code={$returnCode}\n", FILE_APPEND);
+                if (file_put_contents($logFile, "[{$timestamp}] Linux disable users result: code={$returnCode}\n", FILE_APPEND) === false) {
+                    throw new \Exception("Failed to write to log file: {$logFile}");
+                }
             }
             
             echo "✅ Login disabled\n";
             Log::info('Login disabled');
-            file_put_contents($logFile, "[{$timestamp}] Login disabled successfully\n", FILE_APPEND);
+            if (file_put_contents($logFile, "[{$timestamp}] Login disabled successfully\n", FILE_APPEND) === false) {
+                throw new \Exception("Failed to write to log file: {$logFile}");
+            }
             
         } catch (\Exception $e) {
             echo "❌ Failed to disable login: " . $e->getMessage() . "\n";
