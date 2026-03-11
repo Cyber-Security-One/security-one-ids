@@ -8,7 +8,12 @@ return [
     */
 
     'waf_url' => env('WAF_URL', ''),
+
+    // Default is intentionally an empty string. An exception will be thrown at boot
+    // if set in a production console environment without a value.
+    // AGENT_TOKEN must be explicitly set in production environments.
     'agent_token' => env('AGENT_TOKEN', ''),
+
     'agent_name' => env('AGENT_NAME', gethostname()),
     'install_token' => env('INSTALL_TOKEN', ''),
 
