@@ -309,7 +309,7 @@ class LogDiscoveryService
         $customPaths = config('ids.custom_log_paths', []);
         if (!in_array($path, $customPaths)) {
             $customPaths[] = $path;
-            // Store in cache for persistence across requests
+            // Store in cache for persistence
             cache()->forever('ids_custom_log_paths', $customPaths);
             // Update runtime configuration for the current request
             config(['ids.custom_log_paths' => $customPaths]);
