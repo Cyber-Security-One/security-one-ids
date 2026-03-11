@@ -1580,12 +1580,17 @@ class WafSyncService
                         if (!$method2Success) {
                             // Method 3: Set an impossible password hash
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, bin2hex(random_bytes(16))]);
+                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', 'LocalDirectorySecurity']);
                                 $returnCode3 = $process3->exitCode();
-                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible auth authority: code={$returnCode3}\n", FILE_APPEND);
+
+                                if ($returnCode3 !== 0) {
+                                    file_put_contents($logFile, "[{$timestamp}] all disable methods failed for user {$cleanUser}\n", FILE_APPEND);
+                                }
                             } catch (\Exception $e) {
                                 $returnCode3 = 1;
-                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible auth authority exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] all disable methods failed for user {$cleanUser}\n", FILE_APPEND);
                             }
                         }
                     }
@@ -1662,8 +1667,14 @@ class WafSyncService
                         $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
                         $returnCode2 = $process2->exitCode();
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+
+                        if ($returnCode1 !== 0 && $returnCode2 !== 0) {
+                            file_put_contents($logFile, "[{$timestamp}] Warning: Failed to re-enable user {$cleanUser}\n", FILE_APPEND);
+                            Log::warning("WAF Sync: Failed to re-enable macOS user {$cleanUser}");
+                        }
                     } catch (\Exception $e) {
                         file_put_contents($logFile, "[{$timestamp}] exception enabling user {$cleanUser}: " . $e->getMessage() . "\n", FILE_APPEND);
+                        Log::warning("WAF Sync: Exception re-enabling macOS user {$cleanUser}");
                     }
                 }
                 
