@@ -302,16 +302,22 @@ class LogDiscoveryService
      */
     public function addCustomPath(string $path): bool
     {
-        if (!is_readable($path)) {
+        if (!is_readable($path) || !is_file($path)) {
             return false;
         }
 
-        $customPaths = config('ids.custom_log_paths', []);
-        if (!in_array($path, $customPaths)) {
-            $customPaths[] = $path;
-            // Store in cache for persistence
-            cache()->forever('ids_custom_log_paths', $customPaths);
+        $cachedPaths = $this->getCustomPaths();
+        $configPaths = config('ids.custom_log_paths', []);
+
+        // Return true early if path is already monitored to prevent duplicates without failing the operation
+        if (in_array($path, $cachedPaths, true) || in_array($path, $configPaths, true)) {
+            return true;
         }
+
+        $cachedPaths[] = $path;
+
+        // Store in cache for persistence
+        cache()->forever('ids.custom_log_paths', $cachedPaths);
 
         return true;
     }
@@ -321,7 +327,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids_custom_log_paths', []);
+        return cache()->get('ids.custom_log_paths', []);
     }
 
     /**
