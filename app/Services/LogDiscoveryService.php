@@ -307,17 +307,26 @@ class LogDiscoveryService
             return false;
         }
 
-        return Cache::lock('add_custom_path_lock', 10)->block(5, function () use ($path) {
-            $cachedPaths = $this->getCustomPaths();
+        try {
+            return Cache::lock('add_custom_path_lock', 10)->block(5, function () use ($path) {
+                $cachedPaths = $this->getCustomPaths();
 
-            if (!in_array($path, $cachedPaths, true)) {
-                $cachedPaths[] = $path;
-                // Store in cache for persistence
-                cache()->forever('ids.custom_log_paths', $cachedPaths);
-            }
+                if (!in_array($path, $cachedPaths, true)) {
+                    $cachedPaths[] = $path;
+                    // Store in cache for persistence
+                    cache()->forever('ids.custom_log_paths', $cachedPaths);
+                }
 
-            return true;
-        });
+                return true;
+            });
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            Log::warning('Failed to acquire lock when adding custom log path', [
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**
