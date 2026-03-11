@@ -59,14 +59,9 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
 
         return $http;
@@ -1541,7 +1536,7 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+$user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 $cleanUser = str_replace(["\r", "\n"], '', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
 
@@ -1576,17 +1571,17 @@ class WafSyncService
                         }
 
                         if (!$method2Success) {
-                            // Method 3: Set an impossible password hash
+                            // Method 3: Set account expiration date to epoch (Jan 1, 1970)
                             $method3Success = false;
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, bin2hex(random_bytes(32))]);
+                                $process3 = Process::timeout(60)->run(['sudo', 'chpass', '-e', '0', $cleanUser]);
                                 $method3Success = $process3->successful();
                                 $returnCode3 = $process3->exitCode();
-                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] chpass set expire immediately: code={$returnCode3}\n", FILE_APPEND);
                             } catch (\Exception $e) {
                                 $method3Success = false;
                                 $returnCode3 = 1;
-                                file_put_contents($logFile, "[{$timestamp}] dscl set impossible password exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                                file_put_contents($logFile, "[{$timestamp}] chpass set expire immediately exception: " . $e->getMessage() . "\n", FILE_APPEND);
                             }
 
                             if (!$method3Success) {
@@ -1594,6 +1589,8 @@ class WafSyncService
                                 file_put_contents($logFile, "[{$timestamp}] Warning: All methods failed to disable user {$cleanUser}\n", FILE_APPEND);
                             }
                         }
+                    }
+                }
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1652,7 +1649,7 @@ class WafSyncService
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user) continue;
+if (!$user) continue;
 
                     $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
 
@@ -1682,7 +1679,6 @@ class WafSyncService
                         file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                 }
-
             } else {
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
@@ -2927,8 +2923,10 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2958,8 +2956,7 @@ class WafSyncService
                 return $path;
             }
         }
-
-        // If not found, try to download it
+// If not found, try to download it
         $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
         if (!file_exists($downloadPath)) {
             try {
@@ -2983,7 +2980,14 @@ class WafSyncService
             return $downloadPath;
         }
 
-        return null;
+        // If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
+        }
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
