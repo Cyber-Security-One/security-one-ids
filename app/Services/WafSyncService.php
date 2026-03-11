@@ -1551,7 +1551,7 @@ class WafSyncService
                     $method1Success = false;
                     try {
                         $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
-                        $method1Success = $process1->isSuccessful();
+                        $method1Success = $process1->successful();
                         $returnCode1 = $process1->exitCode();
                         $outputStr = trim($process1->output() . ' ' . $process1->errorOutput());
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
@@ -1566,7 +1566,7 @@ class WafSyncService
                         $method2Success = false;
                         try {
                             $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
-                            $method2Success = $process2->isSuccessful();
+                            $method2Success = $process2->successful();
                             $returnCode2 = $process2->exitCode();
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
                         } catch (\Exception $e) {
