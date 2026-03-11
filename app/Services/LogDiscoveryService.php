@@ -387,12 +387,6 @@ $realPath = realpath($path);
             if ($lockAcquired) {
                 $lock->release();
             }
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
-            return false;
-        }
-                $lock->release();
-            }
         }
 
         return true;
