@@ -2,8 +2,15 @@
 
 namespace App\Services\Detection;
 
+<<<<<<< HEAD
+use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use App\Traits\DetectsPlatform;
+=======
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
+>>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
 
 /**
  * Snort 3 IPS Detection Engine
@@ -13,6 +20,11 @@ use Illuminate\Support\Facades\Process;
  */
 class SnortEngine
 {
+<<<<<<< HEAD
+    use DetectsPlatform;
+
+=======
+>>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
     private string $snortPath;
     private string $configPath;
     private string $alertLogPath;
@@ -1736,11 +1748,14 @@ LUA;
         return null;
     }
 
+<<<<<<< HEAD
+=======
     private function isWindows(): bool
     {
         return PHP_OS_FAMILY === 'Windows';
     }
 
+>>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
     /**
      * Fix log directory permissions so non-root PHP agent can read alert files.
      * Snort runs as root (needed for pcap), creating root-owned files.

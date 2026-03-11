@@ -12,12 +12,8 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-    public const CACHE_KEY_NEW = 'ids.custom_log_paths';
-    public const CACHE_KEY_LEGACY_1 = 'ids_custom_log_paths';
-    public const CACHE_KEY_LEGACY_2 = 'ids::custom_log_paths';
-
-    /** Initial wait time in microseconds before retrying a lock acquisition */
-    private const LOCK_RETRY_INTERVAL_US = 50000;
+    public static bool $migrated = false;
+    private const LOCK_TIMEOUT = 30;
 
     /**
      * Common web server log file locations to scan
@@ -303,6 +299,13 @@ class LogDiscoveryService
         }
         return 'unknown';
     }
+
+    public const CACHE_KEY_NEW = 'ids.custom_log_paths';
+    public const CACHE_KEY_LEGACY_1 = 'ids_custom_log_paths';
+    public const CACHE_KEY_LEGACY_2 = 'ids::custom_log_paths';
+
+    /** Initial wait time in microseconds before retrying a lock acquisition */
+    private const LOCK_RETRY_INTERVAL_US = 50000;
 
     /**
      * Add a custom log path to monitor

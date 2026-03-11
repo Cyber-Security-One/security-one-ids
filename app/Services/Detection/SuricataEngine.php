@@ -2,8 +2,15 @@
 
 namespace App\Services\Detection;
 
+<<<<<<< HEAD
+use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use App\Traits\DetectsPlatform;
+=======
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
+>>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
 
 /**
  * Suricata IDS/IPS Detection Engine
@@ -14,6 +21,11 @@ use Illuminate\Support\Facades\Process;
  */
 class SuricataEngine
 {
+<<<<<<< HEAD
+    use DetectsPlatform;
+
+=======
+>>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
     private string $suricataPath;
     private string $configPath;
     private string $alertLogPath;
@@ -1030,11 +1042,14 @@ YAML;
         };
     }
 
+<<<<<<< HEAD
+=======
     private function isWindows(): bool
     {
         return PHP_OS_FAMILY === 'Windows';
     }
 
+>>>>>>> 9c1fe10 (Add logging to lock exception handler in log path migration)
     private function detectLinuxDistro(): string
     {
         if (!file_exists('/etc/os-release')) {
