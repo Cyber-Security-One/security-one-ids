@@ -313,10 +313,11 @@ class LogDiscoveryService
             return true;
         }
 
-        $lock = cache()->lock('lock.ids.custom_log_paths', 10);
+        try {
+            $lock = cache()->lock('lock.ids.custom_log_paths', 10);
 
-        if ($lock->get()) {
-            try {
+            // Block for up to 5 seconds waiting for the lock
+            $lock->block(5, function () use ($path) {
                 $cachedPaths = $this->getCustomPaths();
 
                 if (!in_array($path, $cachedPaths, true)) {
@@ -328,19 +329,21 @@ class LogDiscoveryService
                     // Store in cache for persistence
                     cache()->forever('ids.custom_log_paths', $pathsToCache);
                 }
-            } finally {
-                $lock->release();
-            }
-        } else {
-            // If we couldn't get the lock, wait and check if it was added by another process
-            sleep(1);
+            });
+
+            return true;
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            // Check if it was added by another process while waiting
             $cachedPaths = $this->getCustomPaths();
             if (!in_array($path, $cachedPaths, true)) {
-                return false; // Failed to acquire lock and path not added
+                Log::warning("Failed to acquire lock for custom log path: {$path}");
+                return false;
             }
+            return true;
+        } catch (\Exception $e) {
+            Log::error("Exception occurred while caching custom log path: " . $e->getMessage());
+            return false;
         }
-
-        return true;
     }
 
     /**
