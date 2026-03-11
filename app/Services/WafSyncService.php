@@ -1543,7 +1543,7 @@ class WafSyncService
                 // Get current console user (may be different from running user)
                 $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 $cleanUser = preg_replace('/[\r\n]/', '', $user);
-                $safeRawUser = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', $user);
+                $safeRawUser = preg_replace('/[^a-zA-Z0-9 .,_-]/', '', str_replace(["\r", "\n", "\t"], ' ', $user));
                 
                 file_put_contents($logFile, "[{$timestamp}] Raw console user: {$safeRawUser}, Sanitized: {$cleanUser}\n", FILE_APPEND);
 
@@ -1555,7 +1555,7 @@ class WafSyncService
                         $process1 = Process::timeout(60)->run(['sudo', '-n', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $method1Success = $process1->successful();
                         $returnCode1 = $process1->exitCode();
-                        $outputStr = trim($process1->output() . ' ' . $process1->errorOutput());
+                        $outputStr = preg_replace('/[\r\n]+/', ' ', trim($process1->output() . ' ' . $process1->errorOutput()));
                         file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
                     } catch (\Illuminate\Process\Exceptions\ProcessFailedException | \Illuminate\Process\Exceptions\ProcessTimedOutException | \Exception $e) {
                         $method1Success = false;
@@ -1657,7 +1657,7 @@ class WafSyncService
                     
                     $cleanUser = preg_replace('/[\r\n]/', '', $user);
 
-                    $safeRawUser = preg_replace('/[^a-zA-Z0-9\s.,_-]/', '', $user);
+                    $safeRawUser = preg_replace('/[^a-zA-Z0-9 .,_-]/', '', str_replace(["\r", "\n", "\t"], ' ', $user));
                     if (empty($cleanUser) || !preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/', $cleanUser)) {
                         Log::error('Invalid user for enable login: ' . $cleanUser);
                         file_put_contents($logFile, "[{$timestamp}] Invalid user for enable login (raw: {$safeRawUser}, clean: {$cleanUser})\n", FILE_APPEND);
