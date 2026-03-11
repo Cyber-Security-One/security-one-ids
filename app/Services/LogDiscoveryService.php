@@ -333,8 +333,7 @@ class LogDiscoveryService
         }
 
         if (!$acquired) {
-            Log::warning('addCustomPath lock contention, failing gracefully', ['path' => $path]);
-            return false;
+            Log::warning('addCustomPath lock contention, falling back to non-locked write', ['path' => $path]);
         }
 
         try {
