@@ -17,12 +17,12 @@ class WafSyncService
     public function __construct()
     {
         $this->wafUrl = rtrim(config('ids.waf_url') ?? env('WAF_URL', ''), '/');
-        
+
         // Prefer cached WAF-assigned token over .env token (registration returns correct token)
         $cachedToken = cache()->get('waf_agent_token');
         $envToken = config('ids.agent_token') ?? env('AGENT_TOKEN', '');
         $this->agentToken = !empty($cachedToken) ? $cachedToken : $envToken;
-        
+
         $this->agentName = config('ids.agent_name') ?? env('AGENT_NAME', gethostname());
 
         // Fallback: directly parse .env file if values are still empty
@@ -55,20 +55,15 @@ class WafSyncService
                 'Content-Type' => 'application/json; charset=utf-8',
                 'Accept' => 'application/json',
             ]);
-        
+
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
-        
+
         return $http;
     }
 
@@ -123,17 +118,17 @@ class WafSyncService
             if ($response->successful()) {
                 $data = $response->json();
                 Log::info('Successfully registered with WAF', $data);
-                
+
                 // Store the WAF-assigned token for future use
                 if (!empty($data['token'])) {
                     cache()->put('waf_agent_token', $data['token'], now()->addDays(30));
                 }
-                
+
                 // Store the agent ID for alert syncing
                 if (!empty($data['agent_id'])) {
                     cache()->put('ids_agent_id', $data['agent_id'], now()->addDays(30));
                 }
-                
+
                 return true;
             }
 
@@ -164,7 +159,7 @@ class WafSyncService
 
         $maxRetries = 3;
         $retryDelay = 2; // seconds
-        
+
         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
             try {
                 $response = $this->getHttpClient(30)->post("{$this->wafUrl}/api/ids/agents/heartbeat", [
@@ -180,12 +175,12 @@ class WafSyncService
                 if ($response->successful()) {
                     $data = $response->json();
                     Log::debug('Heartbeat sent successfully', $data);
-                    
+
                     // Sync config from WAF Hub (including Ollama settings)
                     if (isset($data['config'])) {
                         $this->syncConfigFromHub($data['config']);
                     }
-                    
+
                     return true;
                 }
 
@@ -200,23 +195,23 @@ class WafSyncService
                     'body' => $response->body(),
                     'attempt' => $attempt,
                 ]);
-                
+
             } catch (\Exception $e) {
                 Log::error("Heartbeat exception (attempt {$attempt}/{$maxRetries}): " . $e->getMessage());
-                
+
                 if ($attempt < $maxRetries) {
                     Log::info("Retrying heartbeat in {$retryDelay} seconds...");
                     sleep($retryDelay);
                     continue;
                 }
-                
+
                 // On final failure, log connection error
                 if (str_contains($e->getMessage(), 'Connection') || str_contains($e->getMessage(), 'cURL')) {
                     Log::info('Connection error, will try registration on next sync');
                 }
             }
         }
-        
+
         return false;
     }
 
@@ -226,16 +221,16 @@ class WafSyncService
     private function syncConfigFromHub(array $config): void
     {
         $configPath = storage_path('app/waf_config.json');
-        
+
         // Read existing config
         $existingConfig = [];
         if (file_exists($configPath)) {
             $existingConfig = json_decode(file_get_contents($configPath), true) ?: [];
         }
-        
+
         // Merge with new config
         $mergedConfig = array_merge($existingConfig, $config);
-        
+
         // Backwards compatibility: map Hub snort_* keys → suricata_*
         if (isset($mergedConfig['addons'])) {
             $addons = &$mergedConfig['addons'];
@@ -384,7 +379,7 @@ class WafSyncService
             $this->handleEnableLogin();
         }
     }
-    
+
     /**
      * Handle ClamAV add-on installation
      */
@@ -392,23 +387,23 @@ class WafSyncService
     {
         try {
             $clamav = app(\App\Services\ClamavService::class);
-            
+
             if (!$clamav->isInstalled()) {
                 Log::info('ClamAV enabled but not installed, starting installation...');
                 $result = $clamav->install();
-                
+
                 if ($result['success']) {
                     Log::info('ClamAV installed successfully');
                 } else {
                     Log::error('ClamAV installation failed: ' . ($result['message'] ?? 'Unknown error'));
                 }
             }
-            
+
             // Report status to Hub - but don't include scan_status to avoid overwriting active scan
             $status = $clamav->getStatus();
             $status['skip_scan_status'] = true;  // Flag to tell Hub to not update scan_status
             $clamav->reportToHub($status);
-            
+
         } catch (\Exception $e) {
             Log::error('ClamAV addon handling failed: ' . $e->getMessage());
         }
@@ -1119,7 +1114,7 @@ class WafSyncService
             Log::warning('Failed to report event to Hub: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle virus definitions update signal from Hub
      */
@@ -1127,22 +1122,22 @@ class WafSyncService
     {
         try {
             Log::info('Virus definitions update signal received, running freshclam...');
-            
+
             $clamav = app(\App\Services\ClamavService::class);
-            
+
             if (!$clamav->isInstalled()) {
                 Log::warning('ClamAV not installed, cannot update definitions');
                 return;
             }
-            
+
             // Run freshclam to update virus definitions
             $result = $clamav->updateDefinitions();
-            
+
             if ($result['success']) {
                 Log::info('Virus definitions updated successfully', [
                     'definitions_date' => $result['definitions_date'] ?? 'unknown',
                 ]);
-                
+
                 // Report new definitions date to Hub
                 $clamav->reportToHub([
                     'definitions_date' => $result['definitions_date'] ?? null,
@@ -1151,12 +1146,12 @@ class WafSyncService
             } else {
                 Log::error('Virus definitions update failed: ' . ($result['message'] ?? 'Unknown error'));
             }
-            
+
         } catch (\Exception $e) {
             Log::error('Definitions update failed: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle system reboot signal from WAF Hub
      */
@@ -1165,45 +1160,45 @@ class WafSyncService
         try {
             echo "⚠️ REBOOT SIGNAL RECEIVED FROM WAF HUB!\n";
             Log::warning('System reboot initiated by WAF Hub remote command');
-            
+
             // Write to a file log that works even in scheduled task context
-            $logFile = PHP_OS_FAMILY === 'Windows' 
+            $logFile = PHP_OS_FAMILY === 'Windows'
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\reboot.log'
                 : base_path('storage/logs/reboot.log');
             $timestamp = date('Y-m-d H:i:s');
             file_put_contents($logFile, "[{$timestamp}] Reboot signal received from WAF Hub\n", FILE_APPEND);
-            
+
             // Small delay to allow log to be written
             sleep(2);
-            
+
             if (PHP_OS_FAMILY === 'Windows') {
                 // Windows: Create a one-time scheduled task to reboot
                 // This is more reliable than direct exec() in scheduled task context
                 echo "🔄 Executing Windows restart command...\n";
                 Log::info('Executing Windows restart command...');
                 file_put_contents($logFile, "[{$timestamp}] Executing Windows restart via schtasks...\n", FILE_APPEND);
-                
+
                 $output = [];
                 $returnCode = 0;
-                
+
                 // Method 1: Create a one-time scheduled task to run shutdown
                 // This bypasses any exec() restrictions in the current scheduled task context
                 $taskName = 'SecurityOneIDS-Reboot-' . time();
                 $rebootTime = date('H:i', strtotime('+1 minute'));
                 $rebootDate = date('Y/m/d');
-                
+
                 // Create task
                 $createCommand = "schtasks /create /tn \"{$taskName}\" /tr \"shutdown /r /t 5 /f /c \\\"Security One IDS: Remote Reboot\\\"\" /sc once /st {$rebootTime} /sd {$rebootDate} /f /ru SYSTEM";
                 exec($createCommand . ' 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] schtasks create result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
-                
+
                 if ($returnCode === 0) {
                     // Run the task immediately
                     $output = [];
                     exec("schtasks /run /tn \"{$taskName}\" 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] schtasks run result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
                 }
-                
+
                 // Fallback: try direct shutdown if schtasks failed
                 if ($returnCode !== 0) {
                     file_put_contents($logFile, "[{$timestamp}] schtasks failed, trying direct shutdown...\n", FILE_APPEND);
@@ -1211,58 +1206,58 @@ class WafSyncService
                     exec('C:\\Windows\\System32\\shutdown.exe /r /t 10 /f 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] Direct shutdown result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
                 }
-                
+
                 // Last resort: PowerShell
                 if ($returnCode !== 0) {
                     file_put_contents($logFile, "[{$timestamp}] Trying PowerShell...\n", FILE_APPEND);
                     exec('powershell -Command "Restart-Computer -Force" 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] PowerShell result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 // macOS: Use shutdown command directly (osascript requires GUI session)
                 echo "🔄 Executing macOS restart command...\n";
                 Log::info('Executing macOS restart command...');
                 file_put_contents($logFile, "[{$timestamp}] Executing macOS restart...\n", FILE_APPEND);
-                
+
                 // For launchd service, use shutdown command directly
                 // sudo must be configured with NOPASSWD for this user/command
                 $output = [];
                 $returnCode = 0;
-                
+
                 // Method 1: Try shutdown with sudo (launchd runs as root)
                 exec('sudo /sbin/shutdown -r now 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] shutdown result: code={$returnCode}, output=" . implode(' ', $output) . "\n", FILE_APPEND);
-                
+
                 if ($returnCode !== 0) {
                     // Method 2: Try without sudo (if running as root)
                     exec('/sbin/shutdown -r now 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] shutdown (no sudo) result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
                 if ($returnCode !== 0) {
                     // Method 3: Try reboot command
                     exec('sudo /sbin/reboot 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] reboot result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
             } else {
                 // Linux: Use shutdown command
                 echo "🔄 Executing Linux restart command...\n";
                 Log::info('Executing Linux restart command...');
                 exec('sudo shutdown -r +1 "Security One IDS Agent: Reboot requested by WAF Hub" 2>&1 &');
             }
-            
+
             echo "✅ Reboot command dispatched\n";
             Log::info('Reboot command dispatched');
             file_put_contents($logFile, "[{$timestamp}] Reboot command dispatched successfully\n", FILE_APPEND);
-            
+
         } catch (\Exception $e) {
             echo "❌ Failed to execute reboot: " . $e->getMessage() . "\n";
             Log::error('Failed to execute reboot: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle system lock signal from WAF Hub
      * Locks the screen to prevent login
@@ -1272,20 +1267,20 @@ class WafSyncService
         try {
             echo "⚠️ LOCK SIGNAL RECEIVED FROM WAF HUB!\n";
             Log::warning('System lock initiated by WAF Hub remote command');
-            
-            $logFile = PHP_OS_FAMILY === 'Windows' 
+
+            $logFile = PHP_OS_FAMILY === 'Windows'
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\lock.log'
                 : base_path('storage/logs/lock.log');
             $timestamp = date('Y-m-d H:i:s');
-            
+
             // Ensure log directory exists
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
                 @mkdir($logDir, 0755, true);
             }
-            
+
             file_put_contents($logFile, "[{$timestamp}] Lock signal received from WAF Hub\n", FILE_APPEND);
-            
+
             if (PHP_OS_FAMILY === 'Windows') {
                 // Windows: Lock workstation
                 // Note: LockWorkStation() API doesn't work from Session 0 (service)
@@ -1293,25 +1288,25 @@ class WafSyncService
                 echo "🔒 Executing Windows lock command...\n";
                 Log::info('Executing Windows lock command...');
                 file_put_contents($logFile, "[{$timestamp}] Executing Windows lock...\n", FILE_APPEND);
-                
+
                 $output = [];
                 $returnCode = 1;
-                
+
                 // Step 1: Find the currently logged-in user using multiple methods
                 $userOutput = [];
                 $username = null;
-                
+
                 // Method 1: Try query user (Windows Pro/Enterprise with RDS)
                 exec('query user 2>&1', $userOutput, $rc);
                 file_put_contents($logFile, "[{$timestamp}] query user output: " . implode(" ", $userOutput) . "\n", FILE_APPEND);
-                
+
                 foreach ($userOutput as $line) {
                     if (preg_match('/^>?(\S+)\s+\S+\s+\d+\s+Active/i', trim($line), $matches)) {
                         $username = $matches[1];
                         break;
                     }
                 }
-                
+
                 // Method 2: Use wmic to get logged-in users
                 if (!$username) {
                     $userOutput = [];
@@ -1331,7 +1326,7 @@ class WafSyncService
                         }
                     }
                 }
-                
+
                 // Method 3: Find explorer.exe owner
                 if (!$username) {
                     $userOutput = [];
@@ -1343,33 +1338,33 @@ class WafSyncService
                         $username = getenv('USERNAME') ?: null;
                     }
                 }
-                
+
                 file_put_contents($logFile, "[{$timestamp}] Found active user: " . ($username ?? 'none') . "\n", FILE_APPEND);
-                
+
                 if ($username) {
                     // Method 1: Create scheduled task that runs as the interactive user
                     $lockScript = 'C:\\ProgramData\\SecurityOneIDS\\lock.vbs';
                     // Use VBScript which can interact with the desktop
                     $vbsContent = 'CreateObject("Wscript.Shell").Run "rundll32.exe user32.dll,LockWorkStation", 0, False';
                     file_put_contents($lockScript, $vbsContent);
-                    
+
                     // Create task that runs as INTERACTIVE user (the one currently logged in)
                     $createCmd = 'schtasks /Create /TN "SecurityOneLock" /TR "wscript.exe \"' . $lockScript . '\"" /SC ONCE /ST 00:00 /F /RU "' . $username . '" /IT';
                     exec($createCmd . ' 2>&1', $output, $rc1);
                     file_put_contents($logFile, "[{$timestamp}] schtasks create for user '{$username}': code={$rc1}, output=" . implode(" ", array_slice($output, -3)) . "\n", FILE_APPEND);
-                    
+
                     if ($rc1 === 0) {
                         // Run the task
                         exec('schtasks /Run /TN "SecurityOneLock" 2>&1', $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] schtasks run: code={$returnCode}\n", FILE_APPEND);
-                        
+
                         // Wait and cleanup
                         sleep(3);
                         exec('schtasks /Delete /TN "SecurityOneLock" /F 2>&1');
                     }
                     @unlink($lockScript);
                 }
-                
+
                 // Method 2: Try using logoff (more drastic but reliable)
                 if ($returnCode !== 0) {
                     // Use msg command to notify then lock - this reaches interactive session
@@ -1385,80 +1380,80 @@ class WafSyncService
                     @unlink($batchFile);
                     file_put_contents($logFile, "[{$timestamp}] SYSTEM scheduled task result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 // macOS: Lock screen properly (not just sleep display)
                 echo "🔒 Executing macOS lock command...\n";
                 Log::info('Executing macOS lock command...');
                 file_put_contents($logFile, "[{$timestamp}] Executing macOS lock...\n", FILE_APPEND);
-                
+
                 $output = [];
                 $returnCode = 1;
-                
+
                 // Method 1: CGSession -suspend - this is the proper lock command
                 // This immediately locks the screen and requires password to unlock
                 exec('/System/Library/CoreServices/Menu\ Extras/User.menu/Contents/Resources/CGSession -suspend 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] CGSession -suspend result: code={$returnCode}\n", FILE_APPEND);
-                
+
                 if ($returnCode !== 0) {
                     // Method 2: Use osascript to simulate Ctrl+Command+Q (lock screen shortcut)
                     exec('osascript -e \'tell application "System Events" to keystroke "q" using {command down, control down}\' 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] osascript keystroke result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
                 if ($returnCode !== 0) {
                     // Method 3: Start screen saver (locks if password is required)
                     exec('osascript -e \'tell application "System Events" to start current screen saver\' 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] screen saver result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
                 if ($returnCode !== 0) {
                     // Method 4: pmset displaysleepnow as fallback
                     exec('pmset displaysleepnow 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] pmset result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
             } else {
                 // Linux: Try multiple methods
                 echo "🔒 Executing Linux lock command...\n";
                 Log::info('Executing Linux lock command...');
                 file_put_contents($logFile, "[{$timestamp}] Executing Linux lock...\n", FILE_APPEND);
-                
+
                 // Method 1: loginctl (systemd-based systems)
                 $output = [];
                 $returnCode = 0;
                 exec('loginctl lock-sessions 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] loginctl result: code={$returnCode}\n", FILE_APPEND);
-                
+
                 if ($returnCode !== 0) {
                     // Method 2: dm-tool (LightDM)
                     exec('dm-tool lock 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] dm-tool result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
                 if ($returnCode !== 0) {
                     // Method 3: gnome-screensaver
                     exec('gnome-screensaver-command -l 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] gnome-screensaver result: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
                 if ($returnCode !== 0) {
                     // Method 4: xdg-screensaver
                     exec('xdg-screensaver lock 2>&1', $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] xdg-screensaver result: code={$returnCode}\n", FILE_APPEND);
                 }
             }
-            
+
             echo "✅ Lock command dispatched\n";
             Log::info('Lock command dispatched');
             file_put_contents($logFile, "[{$timestamp}] Lock command dispatched successfully\n", FILE_APPEND);
-            
+
         } catch (\Exception $e) {
             echo "❌ Failed to execute lock: " . $e->getMessage() . "\n";
             Log::error('Failed to execute lock: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle system unlock signal from WAF Hub
      * Attempts to unlock the screen (limited by OS security)
@@ -1468,19 +1463,19 @@ class WafSyncService
         try {
             echo "⚠️ UNLOCK SIGNAL RECEIVED FROM WAF HUB!\n";
             Log::warning('System unlock initiated by WAF Hub remote command');
-            
-            $logFile = PHP_OS_FAMILY === 'Windows' 
+
+            $logFile = PHP_OS_FAMILY === 'Windows'
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\unlock.log'
                 : base_path('storage/logs/unlock.log');
             $timestamp = date('Y-m-d H:i:s');
-            
+
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
                 @mkdir($logDir, 0755, true);
             }
-            
+
             file_put_contents($logFile, "[{$timestamp}] Unlock signal received from WAF Hub\n", FILE_APPEND);
-            
+
             // Note: Most OS don't allow remote unlock without password for security
             // This will attempt to activate/wake the display
             if (PHP_OS_FAMILY === 'Windows') {
@@ -1488,28 +1483,28 @@ class WafSyncService
                 // Send key press to wake display
                 exec('powershell -Command "[System.Windows.Forms.SendKeys]::SendWait(\' \')"  2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Windows wake result: code={$returnCode}\n", FILE_APPEND);
-                
+
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🔓 Attempting macOS unlock (waking display)...\n";
                 exec('caffeinate -u -t 1 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] macOS caffeinate result: code={$returnCode}\n", FILE_APPEND);
-                
+
             } else {
                 echo "🔓 Attempting Linux unlock...\n";
                 exec('loginctl unlock-sessions 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Linux unlock result: code={$returnCode}\n", FILE_APPEND);
             }
-            
+
             echo "✅ Unlock command dispatched\n";
             Log::info('Unlock command dispatched');
             file_put_contents($logFile, "[{$timestamp}] Unlock command dispatched\n", FILE_APPEND);
-            
+
         } catch (\Exception $e) {
             echo "❌ Failed to execute unlock: " . $e->getMessage() . "\n";
             Log::error('Failed to execute unlock: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle disable login signal from WAF Hub
      * Disables password authentication for all users
@@ -1519,32 +1514,33 @@ class WafSyncService
         try {
             echo "⚠️ DISABLE LOGIN SIGNAL RECEIVED FROM WAF HUB!\n";
             Log::warning('Disable login initiated by WAF Hub remote command');
-            
-            $logFile = PHP_OS_FAMILY === 'Windows' 
+
+            $logFile = PHP_OS_FAMILY === 'Windows'
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\login_control.log'
                 : base_path('storage/logs/login_control.log');
             $timestamp = date('Y-m-d H:i:s');
-            
+
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
                 @mkdir($logDir, 0755, true);
             }
-            
+
             file_put_contents($logFile, "[{$timestamp}] Disable login signal received from WAF Hub\n", FILE_APPEND);
-            
+
             if (PHP_OS_FAMILY === 'Windows') {
                 echo "🚫 Disabling Windows user accounts...\n";
                 // Disable all non-system user accounts
                 exec('powershell -Command "Get-LocalUser | Where-Object {$_.Enabled -eq $true -and $_.Name -ne \'Administrator\'} | Disable-LocalUser" 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Windows disable users result: code={$returnCode}\n", FILE_APPEND);
-                
+
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
-                
-                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
+
+if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     if (!preg_match('/^[a-zA-Z0-9._-]+$/', $consoleUser)) {
                         Log::warning('Invalid console username format detected: ' . $consoleUser);
                         file_put_contents($logFile, "[{$timestamp}] Invalid console username format detected: {$consoleUser}\n", FILE_APPEND);
@@ -1569,27 +1565,29 @@ class WafSyncService
                             file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
                         }
                     }
+                }
+                    }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
                 }
-                
+
             } else {
                 echo "🚫 Disabling Linux user login...\n";
                 // Lock all non-root users
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -l "$user" 2>/dev/null; done', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Linux disable users result: code={$returnCode}\n", FILE_APPEND);
             }
-            
+
             echo "✅ Login disabled\n";
             Log::info('Login disabled');
             file_put_contents($logFile, "[{$timestamp}] Login disabled successfully\n", FILE_APPEND);
-            
+
         } catch (\Exception $e) {
             echo "❌ Failed to disable login: " . $e->getMessage() . "\n";
             Log::error('Failed to disable login: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle enable login signal from WAF Hub
      * Restores password authentication for all users
@@ -1599,36 +1597,36 @@ class WafSyncService
         try {
             echo "⚠️ ENABLE LOGIN SIGNAL RECEIVED FROM WAF HUB!\n";
             Log::warning('Enable login initiated by WAF Hub remote command');
-            
-            $logFile = PHP_OS_FAMILY === 'Windows' 
+
+            $logFile = PHP_OS_FAMILY === 'Windows'
                 ? 'C:\\ProgramData\\SecurityOneIDS\\logs\\login_control.log'
                 : base_path('storage/logs/login_control.log');
             $timestamp = date('Y-m-d H:i:s');
-            
+
             $logDir = dirname($logFile);
             if (!is_dir($logDir)) {
                 @mkdir($logDir, 0755, true);
             }
-            
+
             file_put_contents($logFile, "[{$timestamp}] Enable login signal received from WAF Hub\n", FILE_APPEND);
-            
+
             if (PHP_OS_FAMILY === 'Windows') {
                 echo "✅ Enabling Windows user accounts...\n";
                 // Enable previously disabled users, but exclude system accounts (Guest, Administrator)
                 exec('powershell -Command "Get-LocalUser | Where-Object {$_.Enabled -eq $false -and $_.Name -ne \'Guest\' -and $_.Name -ne \'Administrator\'} | Enable-LocalUser" 2>&1', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Windows enable users result: code={$returnCode}\n", FILE_APPEND);
-                
+
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "✅ Enabling macOS user login...\n";
                 // Get all regular users and enable them
                 $usersOutput = [];
                 exec("dscl . -list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root' 2>/dev/null", $usersOutput, $rc);
-                
+
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user) continue;
-                    
-                    if (!preg_match('/^[a-zA-Z0-9._-]+$/', $user)) {
+                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+
+if (!preg_match('/^[a-zA-Z0-9._-]+$/', $user)) {
                         Log::warning('Invalid username format detected: ' . $user);
                         file_put_contents($logFile, "[{$timestamp}] Invalid username format detected: {$user}\n", FILE_APPEND);
                         continue;
@@ -1639,28 +1637,28 @@ class WafSyncService
                     // Remove DisabledUser from AuthenticationAuthority
                     exec("sudo dscl . -delete /Users/{$escapedUser} AuthenticationAuthority 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
-                    
-                    // Re-enable with pwpolicy  
+
+                    // Re-enable with pwpolicy
                     exec("sudo pwpolicy -u {$escapedUser} enableuser 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
                 }
-                
+
             } else {
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
                 file_put_contents($logFile, "[{$timestamp}] Linux enable users result: code={$returnCode}\n", FILE_APPEND);
             }
-            
+
             echo "✅ Login enabled\n";
             Log::info('Login enabled');
             file_put_contents($logFile, "[{$timestamp}] Login enabled successfully\n", FILE_APPEND);
-            
+
         } catch (\Exception $e) {
             echo "❌ Failed to enable login: " . $e->getMessage() . "\n";
             Log::error('Failed to enable login: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle blocked IPs from WAF Hub
      * Syncs the list of IPs that should be blocked locally
@@ -1670,10 +1668,10 @@ class WafSyncService
         try {
             $blockingService = app(\App\Services\BlockingService::class);
             $localBlocked = $blockingService->getBlockedIPs();
-            
+
             $hubIps = array_column($blockedIps, 'ip');
             $localIps = array_keys($localBlocked);
-            
+
             // Block new IPs from Hub
             $newBlocks = array_diff($hubIps, $localIps);
             foreach ($newBlocks as $ip) {
@@ -1689,7 +1687,7 @@ class WafSyncService
                     );
                 }
             }
-            
+
             // Unblock IPs that are no longer in Hub list
             $staleBlocks = array_diff($localIps, $hubIps);
             foreach ($staleBlocks as $ip) {
@@ -1700,7 +1698,7 @@ class WafSyncService
                     $blockingService->unblockIP($ip);
                 }
             }
-            
+
             if (count($newBlocks) > 0 || count($staleBlocks) > 0) {
                 Log::info('Blocked IPs synced from WAF Hub', [
                     'new_blocks' => count($newBlocks),
@@ -1708,12 +1706,12 @@ class WafSyncService
                     'total_active' => count($hubIps),
                 ]);
             }
-            
+
         } catch (\Exception $e) {
             Log::error('Failed to handle blocked IPs: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Check if remote has newer code and auto-update if needed
      *
@@ -1783,24 +1781,24 @@ class WafSyncService
     {
         try {
             Log::info('IDS update signal received, starting update...');
-            
+
             // Report "updating" status to WAF Hub
             $this->reportUpdateStatus('updating');
-            
+
             // Get install directory and detect platform
             $installDir = base_path();
             $isWindows = PHP_OS_FAMILY === 'Windows';
             $isDocker = file_exists('/.dockerenv') || getenv('DOCKER_CONTAINER');
-            
+
             // Force update: fetch + reset --hard to avoid conflicts with local changes
             Log::info('Fetching latest code from git...', ['platform' => $isWindows ? 'windows' : 'unix']);
-            
+
             if ($isWindows) {
                 // Windows: Use cmd.exe for better output capturing
                 $gitResult = Process::path($installDir)
                     ->timeout(300)
                     ->run('cmd /c "git fetch origin main 2>&1 && git reset --hard origin/main 2>&1"');
-                
+
                 // Log both output and error for debugging
                 Log::info('Git command completed', [
                     'output' => $gitResult->output(),
@@ -1812,42 +1810,42 @@ class WafSyncService
                 Process::path($installDir)
                     ->timeout(30)
                     ->run('git clean -fd 2>&1');
-                    
+
                 $gitResult = Process::path($installDir)
                     ->timeout(300)
                     ->run('git fetch origin main 2>&1 && git reset --hard origin/main 2>&1');
             }
-            
+
             if (!$gitResult->successful()) {
                 $errorMsg = $gitResult->output() ?: $gitResult->errorOutput() ?: 'Unknown error (exit code: ' . $gitResult->exitCode() . ')';
                 Log::error('Git pull failed: ' . $errorMsg);
                 $this->reportUpdateStatus('error');
                 return;
             }
-            
+
             Log::info('Git pull successful', ['output' => $gitResult->output()]);
-            
+
             // Clear Suricata install failure cache — new code might fix the issue
             @unlink(storage_path('app/suricata_install_failed.txt'));
 
             // Clear Suricata rules hash — force re-sync so updated converter re-processes rules
             @unlink(storage_path('app/suricata_rules_hash.txt'));
             Log::info('Cleared Suricata rules hash to force re-sync with updated code');
-            
+
             // Run composer install
             Log::info('Running composer install...');
-            
+
             if ($isWindows) {
                 // Windows: Find composer and run with PowerShell
                 $composerCmd = 'composer';
-                
+
                 // Check if composer.phar exists in directory
                 if (file_exists($installDir . '/composer.phar')) {
                     $composerCmd = 'php composer.phar';
                 } elseif (file_exists($installDir . '/composer.bat')) {
                     $composerCmd = 'composer.bat';
                 }
-                
+
                 $composerResult = Process::path($installDir)
                     ->timeout(600)
                     ->env(['COMPOSER_ALLOW_SUPERUSER' => '1'])
@@ -1863,31 +1861,31 @@ class WafSyncService
                     ])
                     ->run('composer install --no-interaction --no-dev --optimize-autoloader 2>&1');
             }
-            
+
             if (!$composerResult->successful()) {
                 Log::warning('Composer install warning: ' . $composerResult->output());
                 // Continue anyway, might just be warnings
             }
-            
+
             // Run database migrations if any
             Log::info('Running database migrations...');
             Artisan::call('migrate', ['--force' => true]);
-            
+
             // Clear caches
             Log::info('Clearing caches...');
             Artisan::call('config:clear');
             Artisan::call('cache:clear');
-            
+
             // Force PHP to reload updated source files (critical for code updates)
             if (function_exists('opcache_reset')) {
                 opcache_reset();
                 Log::info('PHP opcache cleared');
             }
-            
+
             // Handle environment-specific restart
             if ($isDocker) {
                 Log::info('Docker environment detected, triggering container rebuild...');
-                
+
                 $rebuildScript = $installDir . '/docker/rebuild.sh';
                 if (file_exists($rebuildScript)) {
                     Log::info('Running Docker rebuild script...');
@@ -1899,27 +1897,27 @@ class WafSyncService
             } elseif ($isWindows) {
                 // Windows: Restart PHP process or Windows service if applicable
                 Log::info('Windows update completed, regenerating sync script...');
-                
+
                 // Regenerate the sync service script with latest template
                 $this->regenerateWindowsSyncScript($installDir);
-                
+
                 Log::info('Windows sync script regenerated, no automatic restart required');
                 // Note: Windows Agent typically runs as a scheduled task or service
                 // The next heartbeat will pick up the new code
             }
-            
+
             // Get new version from config
             $newVersion = config('ids.version') ?? '1.0.0';
-            
+
             Log::info('IDS update completed successfully', ['new_version' => $newVersion]);
-            
+
             // Mark that code was updated — skip rule sync in this cycle
             // because PHP still has old classes in memory
             $this->codeUpdated = true;
-            
+
             // Report "completed" status to WAF Hub with new version
             $this->reportUpdateStatus('completed', $newVersion);
-            
+
             // Mark update as processed locally
             $configPath = storage_path('app/waf_config.json');
             if (file_exists($configPath)) {
@@ -1932,7 +1930,7 @@ class WafSyncService
             $this->reportUpdateStatus('error');
         }
     }
-    
+
     /**
      * Report update status to WAF Hub
      */
@@ -1940,35 +1938,35 @@ class WafSyncService
     {
         try {
             $wafUrl = rtrim(config('ids.waf_url') ?? env('WAF_URL', ''), '/');
-            
+
             // Read token from .env
             $envPath = base_path('.env');
             $token = env('AGENT_TOKEN', '');
-            
+
             if (empty($token) && file_exists($envPath)) {
                 $envContent = file_get_contents($envPath);
                 if (preg_match('/^AGENT_TOKEN=(.*)$/m', $envContent, $matches)) {
                     $token = trim($matches[1], '"\'');
                 }
             }
-            
+
             if (empty($wafUrl) || empty($token)) {
                 Log::warning('Cannot report update status: WAF not configured');
                 return;
             }
-            
+
             $payload = [
                 'update_status' => $status,
             ];
-            
+
             if ($version) {
                 $payload['version'] = $version;
             }
-            
+
             $response = $this->getHttpClient(30)
                 ->withToken($token)
                 ->post("{$wafUrl}/api/ids/agents/update-status", $payload);
-            
+
             if ($response->successful()) {
                 Log::info("Update status '{$status}' reported successfully");
             } else {
@@ -1981,7 +1979,7 @@ class WafSyncService
             Log::error('Failed to report update status: ' . $e->getMessage());
         }
     }
-    
+
     /**
      * Handle scan now signal from WAF Hub
      */
@@ -1989,25 +1987,25 @@ class WafSyncService
     {
         try {
             Log::info('Scan now signal received, starting ClamAV scan...');
-            
+
             $clamav = app(\App\Services\ClamavService::class);
-            
+
             if (!$clamav->isInstalled()) {
                 Log::warning('ClamAV not installed, cannot perform scan');
                 return;
             }
-            
+
             // Use platform-specific scan paths
             $platform = match (PHP_OS_FAMILY) {
                 'Windows' => 'windows',
                 'Darwin' => 'macos',
                 default => 'linux',
             };
-            
+
             // Determine scan type from config
             $config = $this->getSyncedConfig();
             $scanType = $config['scan_type'] ?? 'quick';
-            
+
             if ($platform === 'windows') {
                 if ($scanType === 'full') {
                     $scanPaths = [
@@ -2036,12 +2034,12 @@ class WafSyncService
                     '/tmp',
                 ];
             }
-            
+
             Log::info("Starting ClamAV scan on {$platform}", ['paths' => $scanPaths]);
-            
+
             // Send "scanning" status to WAF Hub immediately
             $clamav->reportToHub(['scan_status' => 'scanning']);
-            
+
             $allResults = [
                 'last_scan' => now()->toDateTimeString(),
                 'infected_files' => 0,
@@ -2049,12 +2047,12 @@ class WafSyncService
                 'threats' => [],
                 'scan_status' => 'scanning',
             ];
-            
+
             foreach ($scanPaths as $path) {
                 if (is_dir($path)) {
                     Log::info("Scanning directory: {$path}");
                     $result = $clamav->scan($path);
-                    
+
                     if ($result['success']) {
                         $allResults['scanned_files'] += $result['scanned_files'] ?? 0;
                         $allResults['infected_files'] += $result['infected_files'] ?? 0;
@@ -2062,19 +2060,19 @@ class WafSyncService
                     }
                 }
             }
-            
+
             Log::info('ClamAV scan completed', [
                 'scanned_files' => $allResults['scanned_files'],
                 'infected_files' => $allResults['infected_files'],
             ]);
-            
+
             // Report completed results to WAF Hub with idle status
             $allResults['scan_status'] = 'idle';
             $clamav->reportToHub($allResults);
-            
+
         } catch (\Exception $e) {
             Log::error('Scan now failed: ' . $e->getMessage());
-            
+
             // Report error status
             try {
                 $clamav = app(\App\Services\ClamavService::class);
@@ -2091,11 +2089,11 @@ class WafSyncService
     public function getSyncedConfig(): array
     {
         $configPath = storage_path('app/waf_config.json');
-        
+
         if (file_exists($configPath)) {
             return json_decode(file_get_contents($configPath), true) ?: [];
         }
-        
+
         return [];
     }
 
@@ -2152,7 +2150,7 @@ class WafSyncService
     public function syncRulesToDatabase(array $rules): int
     {
         $synced = 0;
-        
+
         foreach ($rules as $rule) {
             try {
                 \App\Models\IdsSignature::updateOrCreate(
@@ -2175,7 +2173,7 @@ class WafSyncService
                 ]);
             }
         }
-        
+
         Log::info("Synced {$synced} rules from WAF to local database");
         return $synced;
     }
@@ -2199,7 +2197,7 @@ class WafSyncService
 
         // Get all local signatures
         $signatures = \App\Models\IdsSignature::where('enabled', true)->get();
-        
+
         if ($signatures->isEmpty()) {
             Log::info('No signatures to upload');
             return 0;
@@ -2240,7 +2238,7 @@ class WafSyncService
     protected function getLastGitPullTime(): ?string
     {
         $basePath = base_path();
-        
+
         // Check FETCH_HEAD (updated on git fetch/pull)
         $fetchHead = "{$basePath}/.git/FETCH_HEAD";
         if (file_exists($fetchHead)) {
@@ -2249,13 +2247,13 @@ class WafSyncService
                 return date('Y-m-d H:i:s', $mtime);
             }
         }
-        
+
         // Fallback: check refs/heads/main or master
         $refs = [
             "{$basePath}/.git/refs/heads/main",
             "{$basePath}/.git/refs/heads/master",
         ];
-        
+
         foreach ($refs as $ref) {
             if (file_exists($ref)) {
                 $mtime = filemtime($ref);
@@ -2264,13 +2262,13 @@ class WafSyncService
                 }
             }
         }
-        
+
         // Last fallback: use git log to get last commit time
         $output = @shell_exec("cd {$basePath} && git log -1 --format=%ci 2>/dev/null");
         if ($output) {
             return trim($output);
         }
-        
+
         return null;
     }
 
@@ -2287,7 +2285,7 @@ class WafSyncService
         $logs = [];
         $lastSentFile = storage_path('app/last_log_position.json');
         $maxLines = 100;
-        
+
         // Get the current log file
         $logFile = storage_path('logs/laravel-' . date('Y-m-d') . '.log');
         if (!file_exists($logFile)) {
@@ -2296,7 +2294,7 @@ class WafSyncService
         if (!file_exists($logFile)) {
             return [];
         }
-        
+
         // Read last sent position
         $lastPosition = 0;
         if (file_exists($lastSentFile)) {
@@ -2305,43 +2303,43 @@ class WafSyncService
                 $lastPosition = $posData['position'] ?? 0;
             }
         }
-        
+
         $fileSize = filesize($logFile);
         if ($fileSize <= $lastPosition) {
             // File was rotated or no new content
             $lastPosition = max(0, $fileSize - 50000); // Read last ~50KB on rotation
         }
-        
+
         $handle = fopen($logFile, 'r');
         if (!$handle) {
             return [];
         }
-        
+
         fseek($handle, $lastPosition);
         $newContent = fread($handle, min($fileSize - $lastPosition, 100000)); // Max 100KB
         $newPosition = ftell($handle);
         fclose($handle);
-        
+
         // Save position for next sync
         file_put_contents($lastSentFile, json_encode([
             'file' => $logFile,
             'position' => $newPosition,
         ]));
-        
+
         if (empty($newContent)) {
             return [];
         }
-        
+
         // Parse log entries
         $lines = explode("\n", $newContent);
         $currentEntry = null;
-        
+
         foreach ($lines as $line) {
             $line = trim($line);
             if (empty($line)) {
                 continue;
             }
-            
+
             // Match Laravel log format: [2026-01-01 00:00:00] environment.LEVEL: message
             if (preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+\w+\.(\w+):\s+(.+)$/', $line, $m)) {
                 if ($currentEntry) {
@@ -2357,17 +2355,17 @@ class WafSyncService
                 $currentEntry['message'] .= "\n" . $line;
             }
         }
-        
+
         if ($currentEntry) {
             $logs[] = $currentEntry;
         }
-        
+
         // Keep only the last N entries, prioritize WARNING/ERROR
         if (count($logs) > $maxLines) {
             // Split into important and info logs
             $important = array_filter($logs, fn($l) => in_array($l['level'], ['warning', 'error', 'critical', 'emergency']));
             $info = array_filter($logs, fn($l) => !in_array($l['level'], ['warning', 'error', 'critical', 'emergency']));
-            
+
             // Take all important + recent info up to limit
             $important = array_slice($important, -$maxLines);
             $remaining = $maxLines - count($important);
@@ -2376,26 +2374,26 @@ class WafSyncService
             } else {
                 $info = [];
             }
-            
+
             $logs = array_merge($important, $info);
             // Sort by timestamp
             usort($logs, fn($a, $b) => $a['timestamp'] <=> $b['timestamp']);
         }
-        
+
         // Truncate long messages
         foreach ($logs as &$log) {
             if (strlen($log['message']) > 2000) {
                 $log['message'] = substr($log['message'], 0, 2000) . '... (truncated)';
             }
         }
-        
+
         return array_values($logs);
     }
 
     protected function getDiscoveredLogPaths(): array
     {
         $cacheFile = storage_path('app/discovered_logs_cache.json');
-        
+
         // Use cached result if less than 5 minutes old
         if (file_exists($cacheFile) && (time() - filemtime($cacheFile)) < 300) {
             $cached = json_decode(file_get_contents($cacheFile), true);
@@ -2487,7 +2485,7 @@ class WafSyncService
     protected function getCpuUsage(): array
     {
         $percent = 0;
-        
+
         if (PHP_OS_FAMILY === 'Windows') {
             // Windows: Use wmic
             $output = [];
@@ -2511,26 +2509,26 @@ class WafSyncService
                 $stat1 = file_get_contents('/proc/stat');
                 usleep(100000); // 100ms
                 $stat2 = file_get_contents('/proc/stat');
-                
+
                 preg_match('/^cpu\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m', $stat1, $m1);
                 preg_match('/^cpu\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m', $stat2, $m2);
-                
+
                 if ($m1 && $m2) {
                     $total1 = $m1[1] + $m1[2] + $m1[3] + $m1[4];
                     $total2 = $m2[1] + $m2[2] + $m2[3] + $m2[4];
                     $idle1 = $m1[4];
                     $idle2 = $m2[4];
-                    
+
                     $totalDiff = $total2 - $total1;
                     $idleDiff = $idle2 - $idle1;
-                    
+
                     if ($totalDiff > 0) {
                         $percent = round((1 - $idleDiff / $totalDiff) * 100, 1);
                     }
                 }
             }
         }
-        
+
         return ['percent' => $percent];
     }
 
@@ -2542,7 +2540,7 @@ class WafSyncService
         $total = 0;
         $used = 0;
         $percent = 0;
-        
+
         if (PHP_OS_FAMILY === 'Windows') {
             // Windows: Use wmic
             $output = [];
@@ -2559,17 +2557,17 @@ class WafSyncService
         } elseif (PHP_OS_FAMILY === 'Darwin') {
             // macOS: Use vm_stat and sysctl
             $vmstat = @shell_exec('vm_stat 2>/dev/null');
-            
+
             // Get page size (typically 4096 or 16384 on ARM Macs)
             $pageSize = 4096;
             if ($vmstat && preg_match('/page size of (\d+) bytes/', $vmstat, $m)) {
                 $pageSize = (int) $m[1];
             }
-            
+
             // Get total memory from sysctl
             $totalOutput = @shell_exec('sysctl -n hw.memsize 2>/dev/null');
             $total = $totalOutput ? (int) trim($totalOutput) : 0;
-            
+
             if ($vmstat && $total > 0) {
                 // Parse vm_stat - note: output uses "." at end of numbers
                 $stats = [];
@@ -2579,12 +2577,12 @@ class WafSyncService
                     $value = (int) str_replace('.', '', $match[2]);
                     $stats[$key] = $value;
                 }
-                
+
                 // Calculate used memory: active + wired + compressed
                 $activePages = $stats['Pages active'] ?? 0;
                 $wiredPages = $stats['Pages wired down'] ?? 0;
                 $compressedPages = $stats['Pages occupied by compressor'] ?? 0;
-                
+
                 $usedPages = $activePages + $wiredPages + $compressedPages;
                 $used = $usedPages * $pageSize;
             } else {
@@ -2616,17 +2614,17 @@ class WafSyncService
                 $meminfo = file_get_contents('/proc/meminfo');
                 preg_match('/MemTotal:\s+(\d+)/', $meminfo, $totalMatch);
                 preg_match('/MemAvailable:\s+(\d+)/', $meminfo, $availMatch);
-                
+
                 $total = isset($totalMatch[1]) ? (int) $totalMatch[1] * 1024 : 0;
                 $available = isset($availMatch[1]) ? (int) $availMatch[1] * 1024 : 0;
                 $used = $total - $available;
             }
         }
-        
+
         if ($total > 0) {
             $percent = round(($used / $total) * 100, 1);
         }
-        
+
         return [
             'total' => $total,
             'used' => $used,
@@ -2640,12 +2638,12 @@ class WafSyncService
     protected function getDiskUsage(): array
     {
         $path = PHP_OS_FAMILY === 'Windows' ? 'C:' : '/';
-        
+
         $total = @disk_total_space($path) ?: 0;
         $free = @disk_free_space($path) ?: 0;
         $used = $total - $free;
         $percent = $total > 0 ? round(($used / $total) * 100, 1) : 0;
-        
+
         return [
             'total' => $total,
             'used' => $used,
@@ -2660,14 +2658,14 @@ class WafSyncService
     {
         $bytesSent = 0;
         $bytesRecv = 0;
-        
+
         // Use file cache to persist between heartbeats
         $cacheFile = storage_path('app/network_stats_cache.json');
         $lastStats = null;
         $lastTime = null;
-        
+
         Log::debug('getNetworkUsage: starting', ['cacheFile' => $cacheFile, 'exists' => file_exists($cacheFile)]);
-        
+
         if (file_exists($cacheFile)) {
             $cached = json_decode(file_get_contents($cacheFile), true);
             if ($cached && isset($cached['stats']) && isset($cached['time'])) {
@@ -2679,26 +2677,26 @@ class WafSyncService
                 ]);
             }
         }
-        
+
         $currentStats = $this->getNetworkStats();
         $currentTime = microtime(true);
-        
+
         Log::debug('getNetworkUsage: current stats', [
             'currentStats' => $currentStats,
             'currentTime' => $currentTime,
         ]);
-        
+
         if ($lastStats !== null && $lastTime !== null) {
             $timeDiff = $currentTime - $lastTime;
             Log::debug('getNetworkUsage: time diff', ['timeDiff' => $timeDiff]);
-            
+
             // Only calculate if time diff is reasonable (1-600 seconds)
             if ($timeDiff > 1 && $timeDiff < 600) {
                 $sentDiff = $currentStats['sent'] - $lastStats['sent'];
                 $recvDiff = $currentStats['recv'] - $lastStats['recv'];
-                
+
                 Log::debug('getNetworkUsage: diffs', ['sentDiff' => $sentDiff, 'recvDiff' => $recvDiff]);
-                
+
                 // Handle counter reset (system reboot)
                 if ($sentDiff >= 0 && $recvDiff >= 0) {
                     $bytesSent = (int) ($sentDiff / $timeDiff);
@@ -2711,20 +2709,20 @@ class WafSyncService
         } else {
             Log::debug('getNetworkUsage: no previous data, first run');
         }
-        
+
         // Save current stats for next call
         $writeResult = file_put_contents($cacheFile, json_encode([
             'stats' => $currentStats,
             'time' => $currentTime,
         ]));
         Log::debug('getNetworkUsage: saved cache', ['writeResult' => $writeResult]);
-        
+
         $result = [
             'bytes_sent' => max(0, $bytesSent),
             'bytes_recv' => max(0, $bytesRecv),
         ];
         Log::debug('getNetworkUsage: returning', $result);
-        
+
         return $result;
     }
 
@@ -2735,14 +2733,14 @@ class WafSyncService
     {
         $sent = 0;
         $recv = 0;
-        
+
         // Debug: Log OS detection
         Log::debug('getNetworkStats: OS detection', [
             'PHP_OS_FAMILY' => PHP_OS_FAMILY,
             'PHP_OS' => PHP_OS,
             'php_uname' => php_uname('s'),
         ]);
-        
+
         if (PHP_OS_FAMILY === 'Windows') {
             // Windows: Use netstat
             $output = [];
@@ -2757,7 +2755,7 @@ class WafSyncService
         } elseif (PHP_OS_FAMILY === 'Darwin') {
             // macOS: Try multiple methods to get network bytes
             Log::debug('macOS network stats: starting collection');
-            
+
             // Method 1: netstat -I for specific interface (most reliable)
             $interfaces = ['en0', 'en1', 'en2', 'en3', 'en4', 'en5'];
             foreach ($interfaces as $iface) {
@@ -2778,7 +2776,7 @@ class WafSyncService
                     }
                 }
             }
-            
+
             // Fallback: parse netstat -ib if we got no data
             if ($sent === 0 && $recv === 0) {
                 Log::debug('macOS: Method 1 failed, trying netstat -ib fallback');
@@ -2808,7 +2806,7 @@ class WafSyncService
                     }
                 }
             }
-            
+
             // Log final result
             Log::debug('macOS network stats final result', ['sent' => $sent, 'recv' => $recv]);
         } else {
@@ -2826,7 +2824,7 @@ class WafSyncService
                 }
             }
         }
-        
+
         return ['sent' => $sent, 'recv' => $recv];
     }
 
@@ -2889,12 +2887,14 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
-        
+
         // Get PHP directory
         $phpBinary = PHP_BINARY;
         if ($phpBinary) {
@@ -2902,7 +2902,7 @@ class WafSyncService
             $possiblePaths[] = $phpDir . '\\cacert.pem';
             $possiblePaths[] = $phpDir . '\\extras\\ssl\\cacert.pem';
         }
-        
+
         // Check common PHP installation locations
         $possiblePaths = array_merge($possiblePaths, [
             'C:\\tools\\php85\\cacert.pem',
@@ -2913,39 +2913,23 @@ class WafSyncService
             'C:\\Program Files\\PHP\\cacert.pem',
             'C:\\ProgramData\\ComposerSetup\\bin\\cacert.pem',
         ]);
-        
+
         foreach ($possiblePaths as $path) {
             if (file_exists($path)) {
                 Log::debug('Found CA certificate at: ' . $path);
                 return $path;
             }
         }
-        
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
+
+        // If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
         }
-        
-        return null;
+
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
@@ -3135,17 +3119,17 @@ class WafSyncService
         if (file_exists('/.dockerenv') || file_exists('/run/.containerenv')) {
             return 'server';
         }
-        
+
         if (stripos(PHP_OS, 'WIN') === 0) {
             return 'windows';
         } elseif (stripos(PHP_OS, 'Darwin') !== false) {
             return 'macos';
         }
-        
+
         // Linux (desktop and server unified as 'linux')
         return 'linux';
     }
-    
+
     /**
      * Regenerate the Windows sync service script with latest template
      */
@@ -3154,12 +3138,12 @@ class WafSyncService
         try {
             $dataDir = 'C:\ProgramData\SecurityOneIDS';
             $logDir = $dataDir . '\logs';
-            
+
             // Ensure log directory exists
             if (!is_dir($logDir)) {
                 mkdir($logDir, 0755, true);
             }
-            
+
             // Create the simplified sync service script
             $script = <<<'POWERSHELL'
 $ErrorActionPreference = 'Continue'
@@ -3197,7 +3181,7 @@ function Log {
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $line = "[$ts] [$Level] $Msg"
     Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
-    
+
     # Rotate if > 5MB
     if ((Test-Path $LogFile) -and ((Get-Item $LogFile -EA SilentlyContinue).Length -gt 5MB)) {
         Move-Item $LogFile "$LogFile.old" -Force -EA SilentlyContinue
@@ -3212,11 +3196,11 @@ Log "PHP Path: $PhpPath" 'INFO'
 while ($true) {
     try {
         Set-Location $InstallDir
-        
+
         # Run sync command with timeout (6 min max for concurrent tasks)
         $proc = Start-Process -FilePath $PhpPath -ArgumentList 'artisan','waf:sync' -WorkingDirectory $InstallDir -NoNewWindow -PassThru -Wait:$false
         $exited = $proc.WaitForExit(360000)  # 6 min timeout
-        
+
         if (-not $exited) {
             Log "waf:sync timeout - killing process" 'WARN'
             $proc.Kill()
@@ -3228,25 +3212,25 @@ while ($true) {
             Log "waf:sync completed successfully" 'INFO'
             $FailCount = 0
         }
-        
+
         # Full reset after too many failures
         if ($FailCount -ge $MaxFailures) {
             Log "Too many failures ($FailCount), performing full reset..." 'WARN'
-            
+
             # Clear Laravel cache
             & $PhpPath artisan cache:clear 2>&1 | Out-Null
             & $PhpPath artisan config:clear 2>&1 | Out-Null
-            
+
             $FailCount = 0
             Log "Reset complete, waiting 60s..." 'INFO'
             Start-Sleep -Seconds 60
         }
-        
+
     } catch {
         Log "Exception: $($_.Exception.Message)" 'ERROR'
         $FailCount++
     }
-    
+
     # Wait before next sync
     Start-Sleep -Seconds 60
 }
@@ -3255,13 +3239,13 @@ POWERSHELL;
             // Replace placeholders
             $script = str_replace('INSTALL_DIR_PLACEHOLDER', $installDir, $script);
             $script = str_replace('DATA_DIR_PLACEHOLDER', $dataDir, $script);
-            
+
             // Write the script
             $scriptPath = $installDir . '\run-sync-service.ps1';
             file_put_contents($scriptPath, $script);
-            
+
             Log::info('Windows sync script regenerated', ['path' => $scriptPath]);
-            
+
         } catch (\Exception $e) {
             Log::error('Failed to regenerate Windows sync script: ' . $e->getMessage());
         }
