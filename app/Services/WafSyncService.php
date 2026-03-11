@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Artisan;
+use Symfony\Component\Process\Process as SymfonyProcess;
 
 class WafSyncService
 {
@@ -1541,26 +1542,65 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-                $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
+                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$user}\n", FILE_APPEND);
                 
-                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
+                if ($user && preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $user) && $user !== 'root' && $user !== 'daemon' && $user !== 'nobody' && $user !== '_mbsetupuser') {
+                    $cleanUser = $user;
+                    $success = false;
+
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $output = [];
-                    exec("sudo dscl . -create /Users/{$consoleUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
-                    
-                    if ($returnCode !== 0) {
-                        // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$consoleUser} disableuser 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode}\n", FILE_APPEND);
+                    try {
+                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
+                        $process1->setTimeout(60);
+                        $process1->run();
+                        $returnCode1 = $process1->getExitCode() ?? 1;
+                        $outputStr = trim($process1->getOutput() . ' ' . $process1->getErrorOutput());
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
+                        if ($returnCode1 === 0) {
+                            $success = true;
+                        }
+                    } catch (\Exception $e) {
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
-                    if ($returnCode !== 0) {
+                    if (!$success) {
+                        // Method 2: Lock the user's password (they won't be able to login)
+                        try {
+                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
+                            $process2->setTimeout(60);
+                            $process2->disableOutput(); // Configure output buffering
+                            $process2->run();
+                            $returnCode2 = $process2->getExitCode() ?? 1;
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                            if ($returnCode2 === 0) {
+                                $success = true;
+                            }
+                        } catch (\Exception $e) {
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        }
+                    }
+                    
+                    if (!$success) {
                         // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$consoleUser} '*' 2>&1", $output, $returnCode);
-                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+                        try {
+                            $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                            $process3->setTimeout(60);
+                            $process3->disableOutput(); // Configure output buffering
+                            $process3->run();
+                            $returnCode3 = $process3->getExitCode() ?? 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
+                            if ($returnCode3 === 0) {
+                                $success = true;
+                            }
+                        } catch (\Exception $e) {
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        }
+                    }
+
+                    if (!$success) {
+                        throw new \RuntimeException("All methods failed to disable user {$cleanUser}");
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1580,6 +1620,7 @@ class WafSyncService
         } catch (\Exception $e) {
             echo "❌ Failed to disable login: " . $e->getMessage() . "\n";
             Log::error('Failed to disable login: ' . $e->getMessage());
+            throw $e;
         }
     }
     
@@ -1617,17 +1658,71 @@ class WafSyncService
                 $usersOutput = [];
                 exec("dscl . -list /Users | grep -v '^_' | grep -v 'daemon' | grep -v 'nobody' | grep -v 'root' 2>/dev/null", $usersOutput, $rc);
                 
+                $overallSuccess = true;
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user) continue;
                     
+                    if (!preg_match('/^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/', $user)) continue;
+                    $cleanUser = $user;
+
                     // Remove DisabledUser from AuthenticationAuthority
-                    exec("sudo dscl . -delete /Users/{$user} AuthenticationAuthority 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$user}: code={$returnCode}\n", FILE_APPEND);
+                    $returnCode1 = -1;
+                    $attempts1 = 0;
+                    while ($returnCode1 !== 0 && $attempts1 < 3) {
+                        $attempts1++;
+                        $hasException = false;
+                        try {
+                            $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                            $process1->setTimeout(60);
+                            $process1->run();
+                            $returnCode1 = $process1->getExitCode() ?? 1;
+
+                            if ($returnCode1 !== 0) {
+                                if (strpos($process1->getErrorOutput(), 'eDSNoSuchKey') !== false) {
+                                    $returnCode1 = 0;
+                                } else {
+                                    // Unexpected error, break early instead of retrying
+                                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
+                                    break;
+                                }
+                            }
+                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
+                        } catch (\Exception $e) {
+                            $hasException = true;
+                            $returnCode1 = 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                            break; // Break early on unexpected exceptions
+                        }
+                        if ($returnCode1 !== 0 && $attempts1 < 3) sleep(1);
+                    }
                     
                     // Re-enable with pwpolicy  
-                    exec("sudo pwpolicy -u {$user} enableuser 2>&1", $output, $returnCode);
-                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$user}: code={$returnCode}\n", FILE_APPEND);
+                    $returnCode2 = -1;
+                    $attempts2 = 0;
+                    while ($returnCode2 !== 0 && $attempts2 < 3) {
+                        $attempts2++;
+                        try {
+                            $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                            $process2->setTimeout(60);
+                            $process2->disableOutput(); // Configure output buffering
+                            $process2->run();
+                            $returnCode2 = $process2->getExitCode() ?? 1;
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                        } catch (\Exception $e) {
+                            $returnCode2 = 1;
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        }
+                        if ($returnCode2 !== 0 && $attempts2 < 3) sleep(1);
+                    }
+
+                    if ($returnCode1 !== 0 || $returnCode2 !== 0) {
+                        $overallSuccess = false;
+                    }
+                }
+
+                if (!$overallSuccess) {
+                    throw new \RuntimeException("Failed to enable one or more macOS users");
                 }
                 
             } else {
@@ -1643,6 +1738,7 @@ class WafSyncService
         } catch (\Exception $e) {
             echo "❌ Failed to enable login: " . $e->getMessage() . "\n";
             Log::error('Failed to enable login: ' . $e->getMessage());
+            throw $e;
         }
     }
     
