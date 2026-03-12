@@ -357,12 +357,24 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         $newKey = 'ids::custom_log_paths';
-
-        if (self::$migrated) {
-            return cache()->get($newKey, []);
-        }
-
         $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
+
+        // Even if we've migrated in this process previously,
+        // double check if legacy keys have reappeared in cache
+        if (self::$migrated) {
+            $hasLegacy = false;
+            foreach ($legacyKeys as $legacyKey) {
+                if (cache()->has($legacyKey)) {
+                    $hasLegacy = true;
+                    break;
+                }
+            }
+            if (!$hasLegacy) {
+                return cache()->get($newKey, []);
+            }
+            // If they reappeared, reset the flag so we migrate again
+            self::$migrated = false;
+        }
 
         $needsMigration = false;
         foreach ($legacyKeys as $legacyKey) {
@@ -419,10 +431,6 @@ class LogDiscoveryService
      */
     private function migrateCustomPaths(): void
     {
-        if (self::$migrated) {
-            return;
-        }
-
         $newKey = 'ids::custom_log_paths';
         $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
 
