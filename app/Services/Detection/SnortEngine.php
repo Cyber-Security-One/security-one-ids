@@ -214,7 +214,7 @@ class SnortEngine
 
         try {
             Log::info("Starting Snort in {$mode} mode on interface {$interface}", [
-                'platform' => PHP_OS_FAMILY,
+                'platform' => $this->getPlatformName(),
                 'snort_path' => $this->snortPath,
                 'config_path' => $this->configPath,
                 'command' => $cmd,
@@ -258,7 +258,7 @@ class SnortEngine
                         // Fix log dir permissions so non-root PHP agent can read alerts
                         $this->fixLogPermissions();
                         Log::info('Snort daemon started successfully', [
-                            'platform' => PHP_OS_FAMILY,
+                            'platform' => $this->getPlatformName(),
                             'daemon_pid' => $daemonPid,
                         ]);
                         @unlink($stderrFile ?? '');
@@ -270,7 +270,7 @@ class SnortEngine
             // Fallback: check process list
             if ($this->isRunning()) {
                 $this->fixLogPermissions();
-                Log::info('Snort started successfully', ['platform' => PHP_OS_FAMILY]);
+                Log::info('Snort started successfully', ['platform' => $this->getPlatformName()]);
                 @unlink($stderrFile ?? '');
                 return ['success' => true, 'message' => "Snort started in {$mode} mode"];
             }
@@ -293,7 +293,7 @@ class SnortEngine
             }
             $stdOutput = $result->output() ?? '';
             Log::warning('Snort failed to start', [
-                'platform' => PHP_OS_FAMILY,
+                'platform' => $this->getPlatformName(),
                 'exit_code' => $result->exitCode(),
                 'stdout' => substr($stdOutput, 0, 500),
                 'stderr_start' => substr($errorOutput, 0, 500),
@@ -304,7 +304,7 @@ class SnortEngine
             return ['success' => false, 'error' => 'Snort started but not running: ' . substr($errorOutput ?: $stdOutput, 0, 200)];
         } catch (\Exception $e) {
             Log::error('Failed to start Snort: ' . $e->getMessage(), [
-                'platform' => PHP_OS_FAMILY,
+                'platform' => $this->getPlatformName(),
             ]);
             return ['success' => false, 'error' => $e->getMessage()];
         }
@@ -741,7 +741,7 @@ LUA;
         }
 
         try {
-            Log::info('Updating Snort...', ['current_version' => $oldVersion, 'platform' => PHP_OS_FAMILY]);
+            Log::info('Updating Snort...', ['current_version' => $oldVersion, 'platform' => $this->getPlatformName()]);
 
             if ($this->isMac()) {
                 $result = $this->updateSnortMac();

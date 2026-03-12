@@ -158,7 +158,7 @@ class SuricataEngine
 
         try {
             Log::info("Starting Suricata in {$mode} mode on interface {$interface}", [
-                'platform' => PHP_OS_FAMILY,
+                'platform' => $this->getPlatformName(),
                 'suricata_path' => $this->suricataPath,
                 'config_path' => $this->configPath,
                 'command' => $cmd,
@@ -201,7 +201,7 @@ class SuricataEngine
                 if (is_numeric($daemonPid) && $this->isProcessRunning((int) $daemonPid)) {
                     $this->fixLogPermissions();
                     Log::info('Suricata daemon started successfully', [
-                        'platform' => PHP_OS_FAMILY,
+                        'platform' => $this->getPlatformName(),
                         'daemon_pid' => $daemonPid,
                     ]);
                     @unlink($stderrFile ?? '');
@@ -212,7 +212,7 @@ class SuricataEngine
             // Fallback: check process list
             if ($this->isRunning()) {
                 $this->fixLogPermissions();
-                Log::info('Suricata started successfully', ['platform' => PHP_OS_FAMILY]);
+                Log::info('Suricata started successfully', ['platform' => $this->getPlatformName()]);
                 @unlink($stderrFile ?? '');
                 return ['success' => true, 'message' => "Suricata started in {$mode} mode"];
             }
@@ -235,7 +235,7 @@ class SuricataEngine
             }
 
             Log::warning('Suricata failed to start', [
-                'platform' => PHP_OS_FAMILY,
+                'platform' => $this->getPlatformName(),
                 'exit_code' => $result->exitCode(),
                 'stderr' => substr($errorOutput, 0, 500),
             ]);

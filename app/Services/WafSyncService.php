@@ -2726,7 +2726,7 @@ class WafSyncService
         
         // Debug: Log OS detection
         Log::debug('getNetworkStats: OS detection', [
-            'PHP_OS_FAMILY' => PHP_OS_FAMILY,
+            'PHP_OS_FAMILY' => $this->getPlatformName(),
             'PHP_OS' => PHP_OS,
             'php_uname' => php_uname('s'),
         ]);

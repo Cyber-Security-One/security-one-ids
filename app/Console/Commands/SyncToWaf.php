@@ -109,7 +109,7 @@ class SyncToWaf extends Command
     private function showDebugInfo(): void
     {
         $this->info('=== DEBUG INFO ===');
-        $this->info('PHP_OS_FAMILY: ' . PHP_OS_FAMILY);
+        $this->info('PHP_OS_FAMILY: ' . $this->getPlatformName());
         $this->info('PHP_OS: ' . PHP_OS);
         $this->info('php_uname: ' . php_uname('s'));
         
