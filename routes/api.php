@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\SystemUpdateController;
 
 // System Update API (for WAF Hub to trigger updates)
-Route::middleware(\App\Http\Middleware\VerifyAgentToken::class)->group(function () {
+Route::middleware('agent_auth')->group(function () {
     Route::post('/system/update', [SystemUpdateController::class, 'update']);
     Route::get('/system/version', [SystemUpdateController::class, 'version']);
     Route::post('/system/restart', [SystemUpdateController::class, 'restart']);

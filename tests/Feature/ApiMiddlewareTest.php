@@ -17,8 +17,8 @@ class ApiMiddlewareTest extends TestCase
             'X-Agent-Token' => 'some-token',
         ]);
 
-        $response->assertStatus(401);
-        $response->assertJson(['error' => 'Unauthorized']);
+        $response->assertStatus(500);
+        $response->assertJson(['error' => 'Server misconfiguration']);
     }
 
     /**

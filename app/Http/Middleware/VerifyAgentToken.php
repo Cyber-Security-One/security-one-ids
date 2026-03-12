@@ -10,10 +10,10 @@ class VerifyAgentToken
     public function handle(Request $request, Closure $next)
     {
         $token = $request->bearerToken();
-        if ($token === null || trim((string)$token) === '') {
+        if (!is_scalar($token) || trim((string)$token) === '') {
             $token = $request->header('X-Agent-Token');
         }
-        if ($token === null || trim((string)$token) === '') {
+        if (!is_scalar($token) || trim((string)$token) === '') {
             $token = $request->input('token');
         }
         $agentToken = (string) config('ids.agent_token', env('AGENT_TOKEN'));
