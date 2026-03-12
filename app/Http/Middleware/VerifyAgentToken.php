@@ -21,11 +21,10 @@ class VerifyAgentToken
         // To prevent information leakage (e.g., revealing via different response times
         // or codes that the system is misconfigured), we enforce a generic 401 response
         // for both missing configuration and invalid tokens.
-        if (!is_scalar($token)) {
+        if (!is_string($token)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
-        $token = (string) $token;
         $configured = $agentToken !== '';
 
         $expectedSeed = $configured ? $agentToken : str_repeat("\0", 32);
