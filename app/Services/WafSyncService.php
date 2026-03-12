@@ -59,14 +59,9 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
 
         return $http;
@@ -1542,33 +1537,34 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+$safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
+                
+                // Validate username format to prevent shell injection
+                if ($consoleUser && !preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser) || $consoleUser === 'root' || $consoleUser === '_mbsetupuser') {
+                    file_put_contents($logFile, "[{$timestamp}] Invalid console user name: {$consoleUser}\n", FILE_APPEND);
+                    return;
+                }
+
+                $escapedUser = escapeshellarg($safeConsoleUser);
+
+                // Log the original unescaped username for clarity and better readability in logs
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$consoleUser}\n", FILE_APPEND);
 
-                if ($consoleUser && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
-                    // Validate username format to prevent shell injection
-                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser)) {
-                        file_put_contents($logFile, "[{$timestamp}] Invalid console user name: {$consoleUser}\n", FILE_APPEND);
-                        return;
-                    }
+                // Method 1: Use dscl to disable user account
+                // The correct way is to set AuthenticationAuthority to DisabledUser
+                $output = [];
+                exec("sudo dscl . -create /Users/{$escapedUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
+                file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
 
-                    $escapedUser = escapeshellarg($consoleUser);
-
-                    // Method 1: Use dscl to disable user account
-                    // The correct way is to set AuthenticationAuthority to DisabledUser
-                    $output = [];
-                    exec("sudo dscl . -create /Users/{$escapedUser} AuthenticationAuthority ';DisabledUser;' 2>&1", $output, $returnCode);
-                    // Log the original unescaped username for clarity and better readability in logs
-                    file_put_contents($logFile, "[{$timestamp}] dscl disable user {$consoleUser}: code={$returnCode}, output=" . implode(" ", $output) . "\n", FILE_APPEND);
-
-                    if ($returnCode !== 0) {
-                        // Method 2: Lock the user's password (they won't be able to login)
-                        exec("sudo pwpolicy -u {$escapedUser} disableuser 2>&1", $output, $returnCode2);
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode2}\n", FILE_APPEND);
+                if ($returnCode !== 0) {
+                    // Method 2: Lock the user's password (they won't be able to login)
+                    exec("sudo pwpolicy -u {$escapedUser} disableuser 2>&1", $output, $returnCode2);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user: code={$returnCode2}\n", FILE_APPEND);
                     }
 
                     if ($returnCode !== 0 && (isset($returnCode2) && $returnCode2 !== 0)) {
                         // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3);
+exec("sudo dscl . -passwd /Users/{$escapedUser} '*' 2>&1", $output, $returnCode3);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
                     }
                 } else {
@@ -1628,9 +1624,23 @@ class WafSyncService
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user) continue;
+if (!$user) continue;
 
                     // Verify the user actually exists using POSIX functions if available
+                    if (function_exists('posix_getpwnam') && !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
+                         Log::warning('User does not exist: ' . $user);
+                         file_put_contents($logFile, "[{$timestamp}] User does not exist: {$user}\n", FILE_APPEND);
+                         continue;
+                    }
+
+                    // Validate username format to prevent shell injection
+                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
+                        Log::warning('Invalid user name: ' . $user);
+                        file_put_contents($logFile, "[{$timestamp}] Invalid user name: {$user}\n", FILE_APPEND);
+                        continue;
+                    }
+
+                    // Check if user exists using POSIX functions if available
                     if (function_exists('posix_getpwnam') && !posix_getpwnam($user)) {
                          Log::warning('User does not exist: ' . $user);
                          file_put_contents($logFile, "[{$timestamp}] User does not exist: {$user}\n", FILE_APPEND);
@@ -2893,8 +2903,10 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2924,8 +2936,7 @@ class WafSyncService
                 return $path;
             }
         }
-
-        // If not found, try to download it
+// If not found, try to download it
         $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
         if (!file_exists($downloadPath)) {
             try {
@@ -2949,7 +2960,15 @@ class WafSyncService
             return $downloadPath;
         }
 
-        return null;
+        // If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
+        }
+
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
