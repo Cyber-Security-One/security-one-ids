@@ -429,21 +429,35 @@ class LogDiscoveryService
     {
         // Handle backward compatibility for old cache key
         if (cache()->has('ids_custom_log_paths')) {
-            $legacyPaths = cache()->pull('ids_custom_log_paths', []);
+            $lock = cache()->lock('ids.custom_log_paths_lock', 5);
+            if ($lock->get()) {
+                try {
+                    if (cache()->has('ids_custom_log_paths')) {
+                        $legacyPaths = cache()->get('ids_custom_log_paths', []);
 
-            if (!is_array($legacyPaths)) {
-                Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
-                    'type' => gettype($legacyPaths)
-                ]);
-                $legacyPaths = [];
-            }
+                        if (!is_array($legacyPaths)) {
+                            Log::warning('Corrupted legacy custom log paths cache key encountered and discarded.', [
+                                'type' => gettype($legacyPaths)
+                            ]);
+                            $legacyPaths = [];
+                        }
 
-            $currentPaths = cache()->get('ids.custom_log_paths', []);
-            $currentPaths = is_array($currentPaths) ? $currentPaths : [];
+                        $currentPaths = cache()->get('ids.custom_log_paths', []);
+                        $currentPaths = is_array($currentPaths) ? $currentPaths : [];
 
-            if (!empty($legacyPaths)) {
-                $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
-                cache()->forever('ids.custom_log_paths', $mergedPaths);
+                        $mergedPaths = array_values(array_unique(array_merge($currentPaths, $legacyPaths)));
+
+                        if (cache()->forever('ids.custom_log_paths', $mergedPaths)) {
+                            cache()->forget('ids_custom_log_paths');
+                        } else {
+                            Log::warning('Failed to migrate legacy custom log paths cache key safely.');
+                        }
+                    }
+                } finally {
+                    $lock->release();
+                }
+            } else {
+                Log::warning('Could not acquire lock to migrate legacy custom log paths cache key');
             }
         }
 
