@@ -39,7 +39,6 @@ class AgentAuth
 
         $isValid = $configured
             && $token !== ''
-            && strlen($token) <= 256
             && strlen($token) === strlen($agentToken)
             && hash_equals(
                 hash('sha256', $expectedSeed, true),
