@@ -59,14 +59,9 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
         
         return $http;
@@ -1541,45 +1536,45 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-                $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
-                file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
+                $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+                $safeConsoleUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $consoleUser)) ?? '';
+                file_put_contents($logFile, "[{$timestamp}] Console user: {$safeConsoleUser}\n", FILE_APPEND);
                 
-                if ($cleanUser && preg_match('/^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$/', $cleanUser) && $cleanUser !== 'root' && $cleanUser !== 'daemon' && $cleanUser !== 'nobody' && $cleanUser !== '_mbsetupuser') {
+                if ($consoleUser && preg_match('/^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
                     // Method 1: Use dscl to disable user account
                     // The correct way is to set AuthenticationAuthority to DisabledUser
                     $method1Success = false;
                     try {
-                        $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $cleanUser, 'AuthenticationAuthority', ';DisabledUser;']);
+                        $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-create', '/Users/' . $safeConsoleUser, 'AuthenticationAuthority', ';DisabledUser;']);
                         $method1Success = $process1->isSuccessful();
                         $returnCode1 = $process1->exitCode();
                         $outputStr = trim($process1->output() . ' ' . $process1->errorOutput());
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser}: code={$returnCode1}, output={$outputStr}\n", FILE_APPEND);
                     } catch (\Exception $e) {
                         $method1Success = false;
                         $returnCode1 = 1;
-                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl disable user {$safeConsoleUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
                     if (!$method1Success) {
                         // Method 2: Lock the user's password (they won't be able to login)
                         $method2Success = false;
                         try {
-                            $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
+                            $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $safeConsoleUser, 'disableuser']);
                             $method2Success = $process2->isSuccessful();
                             $returnCode2 = $process2->exitCode();
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$safeConsoleUser}: code={$returnCode2}\n", FILE_APPEND);
                         } catch (\Exception $e) {
                             $method2Success = false;
                             $returnCode2 = 1;
-                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                            file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$safeConsoleUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
 
                         if (!$method2Success) {
                             // Method 3: Set an impossible password hash
                             $method3Success = false;
                             try {
-                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                                $process3 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-passwd', '/Users/' . $safeConsoleUser, '*']);
                                 $method3Success = $process3->isSuccessful();
                                 $returnCode3 = $process3->exitCode();
                                 file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
@@ -1647,31 +1642,30 @@ class WafSyncService
                 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
-                    if (!$user) continue;
+                    if (!$user || !preg_match('/^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$/', $user)) continue;
                     
-                    $cleanUser = (string) preg_replace('/[\r\n]+/', '', $user);
-
-                    if (empty($cleanUser) || !preg_match('/^[a-zA-Z_][a-zA-Z0-9_.-]{0,31}$/', $cleanUser)) {
-                        file_put_contents($logFile, "[{$timestamp}] Invalid user skipped: {$cleanUser}\n", FILE_APPEND);
-                        continue;
-                    }
+                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
 
                     // Remove DisabledUser from AuthenticationAuthority
+                    $returnCode1 = null;
                     try {
-                        $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                        $process1 = Process::timeout(60)->run(['sudo', 'dscl', '.', '-delete', '/Users/' . $safeUser, 'AuthenticationAuthority']);
                         $returnCode1 = $process1->exitCode();
-                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode1}\n", FILE_APPEND);
                     } catch (\Exception $e) {
-                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                        $returnCode1 = 1;
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                     
                     // Re-enable with pwpolicy  
+                    $returnCode2 = null;
                     try {
-                        $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                        $process2 = Process::timeout(60)->run(['sudo', 'pwpolicy', '-u', $safeUser, 'enableuser']);
                         $returnCode2 = $process2->exitCode();
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode2}\n", FILE_APPEND);
                     } catch (\Exception $e) {
-                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
+                        $returnCode2 = 1;
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser} exception: " . $e->getMessage() . "\n", FILE_APPEND);
                     }
                 }
                 
@@ -2919,8 +2913,10 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2951,31 +2947,15 @@ class WafSyncService
             }
         }
         
-        // If not found, try to download it
-        $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
-        if (!file_exists($downloadPath)) {
-            try {
-                // Download from curl.se (using file_get_contents with SSL disabled for bootstrap)
-                $context = stream_context_create([
-                    'ssl' => [
-                        'verify_peer' => false,
-                        'verify_peer_name' => false,
-                    ],
-                ]);
-                $cacert = @file_get_contents('https://curl.se/ca/cacert.pem', false, $context);
-                if ($cacert) {
-                    file_put_contents($downloadPath, $cacert);
-                    Log::info('Downloaded CA certificate to: ' . $downloadPath);
-                    return $downloadPath;
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to download CA certificate: ' . $e->getMessage());
-            }
-        } elseif (file_exists($downloadPath)) {
-            return $downloadPath;
+        // If not found, use bundled certificate
+        $bundledPath = base_path('resources/certs/cacert.pem');
+        if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
+            return $bundledPath;
         }
 
-        return null;
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
