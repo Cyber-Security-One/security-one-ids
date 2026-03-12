@@ -335,6 +335,7 @@ class LogDiscoveryService
             if ($lock->block(5)) {
                 try {
                     $configPaths = config('ids.custom_log_paths', []);
+                    $configPaths = is_array($configPaths) ? $configPaths : [];
 
                     // We shouldn't redundantly merge and write to cache if not needed.
                     // First check if it's already in config.
