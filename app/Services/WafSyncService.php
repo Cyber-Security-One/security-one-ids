@@ -1537,7 +1537,7 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-
+--- Resolution #1 ---
                 // Safely log the console user without CRLF injection
                 $logSafeConsoleUser = (string) preg_replace('/[\r\n]+/', ' ', $consoleUser);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$logSafeConsoleUser}\n", FILE_APPEND);
@@ -1567,6 +1567,40 @@ class WafSyncService
                                 file_put_contents($logFile, "[{$timestamp}] dscl set impossible password {$logSafeConsoleUser}: code={$returnCode}\n", FILE_APPEND);
                             }
                         }
+                    }
+                }
+
+--- Resolution #2 ---
+                    if (!$user) continue;
+
+                    // Allow alphanumeric, underscore, hyphen, and period (standard macOS username format)
+                    if (!preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) {
+                        $logSafeUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+                        file_put_contents($logFile, "[{$timestamp}] Invalid user format: {$logSafeUser}, skipping enable operation\n", FILE_APPEND);
+                        Log::warning("Invalid user format detected: {$logSafeUser}");
+                        continue;
+                    }
+
+                    $logSafeUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+
+                    // Prevent OS command injection attacks by escaping the user input
+                    $safeUser = escapeshellarg($user);
+
+                    // Remove DisabledUser from AuthenticationAuthority
+                    exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$logSafeUser}: code={$returnCode}\n", FILE_APPEND);
+
+                    // Re-enable with pwpolicy
+                    exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$logSafeUser}: code={$returnCode}\n", FILE_APPEND);
+
+--- Resolution #3 ---
+     * @throws \RuntimeException
+
+--- Resolution #4 ---
+
+--- Resolution #5 ---
+        throw new \RuntimeException("CA certificate bundle missing: {$bundledPath}");
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1625,6 +1659,19 @@ class WafSyncService
 
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
+<<<<<<< /tmp/merge_ours_ka7ipstd13vr3EfBoqq
+                    if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+
+                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
+
+                    // Remove DisabledUser from AuthenticationAuthority
+                    exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
+
+                    // Re-enable with pwpolicy
+                    exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode}\n", FILE_APPEND);
+=======
                     if (!$user) continue;
 
                     // Allow alphanumeric, underscore, hyphen, and period (standard macOS username format)
@@ -1647,6 +1694,7 @@ class WafSyncService
                     // Re-enable with pwpolicy
                     exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$logSafeUser}: code={$returnCode}\n", FILE_APPEND);
+>>>>>>> /tmp/merge_theirs_re5e74pun2lc0gHXI0X
                 }
 
             } else {
@@ -2894,7 +2942,11 @@ class WafSyncService
     /**
      * Get CA certificate path for Windows SSL verification
      *
+<<<<<<< /tmp/merge_ours_ka7ipstd13vr3EfBoqq
+     * @throws \App\Exceptions\CertificateBundleMissingException
+=======
      * @throws \RuntimeException
+>>>>>>> /tmp/merge_theirs_re5e74pun2lc0gHXI0X
      */
     protected function getCaCertPath(): string
     {
@@ -2926,7 +2978,11 @@ class WafSyncService
                 return $path;
             }
         }
+<<<<<<< /tmp/merge_ours_ka7ipstd13vr3EfBoqq
 
+=======
+
+>>>>>>> /tmp/merge_theirs_re5e74pun2lc0gHXI0X
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
@@ -2935,7 +2991,11 @@ class WafSyncService
         }
 
         Log::error('CA certificate bundle missing: ' . $bundledPath);
+<<<<<<< /tmp/merge_ours_ka7ipstd13vr3EfBoqq
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+=======
         throw new \RuntimeException("CA certificate bundle missing: {$bundledPath}");
+>>>>>>> /tmp/merge_theirs_re5e74pun2lc0gHXI0X
     }
 
     /**
