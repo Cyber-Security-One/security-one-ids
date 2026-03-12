@@ -302,7 +302,7 @@ class LogDiscoveryService
      */
     public function addCustomPath(string $path): bool
     {
-        if (!is_readable($path)) {
+        if (!is_file($path) || !is_readable($path)) {
             return false;
         }
 
