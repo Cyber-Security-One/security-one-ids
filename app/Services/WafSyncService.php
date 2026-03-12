@@ -67,14 +67,9 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
 
         return $http;
@@ -1550,8 +1545,7 @@ class WafSyncService
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
                 $consoleUser = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
-
-                $cleanLogConsoleUser = $this->sanitizeForLog($consoleUser);
+$cleanLogConsoleUser = $this->sanitizeForLog($consoleUser);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanLogConsoleUser}\n", FILE_APPEND);
 
                 if ($consoleUser && preg_match('/^[a-zA-Z0-9_.-]+$/', $consoleUser) && $consoleUser !== 'root' && $consoleUser !== '_mbsetupuser') {
@@ -1572,7 +1566,7 @@ class WafSyncService
 
                     if ($returnCode !== 0) {
                         // Method 3: Set an impossible password hash
-                        exec("sudo dscl . -passwd {$escapedConsolePath} '*' 2>&1", $output, $returnCode);
+exec("sudo dscl . -passwd {$escapedConsolePath} '*' 2>&1", $output, $returnCode);
                         file_put_contents($logFile, "[{$timestamp}] dscl set impossible password for {$cleanLogConsoleUser}: code={$returnCode}\n", FILE_APPEND);
                     }
                 } else {
@@ -1633,8 +1627,7 @@ class WafSyncService
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
-
-                    $escapedUser = escapeshellarg($user);
+$escapedUser = escapeshellarg($user);
                     $escapedUserPath = escapeshellarg("/Users/{$user}");
                     $cleanLogUser = $this->sanitizeForLog($user);
 
@@ -1646,7 +1639,6 @@ class WafSyncService
                     exec("sudo pwpolicy -u {$escapedUser} enableuser 2>&1", $output, $returnCode);
                     file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanLogUser}: code={$returnCode}\n", FILE_APPEND);
                 }
-
             } else {
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
@@ -2891,8 +2883,10 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2922,8 +2916,7 @@ class WafSyncService
                 return $path;
             }
         }
-
-        // If not found, try to download it
+// If not found, try to download it
         $downloadPath = sys_get_temp_dir() . '\\cacert.pem';
         if (!file_exists($downloadPath)) {
             try {
