@@ -351,43 +351,41 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        // Check new key first
-        $paths = cache()->get(self::CACHE_KEY);
+        $paths = cache()->get(self::CACHE_KEY, []);
+        $oldPaths = cache()->get(self::LEGACY_CACHE_KEY);
 
-        if ($paths !== null) {
+        if ($oldPaths === null) {
             return $paths;
         }
 
-        // Fallback to old key, migrate if present
-        $oldPaths = cache()->get(self::LEGACY_CACHE_KEY);
+        $lock = cache()->lock(self::CACHE_KEY . '_lock', 5);
 
-        if ($oldPaths !== null) {
-            $lock = cache()->lock(self::CACHE_KEY . '_lock', 5);
+        try {
+            if ($lock->block(5)) {
+                $latestPaths = cache()->get(self::CACHE_KEY, []);
+                $latestOldPaths = cache()->get(self::LEGACY_CACHE_KEY);
 
-            try {
-                if ($lock->block(5)) {
-                    $latestPaths = cache()->get(self::CACHE_KEY);
-                    if ($latestPaths !== null) {
-                        return $latestPaths;
-                    }
-
-                    Log::warning(sprintf('Migrating legacy cache key %s to %s', self::LEGACY_CACHE_KEY, self::CACHE_KEY));
-                    cache()->forever(self::CACHE_KEY, $oldPaths);
-                    cache()->forget(self::LEGACY_CACHE_KEY);
-                }
-            } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-                $latestPaths = cache()->get(self::CACHE_KEY);
-                if ($latestPaths !== null) {
+                if ($latestOldPaths === null) {
                     return $latestPaths;
                 }
-            } finally {
-                optional($lock)->release();
-            }
 
-            return $oldPaths;
+                $mergedPaths = array_values(array_unique(array_merge($latestPaths, $latestOldPaths)));
+                Log::warning(sprintf('Migrating legacy cache key %s to %s', self::LEGACY_CACHE_KEY, self::CACHE_KEY));
+                cache()->forever(self::CACHE_KEY, $mergedPaths);
+                cache()->forget(self::LEGACY_CACHE_KEY);
+
+                return $mergedPaths;
+            }
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+            $latestPaths = cache()->get(self::CACHE_KEY, []);
+            $latestOldPaths = cache()->get(self::LEGACY_CACHE_KEY, []);
+
+            return array_values(array_unique(array_merge($latestPaths, $latestOldPaths)));
+        } finally {
+            optional($lock)->release();
         }
 
-        return [];
+        return array_values(array_unique(array_merge($paths, $oldPaths)));
     }
 
     /**
@@ -396,20 +394,18 @@ class LogDiscoveryService
      */
     private function getPathsWithoutLock(): array
     {
-        $paths = cache()->get(self::CACHE_KEY);
-        if ($paths !== null) {
-            return $paths;
-        }
-
+        $paths = cache()->get(self::CACHE_KEY, []);
         $oldPaths = cache()->get(self::LEGACY_CACHE_KEY);
+
         if ($oldPaths !== null) {
+            $mergedPaths = array_values(array_unique(array_merge($paths, $oldPaths)));
             Log::warning(sprintf('Migrating legacy cache key %s to %s', self::LEGACY_CACHE_KEY, self::CACHE_KEY));
-            cache()->forever(self::CACHE_KEY, $oldPaths);
+            cache()->forever(self::CACHE_KEY, $mergedPaths);
             cache()->forget(self::LEGACY_CACHE_KEY);
-            return $oldPaths;
+            return $mergedPaths;
         }
 
-        return [];
+        return $paths;
     }
 
     /**
