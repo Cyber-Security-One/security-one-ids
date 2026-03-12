@@ -356,23 +356,18 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         // Merge old and new keys to prevent data loss during rolling deployments
-        $newPaths = cache()->get('ids.custom_log_paths');
-        $oldPaths = cache()->get('ids_custom_log_paths');
+        $newPaths = cache()->get('ids.custom_log_paths', []);
+        $legacyPaths = cache()->get('ids_custom_log_paths', []);
 
-        $newPaths = is_array($newPaths) ? $newPaths : [];
-
-        if ($oldPaths !== null) {
-            Log::info('Merging and migrating legacy cache key ids_custom_log_paths');
-            $oldPaths = is_array($oldPaths) ? $oldPaths : [];
-            $mergedPaths = array_values(array_unique(array_merge($newPaths, $oldPaths)));
-
-            cache()->forever('ids.custom_log_paths', $mergedPaths);
-            cache()->forget('ids_custom_log_paths');
-
-            return $mergedPaths;
+        if (!is_array($newPaths)) {
+            $newPaths = [];
+        }
+        if (!is_array($legacyPaths)) {
+            $legacyPaths = [];
         }
 
-        return $newPaths;
+        // Just merge and return to avoid unlocked cache overwrites
+        return array_values(array_unique(array_merge($newPaths, $legacyPaths)));
     }
 
     /**
