@@ -514,7 +514,7 @@ class ClamavService
             Log::info('Installing ClamAV via chocolatey', ['choco_path' => $chocoPath]);
 
             // Use full path to choco.exe since PATH may not be updated in current process
-            $chocoCmd = file_exists($chocoPath) 
+            $chocoCmd = file_exists($chocoPath)
                 ? "& '{$chocoPath}' install clamav -y"
                 : 'choco install clamav -y';
 
@@ -886,7 +886,7 @@ class ClamavService
                 $output = implode("\n", $outputLines);
             } else {
                 // Unix: Build command with proper PATH for macOS Homebrew
-                $pathPrefix = $platform === 'macos' 
+                $pathPrefix = $platform === 'macos'
                     ? 'export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && '
                     : '';
 
@@ -1050,7 +1050,7 @@ class ClamavService
 
             // Only include scan results if they have actual data (not heartbeat defaults)
             // This prevents resetting existing counts in WAF Hub
-            if (isset($scanResult['last_scan']) || 
+            if (isset($scanResult['last_scan']) ||
                 (isset($scanResult['scanned_files']) && $scanResult['scanned_files'] > 0) ||
                 (isset($scanResult['infected_files']) && $scanResult['infected_files'] > 0)) {
                 $payload['last_scan'] = $scanResult['last_scan'] ?? now()->toDateTimeString();
