@@ -33,6 +33,10 @@ class WafSyncServiceUserValidationTest extends TestCase
         // Reject spaces
         $this->assertFalse($service->isValidMacOsUsername('john doe'));
 
+        // Reject leading dash to prevent command injection
+        $this->assertFalse($service->isValidMacOsUsername('-admin'));
+        $this->assertFalse($service->isValidMacOsUsername('--root'));
+
         // Reject quotes and shell metacharacters
         $this->assertFalse($service->isValidMacOsUsername('user"name'));
         $this->assertFalse($service->isValidMacOsUsername("user'name"));
