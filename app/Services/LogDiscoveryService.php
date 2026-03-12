@@ -309,7 +309,7 @@ class LogDiscoveryService
             return false;
         }
 
-        $lock = cache()->lock('lock::ids.custom_log_paths_add', self::LOCK_TIMEOUT);
+$lock = cache()->lock('lock::ids.custom_log_paths_add', self::LOCK_TIMEOUT);
         $acquired = false;
         $delayMicroseconds = 10000;
 
@@ -331,7 +331,7 @@ class LogDiscoveryService
                 if (!in_array($path, $allPaths, true)) {
                     $cachedPaths[] = $path;
                     $cachedPaths = array_values(array_unique($cachedPaths));
-                    cache()->forever('ids.custom_log_paths', $cachedPaths);
+cache()->forever('ids.custom_log_paths', $cachedPaths);
                 }
             } else {
                 return false;
@@ -353,13 +353,13 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        $newKey = 'ids.custom_log_paths';
+$newKey = 'ids.custom_log_paths';
 
         if (self::$migrated) {
             return cache()->get($newKey, []);
         }
 
-        // We check for legacy keys to migrate. But 'ids.custom_log_paths' cannot be a legacy key if it's the new key!
+// We check for legacy keys to migrate. But 'ids.custom_log_paths' cannot be a legacy key if it's the new key!
         // Originally this code was migrating to ids::custom_log_paths from ids.custom_log_paths
         $legacyKeys = ['ids_custom_log_paths'];
 
@@ -372,7 +372,7 @@ class LogDiscoveryService
         }
 
         if ($needsMigration) {
-            $lock = cache()->lock('lock::ids.custom_log_paths_migrate', self::LOCK_TIMEOUT);
+$lock = cache()->lock('lock::ids.custom_log_paths_migrate', self::LOCK_TIMEOUT);
             $acquired = false;
             $delayMicroseconds = 10000;
 
