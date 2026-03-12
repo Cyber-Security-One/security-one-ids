@@ -7,11 +7,14 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Log Discovery Service
- * 
+ *
  * Auto-discovers web server log files on the system
  */
 class LogDiscoveryService
 {
+    public static bool $migrated = false;
+    private const LOCK_TIMEOUT = 30;
+
     /**
      * Common web server log file locations to scan
      */
@@ -22,7 +25,7 @@ class LogDiscoveryService
         '/var/log/nginx/*-access.log',
         '/var/log/nginx/error.log',
         '/usr/local/nginx/logs/access.log',
-        
+
         // === Linux Apache ===
         '/var/log/apache2/access.log',
         '/var/log/apache2/*/access.log',
@@ -30,7 +33,7 @@ class LogDiscoveryService
         '/var/log/apache2/other_vhosts_access.log',
         '/var/log/httpd/access_log',
         '/var/log/httpd/*/access_log',
-        
+
         // === macOS ===
         '/var/log/apache2/access_log',
         '/var/log/apache2/error_log',
@@ -41,7 +44,7 @@ class LogDiscoveryService
         '/opt/homebrew/var/log/httpd/access_log',
         '/private/var/log/apache2/access_log',
         '/private/var/log/apache2/error_log',
-        
+
         // === Docker / Container ===
         '/var/log/host-nginx/access.log',
         '/var/log/host-nginx/*/access.log',
@@ -51,7 +54,7 @@ class LogDiscoveryService
         '/var/log/host-httpd/access_log',
         '/var/log/custom-logs-*/access.log',
         '/var/log/custom-logs-*/*.log',
-        
+
         // === Common custom paths ===
         '/var/www/*/logs/access.log',
         '/home/*/logs/access.log',
@@ -71,13 +74,13 @@ class LogDiscoveryService
         '/var/log/ufw.log',
         '/var/log/fail2ban.log',
         '/var/log/firewalld',
-        
+
         // === macOS system logs ===
         '/var/log/system.log',
         '/var/log/install.log',
         '/private/var/log/system.log',
         '/private/var/log/asl/*.asl',
-        
+
         // === Application logs ===
         '/var/log/mysql/error.log',
         '/var/log/postgresql/*.log',
@@ -236,7 +239,7 @@ class LogDiscoveryService
         }
 
         $type = $this->detectServerType($path);
-        
+
         return [
             'path' => $path,
             'type' => $type,
@@ -273,7 +276,7 @@ class LogDiscoveryService
 
         // Try to match against known formats
         $sampleLine = end($lines);
-        
+
         foreach (self::LOG_FORMATS as $name => $pattern) {
             if (preg_match($pattern, $sampleLine)) {
                 return $name;
@@ -306,17 +309,42 @@ class LogDiscoveryService
             return false;
         }
 
-        $cachedPaths = $this->getCustomPaths();
+$lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
+        $acquired = false;
+        $delayMicroseconds = 10000;
 
-        if (!in_array($path, $cachedPaths, true)) {
-            // Check config once as a fallback if the path is not in the cache
-            $configPaths = config('ids.custom_log_paths', []);
+        try {
+            for ($i = 0; $i < 10; $i++) {
+                if ($acquired = $lock->get()) {
+                    break;
+                }
+                usleep($delayMicroseconds);
+                $delayMicroseconds = min($delayMicroseconds * 2, 100000);
+            }
 
-            $mergedPaths = array_values(array_unique(array_merge($configPaths, $cachedPaths, [$path])));
-            cache()->forever('ids.custom_log_paths', $mergedPaths);
+            if ($acquired) {
+                $cachedPaths = $this->getCustomPaths();
 
-            // Keep config in sync for the current request lifecycle
-            config(['ids.custom_log_paths' => $mergedPaths]);
+                if (!in_array($path, $cachedPaths, true)) {
+                    // Check config once as a fallback if the path is not in the cache
+                    $configPaths = config('ids.custom_log_paths', []);
+
+                    $mergedPaths = array_values(array_unique(array_merge($configPaths, $cachedPaths, [$path])));
+                    cache()->forever('ids::custom_log_paths', $mergedPaths);
+
+                    // Keep config in sync for the current request lifecycle
+                    config(['ids.custom_log_paths' => $mergedPaths]);
+                }
+            } else {
+                return false;
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
+            return false;
+        } finally {
+            if ($acquired) {
+                $lock->release();
+            }
         }
 
         return true;
@@ -327,9 +355,83 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        return cache()->get('ids.custom_log_paths', function () {
-            return cache()->get('ids_custom_log_paths', []);
-        });
+$newKey = 'ids::custom_log_paths';
+
+        if (self::$migrated) {
+            return cache()->get($newKey, []);
+        }
+
+        $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
+
+        $needsMigration = false;
+        foreach ($legacyKeys as $legacyKey) {
+            if (cache()->has($legacyKey)) {
+                $needsMigration = true;
+                break;
+            }
+        }
+
+        if ($needsMigration) {
+            $lock = cache()->lock('lock::ids::custom_log_paths_migrate', self::LOCK_TIMEOUT);
+            $acquired = false;
+            $delayMicroseconds = 10000;
+
+            try {
+                for ($i = 0; $i < 10; $i++) {
+                    if ($acquired = $lock->get()) {
+                        break;
+                    }
+                    usleep($delayMicroseconds);
+                    $delayMicroseconds = min($delayMicroseconds * 2, 100000);
+                }
+
+                if ($acquired) {
+                    // Double check
+                    $needsMigration = false;
+                    foreach ($legacyKeys as $legacyKey) {
+                        if (cache()->has($legacyKey)) {
+                            $needsMigration = true;
+                            break;
+                        }
+                    }
+
+                    if ($needsMigration) {
+                        $merged = cache()->get($newKey, []);
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            if (cache()->has($legacyKey)) {
+                                $legacyData = cache()->get($legacyKey, []);
+                                if (is_array($legacyData)) {
+                                    $merged = array_merge($merged, $legacyData);
+                                }
+                            }
+                        }
+
+                        // Remove static config values from cache
+                        $configPaths = config('ids.custom_log_paths', []);
+                        $merged = array_diff($merged, $configPaths);
+
+                        $merged = array_values(array_unique($merged));
+                        cache()->forever($newKey, $merged);
+
+                        foreach ($legacyKeys as $legacyKey) {
+                            cache()->forget($legacyKey);
+                        }
+                    }
+                    self::$migrated = true;
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning("Failed to migrate custom paths: " . $e->getMessage());
+            } finally {
+                if ($acquired) {
+                    $lock->release();
+                }
+            }
+        } else {
+            self::$migrated = true;
+        }
+
+        return cache()->get($newKey, []);
     }
 
     /**
