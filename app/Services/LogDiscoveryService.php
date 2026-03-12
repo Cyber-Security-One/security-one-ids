@@ -323,18 +323,21 @@ $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
             }
 
             if ($acquired) {
-                $cachedPaths = $this->getCustomPaths();
-                
-                // Check config once as a fallback if the path is not in the cache
-                $configPaths = config('ids.custom_log_paths', []);
+                try {
+                    $cachedPaths = $this->getCustomPaths();
 
-                $mergedPaths = array_values(array_unique(array_merge($configPaths, $cachedPaths, [$path])));
-                
-                if (!in_array($path, $mergedPaths, true)) {
-                    cache()->forever('ids::custom_log_paths', $mergedPaths);
-                    
-                    // Keep config in sync for the current request lifecycle
-                    config(['ids.custom_log_paths' => $mergedPaths]);
+                    if (!in_array($path, $cachedPaths, true)) {
+                        // Check config once as a fallback if the path is not in the cache
+                        $configPaths = config('ids.custom_log_paths', []);
+
+                        $mergedPaths = array_values(array_unique(array_merge($configPaths, $cachedPaths, [$path])));
+                        cache()->forever('ids::custom_log_paths', $mergedPaths);
+
+                        // Keep config in sync for the current request lifecycle
+                        config(['ids.custom_log_paths' => $mergedPaths]);
+                    }
+                } finally {
+                    $lock->release();
                 }
             } else {
                 return false;
@@ -346,6 +349,7 @@ $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
             if ($acquired) {
                 $lock->release();
             }
+        }
         }
 
         return true;
@@ -408,7 +412,7 @@ $newKey = 'ids::custom_log_paths';
                             }
                         }
 
-                        // Remove static config values from cache to avoid duplication
+                        // Remove static config values from cache
                         $configPaths = config('ids.custom_log_paths', []);
                         $merged = array_diff($merged, $configPaths);
 
