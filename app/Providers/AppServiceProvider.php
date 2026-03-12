@@ -22,14 +22,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(Application $app, LoggerInterface $logger, ConfigRepository $config): void
     {
-$token = $config->get('ids.agent_token', '');
+// Only enforce token check during background processes that are explicitly critical.
+        // E.g., block queue worker or schedule worker if misconfigured.
+        $token = $config->get('ids.agent_token', '');
         $isValidToken = is_string($token) && trim($token) !== '';
 
-        if ($app->environment('production') && !$isValidToken) {
+        if ($this->app->environment('production') && !$isValidToken) {
             // Only enforce token check during background processes that are explicitly critical.
             // E.g., block queue worker or schedule worker if misconfigured.
-            if (!$app->isDownForMaintenance()) {
-                if ($app->runningConsoleCommand('queue:work') || $app->runningConsoleCommand('schedule:run') || $app->runningConsoleCommand('schedule:work')) {
+            if (!$this->app->isDownForMaintenance()) {
+                if ($this->app->runningConsoleCommand('queue:work') || $this->app->runningConsoleCommand('schedule:run') || $this->app->runningConsoleCommand('schedule:work')) {
                     throw new \RuntimeException('AGENT_TOKEN must be set in production environment for background processes.');
                 }
             } else {
