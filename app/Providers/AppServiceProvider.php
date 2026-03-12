@@ -21,7 +21,7 @@ class AppServiceProvider extends ServiceProvider
     {
         // Only enforce token check during background processes that are explicitly critical.
         // E.g., block queue worker or schedule worker if misconfigured.
-        if ($this->app->environment('production') && $this->app->runningInConsole() && trim((string) (config('ids.agent_token') ?? '')) === '') {
+if ($this->app->environment('production') && $this->app->runningInConsole() && trim((string) (config('ids.agent_token') ?? '')) === '') {
             if (!$this->app->isDownForMaintenance()) {
                 if ($this->app->runningConsoleCommand('queue:work') || $this->app->runningConsoleCommand('schedule:run') || $this->app->runningConsoleCommand('schedule:work')) {
                     throw new \RuntimeException('AGENT_TOKEN must be set in production environment for background processes.');
