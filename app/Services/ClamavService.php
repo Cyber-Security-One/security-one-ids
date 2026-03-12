@@ -31,14 +31,9 @@ class ClamavService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            if ($cacertPath) {
-                $http = $http->withOptions([
-                    'verify' => $cacertPath,
-                ]);
-            } else {
-                // No cacert.pem found — disable SSL verification as fallback
-                $http = $http->withoutVerifying();
-            }
+            $http = $http->withOptions([
+                'verify' => $cacertPath,
+            ]);
         }
 
         return $http;
@@ -46,8 +41,10 @@ class ClamavService
 
     /**
      * Get CA certificate path for Windows SSL verification
+     *
+     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): ?string
+    protected function getCaCertPath(): string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -79,10 +76,12 @@ class ClamavService
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
+            Log::debug('Using bundled CA certificate at: ' . $bundledPath);
             return $bundledPath;
         }
 
-        return null;
+        Log::error('CA certificate bundle missing: ' . $bundledPath);
+        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
     }
 
     /**
