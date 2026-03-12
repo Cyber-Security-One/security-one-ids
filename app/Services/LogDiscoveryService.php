@@ -12,9 +12,6 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-    public static bool $migrated = false;
-    private const LOCK_TIMEOUT = 30;
-
     /**
      * Common web server log file locations to scan
      */
@@ -309,36 +306,13 @@ class LogDiscoveryService
             return false;
         }
 
-$lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
-        $acquired = false;
-        $delayMicroseconds = 10000;
+        $cachedPaths = $this->getCustomPaths();
 
-        try {
-            for ($i = 0; $i < 10; $i++) {
-                if ($acquired = $lock->get()) {
-                    break;
-                }
-                usleep($delayMicroseconds);
-                $delayMicroseconds = min($delayMicroseconds * 2, 100000);
-            }
+        if (!in_array($path, $cachedPaths, true)) {
+            $cachedPaths[] = $path;
 
-            if ($acquired) {
-                $cachedPaths = $this->getCustomPaths();
-
-                if (!in_array($path, $cachedPaths, true)) {
-                    $cachedPaths[] = $path;
-                    cache()->forever('ids.custom_log_paths', $cachedPaths);
-                }
-            } else {
-                return false;
-            }
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning("Failed to add custom path: " . $e->getMessage());
-            return false;
-        } finally {
-            if ($acquired) {
-                $lock->release();
-            }
+            // Store in cache for persistence
+            cache()->forever('ids.custom_log_paths', $cachedPaths);
         }
 
         return true;
@@ -349,7 +323,7 @@ $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
      */
     public function getCustomPaths(): array
     {
-$newKey = 'ids.custom_log_paths';
+        $newKey = 'ids.custom_log_paths';
         $oldKey = 'ids_custom_log_paths';
 
         $paths = cache()->get($newKey);
