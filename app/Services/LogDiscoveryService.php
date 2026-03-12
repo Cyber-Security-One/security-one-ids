@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
+public static bool $migrated = false;
     private const LOCK_TIMEOUT = 30;
 
     /**
@@ -311,11 +312,11 @@ class LogDiscoveryService
         $lock = cache()->lock('lock::ids::custom_log_paths_add', self::LOCK_TIMEOUT);
         $acquired = false;
         $delayMicroseconds = 10000;
-        $startTime = microtime(true);
+$startTime = microtime(true);
 
-        try {
-            while (!($acquired = $lock->get())) {
-                if ((microtime(true) - $startTime) >= self::LOCK_TIMEOUT) {
+            try {
+                while (!($acquired = $lock->get())) {
+                    if ((microtime(true) - $startTime) >= self::LOCK_TIMEOUT) {
                     break;
                 }
                 usleep($delayMicroseconds);
@@ -354,6 +355,9 @@ class LogDiscoveryService
     public function getCustomPaths(): array
     {
         $newKey = 'ids::custom_log_paths';
+if (self::$migrated) {
+            return cache()->get($newKey, []);
+        }
         $legacyKeys = ['ids_custom_log_paths', 'ids.custom_log_paths'];
 
         $needsMigration = false;
@@ -368,11 +372,11 @@ class LogDiscoveryService
             $lock = cache()->lock('lock::ids::custom_log_paths_migrate', self::LOCK_TIMEOUT);
             $acquired = false;
             $delayMicroseconds = 10000;
-            $startTime = microtime(true);
+$startTime = microtime(true);
 
-            try {
-                while (!($acquired = $lock->get())) {
-                    if ((microtime(true) - $startTime) >= self::LOCK_TIMEOUT) {
+                try {
+                    while (!($acquired = $lock->get())) {
+                        if ((microtime(true) - $startTime) >= self::LOCK_TIMEOUT) {
                         break;
                     }
                     usleep($delayMicroseconds);
@@ -412,6 +416,7 @@ class LogDiscoveryService
                             cache()->forget($legacyKey);
                         }
                     }
+self::$migrated = true;
                 }
             } catch (\Throwable $e) {
                 \Illuminate\Support\Facades\Log::warning("Failed to migrate custom paths: " . $e->getMessage());
@@ -420,6 +425,8 @@ class LogDiscoveryService
                     $lock->release();
                 }
             }
+} else {
+            self::$migrated = true;
         }
 
         return cache()->get($newKey, []);
