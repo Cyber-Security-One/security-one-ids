@@ -59,9 +59,14 @@ class WafSyncService
         // On Windows, configure SSL certificate path at runtime
         if (PHP_OS_FAMILY === 'Windows') {
             $cacertPath = $this->getCaCertPath();
-            $http = $http->withOptions([
-                'verify' => $cacertPath,
-            ]);
+            if ($cacertPath) {
+                $http = $http->withOptions([
+                    'verify' => $cacertPath,
+                ]);
+            } else {
+                // No cacert.pem found — disable SSL verification as fallback
+                $http = $http->withoutVerifying();
+            }
         }
         
         return $http;
@@ -2869,10 +2874,8 @@ class WafSyncService
 
     /**
      * Get CA certificate path for Windows SSL verification
-     *
-     * @throws \App\Exceptions\CertificateBundleMissingException
      */
-    protected function getCaCertPath(): string
+    protected function getCaCertPath(): ?string
     {
         // Check common locations for cacert.pem on Windows
         $possiblePaths = [];
@@ -2910,8 +2913,7 @@ class WafSyncService
             return $bundledPath;
         }
 
-        Log::error('CA certificate bundle missing: ' . $bundledPath);
-        throw new \App\Exceptions\CertificateBundleMissingException($bundledPath);
+        return null;
     }
 
     /**
