@@ -20,12 +20,14 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+// Only enforce token check during background processes that are explicitly critical.
+        // E.g., block queue worker or schedule worker if misconfigured.
         $this->ensureAgentTokenConfigured();
     }
 
     /**
      * Validates that the AGENT_TOKEN is properly configured in production environments.
-     * Throws an exception for web requests or logs a warning for CLI commands.
+     * Throws an exception for web requests and critical background processes, logs a warning otherwise.
      */
     private function ensureAgentTokenConfigured(): void
     {
@@ -34,7 +36,14 @@ class AppServiceProvider extends ServiceProvider
                 throw new RuntimeException('AGENT_TOKEN must be set in production environment.');
             }
 
-            \Illuminate\Support\Facades\Log::warning('AGENT_TOKEN is empty in production environment during console command. This may lead to an insecure configuration cache.');
+            // Block critical background processes that require the token.
+            if ($this->app->isDownForMaintenance() || !$this->app->runningConsoleCommand('queue:work') && !$this->app->runningConsoleCommand('schedule:run') && !$this->app->runningConsoleCommand('schedule:work')) {
+                \Illuminate\Support\Facades\Log::warning('AGENT_TOKEN is empty in production environment during console command. This may lead to an insecure configuration cache.');
+            } else {
+                throw new \RuntimeException('AGENT_TOKEN must be set in production environment for background processes.');
+            }
+        }
+    }
         }
     }
 }
