@@ -357,7 +357,7 @@ class LogDiscoveryService
     {
         $newKey = 'ids::custom_log_paths';
 
-        if (self::$migrated) {
+        if (self::$migrated && !cache()->has('ids_custom_log_paths') && !cache()->has('ids.custom_log_paths')) {
             return cache()->get($newKey, []);
         }
 
@@ -372,11 +372,11 @@ class LogDiscoveryService
         }
 
         if ($needsMigration) {
-            $lock = cache()->lock('lock::ids::custom_log_paths_migrate', self::LOCK_TIMEOUT);
             $acquired = false;
             $delayMicroseconds = 10000;
 
             try {
+                $lock = cache()->lock('lock::ids::custom_log_paths_migrate', self::LOCK_TIMEOUT);
                 for ($i = 0; $i < 10; $i++) {
                     if ($acquired = $lock->get()) {
                         break;
