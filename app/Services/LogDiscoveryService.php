@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Log;
  */
 class LogDiscoveryService
 {
-    private const LOCK_TIMEOUT = 5;
+private const LOCK_TIMEOUT = 5;
     private const LOCK_BLOCK_SECONDS = 3;
     private const MAX_RETRIES = 3;
 
@@ -311,7 +311,7 @@ class LogDiscoveryService
             return false;
         }
 
-        $attempts = 0;
+$attempts = 0;
 
         while ($attempts < self::MAX_RETRIES) {
             try {
@@ -348,6 +348,9 @@ class LogDiscoveryService
         }
 
         return false;
+        }
+
+        return false;
     }
 
     /**
@@ -355,7 +358,7 @@ class LogDiscoveryService
      */
     public function getCustomPaths(): array
     {
-        // Merge old and new keys to prevent data loss during rolling deployments
+// Merge old and new keys to prevent data loss during rolling deployments
         $newPaths = cache()->get('ids.custom_log_paths', []);
         $legacyPaths = cache()->get('ids_custom_log_paths', []);
 
