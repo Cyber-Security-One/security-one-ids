@@ -5,6 +5,7 @@ namespace App\Services\Detection;
 use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use App\Traits\DetectsPlatform;
 
 /**
  * Suricata IDS/IPS Detection Engine
