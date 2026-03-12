@@ -11,12 +11,14 @@ class LogDiscoveryServiceTest extends TestCase
 {
     private LogDiscoveryService $service;
     private array $tempFiles = [];
+    private ?string $originalCacheDefault = null;
 
     protected function setUp(): void
     {
         parent::setUp();
         $this->service = app(LogDiscoveryService::class);
         // Ensure we start with a clean state without modifying global config across tests
+        $this->originalCacheDefault = Config::get('cache.default');
         Config::set('cache.default', 'array');
         Cache::forget('ids_custom_log_paths');
         Config::set('ids.custom_log_paths', []);
@@ -26,6 +28,7 @@ class LogDiscoveryServiceTest extends TestCase
     {
         Cache::forget('ids_custom_log_paths');
         Config::set('ids.custom_log_paths', []);
+        Config::set('cache.default', $this->originalCacheDefault);
 
         foreach ($this->tempFiles as $tempFile) {
             if (is_file($tempFile)) {
