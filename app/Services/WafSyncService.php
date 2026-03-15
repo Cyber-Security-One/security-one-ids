@@ -1537,7 +1537,8 @@ class WafSyncService
             } elseif (PHP_OS_FAMILY === 'Darwin') {
                 echo "🚫 Disabling macOS user login...\n";
                 // Get current console user (may be different from running user)
-$user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
+--- Resolution #1 ---
+                $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
                 $cleanUser = preg_replace('/[\r\n]+/', ' ', $user);
                 file_put_contents($logFile, "[{$timestamp}] Console user: {$cleanUser}\n", FILE_APPEND);
 
@@ -1564,7 +1565,7 @@ $user = trim(exec("stat -f '%Su' /dev/console 2>/dev/null") ?: '');
 
                     if ($returnCode1 !== 0) {
                         // Method 2: Lock the user's password (they won't be able to login)
-try {
+                        try {
                             $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'disableuser']);
                             $process2->setTimeout(60);
                             $process2->run();
@@ -1577,10 +1578,100 @@ try {
                             $returnCode2 = 1;
                             file_put_contents($logFile, "[{$timestamp}] pwpolicy disable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
                         }
+
+--- Resolution #2 ---
+                        try {
+                            $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
+                            $process3->setTimeout(60);
+                            $process3->run();
+                            $returnCode3 = $process3->getExitCode() ?? 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode3}\n", FILE_APPEND);
+                        } catch (\Exception $e) {
+                            if (stripos($e->getMessage(), 'Permission denied') !== false) {
+                                throw $e;
+                            }
+                            $returnCode3 = 1;
+                            file_put_contents($logFile, "[{$timestamp}] dscl set impossible password error: " . $e->getMessage() . "\n", FILE_APPEND);
+                        }
+                    }
+
+                    if ($returnCode1 !== 0 && $returnCode2 !== 0 && $returnCode3 !== 0) {
+                        throw new \RuntimeException("All methods failed to disable user {$cleanUser}");
+                    }
+                }
+
+--- Resolution #3 ---
+                $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
+
+                if (!preg_match('/^[a-zA-Z0-9_.\-]+$/', $cleanUser)) continue;
+
+                // Remove DisabledUser from AuthenticationAuthority
+                // Retry up to 3 times with 1-second delay to handle transient directory service locks.
+                // $returnCode1 is initialized to -1 to represent 'not run' vs 0 (success) and >0 (failure).
+                $returnCode1 = -1;
+                $attempts1 = 0;
+                while ($returnCode1 !== 0 && $attempts1 < 3) {
+                    $attempts1++;
+                    try {
+                        $process1 = new SymfonyProcess(['sudo', 'dscl', '.', '-delete', '/Users/' . $cleanUser, 'AuthenticationAuthority']);
+                        $process1->setTimeout(60);
+                        $process1->run();
+                        $returnCode1 = $process1->getExitCode() ?? 1;
+                        if ($returnCode1 !== 0 && strpos($process1->getErrorOutput(), 'eDSNoSuchKey') !== false) {
+                            $returnCode1 = 0;
+                        }
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser}: code={$returnCode1}\n", FILE_APPEND);
+                    } catch (\Exception $e) {
+                        if (stripos($e->getMessage(), 'Permission denied') !== false) {
+                            throw $e;
+                        }
+                        $returnCode1 = 1;
+                        file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                    }
+                    if ($returnCode1 !== 0 && $attempts1 < 3) sleep(1);
+                }
+
+                // Re-enable with pwpolicy
+                // Retry up to 3 times with 1-second delay to handle transient directory service locks.
+                // $returnCode2 is initialized to -1 to represent 'not run' vs 0 (success) and >0 (failure).
+                $returnCode2 = -1;
+                $attempts2 = 0;
+                while ($returnCode2 !== 0 && $attempts2 < 3) {
+                    $attempts2++;
+                    try {
+                        $process2 = new SymfonyProcess(['sudo', 'pwpolicy', '-u', $cleanUser, 'enableuser']);
+                        $process2->setTimeout(60);
+                        $process2->run();
+                        $returnCode2 = $process2->getExitCode() ?? 1;
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser}: code={$returnCode2}\n", FILE_APPEND);
+                    } catch (\Exception $e) {
+                        if (stripos($e->getMessage(), 'Permission denied') !== false) {
+                            throw $e;
+                        }
+                        $returnCode2 = 1;
+                        file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$cleanUser} error: " . $e->getMessage() . "\n", FILE_APPEND);
+                    }
+                    if ($returnCode2 !== 0 && $attempts2 < 3) sleep(1);
+                }
+
+                if ($returnCode1 !== 0 || ($returnCode2 !== -1 && $returnCode2 !== 0)) {
+                    $overallSuccess = false;
+                }
+            }
+
+            if (!$overallSuccess) {
+                throw new \RuntimeException("Failed to enable one or more macOS users");
+            }
+
+--- Resolution #4 ---
                     }
 
                     if ($returnCode2 !== -1 && $returnCode2 !== 0) {
                         // Method 3: Set an impossible password hash
+<<<<<<< /tmp/merge_ours_vbp34gbqlg8d8TZchY9
+                        exec("sudo dscl . -passwd /Users/{$safeConsoleUser} '*' 2>&1", $output, $returnCode);
+                        file_put_contents($logFile, "[{$timestamp}] dscl set impossible password: code={$returnCode}\n", FILE_APPEND);
+=======
 try {
                             $process3 = new SymfonyProcess(['sudo', 'dscl', '.', '-passwd', '/Users/' . $cleanUser, '*']);
                             $process3->setTimeout(60);
@@ -1600,6 +1691,7 @@ try {
                         throw new \RuntimeException("All methods failed to disable user {$cleanUser}");
                     }
                 }
+>>>>>>> /tmp/merge_theirs_h225ai23ek6o4m5Anxd
                     }
                 } else {
                     file_put_contents($logFile, "[{$timestamp}] No valid console user found to disable\n", FILE_APPEND);
@@ -1661,6 +1753,20 @@ try {
                 foreach ($usersOutput as $user) {
                     $user = trim($user);
                     if (!$user || !preg_match('/^[a-zA-Z0-9_.-]+$/', $user)) continue;
+<<<<<<< /tmp/merge_ours_vbp34gbqlg8d8TZchY9
+
+                    $safeUser = preg_replace('/[\x00-\x1F\x7F]/u', '', str_replace(["\r", "\n"], ['\\r', '\\n'], $user)) ?? '';
+
+                    // Remove DisabledUser from AuthenticationAuthority
+                    exec("sudo dscl . -delete /Users/{$safeUser} AuthenticationAuthority 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] dscl clear auth for {$safeUser}: code={$returnCode}\n", FILE_APPEND);
+
+                    // Re-enable with pwpolicy
+                    exec("sudo pwpolicy -u {$safeUser} enableuser 2>&1", $output, $returnCode);
+                    file_put_contents($logFile, "[{$timestamp}] pwpolicy enable user {$safeUser}: code={$returnCode}\n", FILE_APPEND);
+                }
+
+=======
 
 $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
 
@@ -1725,6 +1831,7 @@ $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
                 }
                 }
 
+>>>>>>> /tmp/merge_theirs_h225ai23ek6o4m5Anxd
             } else {
                 echo "✅ Enabling Linux user login...\n";
                 exec('for user in $(awk -F: \'$3 >= 1000 && $3 < 65534 {print $1}\' /etc/passwd); do passwd -u "$user" 2>/dev/null; done', $output, $returnCode);
@@ -3003,7 +3110,11 @@ $cleanUser = (string) preg_replace('/[\r\n]+/', ' ', $user);
                 return $path;
             }
         }
+<<<<<<< /tmp/merge_ours_vbp34gbqlg8d8TZchY9
 
+=======
+
+>>>>>>> /tmp/merge_theirs_h225ai23ek6o4m5Anxd
         // If not found, use bundled certificate
         $bundledPath = base_path('resources/certs/cacert.pem');
         if (file_exists($bundledPath)) {
