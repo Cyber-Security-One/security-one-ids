@@ -79,12 +79,12 @@ if [ -z "$WAF_HUB_URL" ]; then
             _PENV=$(ps eww -o command= -p "$_PID" 2>/dev/null || true)
             if [ -n "$_PENV" ]; then
                 # Strip quotes from captured values
-                _TRY_WAF=$(echo "$_PENV" | tr ' ' '\n' | grep '^WAF_HUB_URL=' | head -1 | cut -d'=' -f2- | tr -d '"' "'" || true)
+                _TRY_WAF=$(echo "$_PENV" | tr ' ' '\n' | grep '^WAF_HUB_URL=' | head -1 | cut -d'=' -f2- | sed "s/[\"']//g" || true)
                 if [ -n "$_TRY_WAF" ]; then
                     WAF_HUB_URL="$_TRY_WAF"
-                    INSTALL_TOKEN=$(echo "$_PENV" | tr ' ' '\n' | grep '^INSTALL_TOKEN=' | head -1 | cut -d'=' -f2- | tr -d '"' "'" || true)
-                    AGENT_TOKEN=$(echo "$_PENV" | tr ' ' '\n' | grep '^AGENT_TOKEN=' | head -1 | cut -d'=' -f2- | tr -d '"' "'" || true)
-                    _PARENT_AGENT_NAME=$(echo "$_PENV" | tr ' ' '\n' | grep '^AGENT_NAME=' | head -1 | cut -d'=' -f2- | tr -d '"' "'" || true)
+                    INSTALL_TOKEN=$(echo "$_PENV" | tr ' ' '\n' | grep '^INSTALL_TOKEN=' | head -1 | cut -d'=' -f2- | sed "s/[\"']//g" || true)
+                    AGENT_TOKEN=$(echo "$_PENV" | tr ' ' '\n' | grep '^AGENT_TOKEN=' | head -1 | cut -d'=' -f2- | sed "s/[\"']//g" || true)
+                    _PARENT_AGENT_NAME=$(echo "$_PENV" | tr ' ' '\n' | grep '^AGENT_NAME=' | head -1 | cut -d'=' -f2- | sed "s/[\"']//g" || true)
                     if [ -n "$_PARENT_AGENT_NAME" ]; then
                         AGENT_NAME="$_PARENT_AGENT_NAME"
                     fi
@@ -485,10 +485,10 @@ if [ -z "$AGENT_TOKEN" ]; then
 fi
 
 # Strip any stray quotes from values before writing .env
-WAF_HUB_URL=$(echo "$WAF_HUB_URL" | tr -d '"' "'")
-INSTALL_TOKEN=$(echo "$INSTALL_TOKEN" | tr -d '"' "'")
-AGENT_TOKEN=$(echo "$AGENT_TOKEN" | tr -d '"' "'")
-AGENT_NAME=$(echo "$AGENT_NAME" | tr -d '"' "'")
+WAF_HUB_URL=$(echo "$WAF_HUB_URL" | sed "s/[\"']//g")
+INSTALL_TOKEN=$(echo "$INSTALL_TOKEN" | sed "s/[\"']//g")
+AGENT_TOKEN=$(echo "$AGENT_TOKEN" | sed "s/[\"']//g")
+AGENT_NAME=$(echo "$AGENT_NAME" | sed "s/[\"']//g")
 
 cat > "$INSTALL_DIR/.env" << EOF
 APP_NAME=SecurityOneIDS
