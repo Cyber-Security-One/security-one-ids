@@ -639,8 +639,15 @@ EOF
 </plist>
 EOF
     
-    launchctl load /Library/LaunchDaemons/com.securityone.ids.plist
-    launchctl load /Library/LaunchDaemons/com.securityone.ids.sync.plist
+    # Unload any existing daemons first (ignore errors)
+    launchctl bootout system/com.securityone.ids 2>/dev/null || launchctl unload /Library/LaunchDaemons/com.securityone.ids.plist 2>/dev/null || true
+    launchctl bootout system/com.securityone.ids.sync 2>/dev/null || launchctl unload /Library/LaunchDaemons/com.securityone.ids.sync.plist 2>/dev/null || true
+
+    # Load daemons - use bootstrap (modern macOS) with load as fallback
+    launchctl bootstrap system /Library/LaunchDaemons/com.securityone.ids.plist 2>/dev/null || \
+        launchctl load /Library/LaunchDaemons/com.securityone.ids.plist 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/com.securityone.ids.sync.plist 2>/dev/null || \
+        launchctl load /Library/LaunchDaemons/com.securityone.ids.sync.plist 2>/dev/null || true
     echo -e "${GREEN}✅ macOS LaunchDaemons created (scan + sync)${NC}"
     
 else
