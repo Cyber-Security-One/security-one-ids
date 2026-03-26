@@ -639,15 +639,23 @@ EOF
 </plist>
 EOF
     
-    # Unload any existing daemons first (ignore errors)
-    launchctl bootout system/com.securityone.ids 2>/dev/null || launchctl unload /Library/LaunchDaemons/com.securityone.ids.plist 2>/dev/null || true
-    launchctl bootout system/com.securityone.ids.sync 2>/dev/null || launchctl unload /Library/LaunchDaemons/com.securityone.ids.sync.plist 2>/dev/null || true
+    # Set proper ownership and permissions for LaunchDaemon plists (required by macOS)
+    chown root:wheel /Library/LaunchDaemons/com.securityone.ids.plist
+    chown root:wheel /Library/LaunchDaemons/com.securityone.ids.sync.plist
+    chmod 644 /Library/LaunchDaemons/com.securityone.ids.plist
+    chmod 644 /Library/LaunchDaemons/com.securityone.ids.sync.plist
 
-    # Load daemons - use bootstrap (modern macOS) with load as fallback
-    launchctl bootstrap system /Library/LaunchDaemons/com.securityone.ids.plist 2>/dev/null || \
-        launchctl load /Library/LaunchDaemons/com.securityone.ids.plist 2>/dev/null || true
-    launchctl bootstrap system /Library/LaunchDaemons/com.securityone.ids.sync.plist 2>/dev/null || \
-        launchctl load /Library/LaunchDaemons/com.securityone.ids.sync.plist 2>/dev/null || true
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR"
+
+    # Unload any existing daemons first (ignore errors)
+    launchctl bootout system/com.securityone.ids 2>/dev/null || true
+    launchctl bootout system/com.securityone.ids.sync 2>/dev/null || true
+    sleep 1
+
+    # Load daemons using bootstrap (modern macOS)
+    launchctl bootstrap system /Library/LaunchDaemons/com.securityone.ids.plist 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/com.securityone.ids.sync.plist 2>/dev/null || true
     echo -e "${GREEN}✅ macOS LaunchDaemons created (scan + sync)${NC}"
     
 else
