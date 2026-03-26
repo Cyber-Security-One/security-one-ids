@@ -613,11 +613,12 @@ class WafSyncService
 
                 // Parse EVE JSON format
                 $event = json_decode($line, true);
-                if (!$event || ($event['event_type'] ?? '') !== 'alert') {
+                $eventType = $event['event_type'] ?? '';
+                if (!$event || !in_array($eventType, ['alert', 'drop'])) {
                     continue;
                 }
 
-                $alert = $event['alert'] ?? [];
+                $alert = $event['alert'] ?? $event['drop'] ?? [];
                 $sourceIp = $event['src_ip'] ?? null;
                 if (!$sourceIp || !filter_var($sourceIp, FILTER_VALIDATE_IP)) {
                     continue;

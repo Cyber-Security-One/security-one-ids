@@ -5,7 +5,6 @@ namespace App\Services\Detection;
 use App\Traits\DetectsPlatform;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
-use App\Traits\DetectsPlatform;
 
 /**
  * Suricata IDS/IPS Detection Engine
@@ -367,11 +366,12 @@ class SuricataEngine
                 }
 
                 $entry = @json_decode($line, true);
-                if (!$entry || ($entry['event_type'] ?? '') !== 'alert') {
+                $eventType = $entry['event_type'] ?? '';
+                if (!$entry || !in_array($eventType, ['alert', 'drop'])) {
                     continue;
                 }
 
-                $alert = $entry['alert'] ?? [];
+                $alert = $entry['alert'] ?? $entry['drop'] ?? [];
                 $alerts[] = [
                     'timestamp' => $entry['timestamp'] ?? null,
                     'source_ip' => $entry['src_ip'] ?? 'unknown',
@@ -943,13 +943,13 @@ YAML;
             // Note: Suricata eve.json may use either compact or spaced JSON format
             // e.g., "event_type":"alert" or "event_type": "alert"
             $result = Process::timeout(10)->run(
-                "grep -cE '\"event_type\"\\s*:\\s*\"alert\"' " . escapeshellarg($this->alertLogPath) . " 2>/dev/null"
+                "grep -cE '\"event_type\"\\s*:\\s*\"(alert|drop)\"' " . escapeshellarg($this->alertLogPath) . " 2>/dev/null"
             );
             $total = (int) trim($result->output());
 
             // For a more accurate today count, filter by date
             $result = Process::timeout(10)->run(
-                "grep -E '\"event_type\"\\s*:\\s*\"alert\"' " . escapeshellarg($this->alertLogPath) .
+                "grep -E '\"event_type\"\\s*:\\s*\"(alert|drop)\"' " . escapeshellarg($this->alertLogPath) .
                 " | grep -c '\"timestamp\".*" . $today . "' 2>/dev/null"
             );
             $count = (int) trim($result->output());
