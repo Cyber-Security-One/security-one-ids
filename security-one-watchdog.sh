@@ -283,7 +283,10 @@ scan_loop() {
 # Tail Suricata drop events into pf ids_block table every 15s.
 # ============================================================
 pf_enforce_loop() {
-    [[ "$OSTYPE" != "darwin"* ]] && { log_message "INFO" "[Thread:PfEnforce] non-macOS, skipping"; return 0; }
+    # Idle forever instead of returning on non-macOS: the monitor loop
+    # restarts any dead child, so an early return means a CRITICAL
+    # "died! Restarting" + respawn every 30s, forever.
+    [[ "$OSTYPE" != "darwin"* ]] && { log_message "INFO" "[Thread:PfEnforce] non-macOS, idling"; while true; do sleep 3600; done; }
     log_message "INFO" "[Thread:PfEnforce] Started (interval: 15s)"
     while true; do
         run_artisan "ids:pf-enforce" 30
