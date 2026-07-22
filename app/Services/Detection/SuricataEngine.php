@@ -270,6 +270,24 @@ class SuricataEngine
             return ['success' => true, 'message' => 'Suricata is already running'];
         }
 
+        // Serialize concurrent start() calls. The daemon takes several
+        // seconds (rule loading) to write its pidfile / show up in pgrep,
+        // so two callers — e.g. the watchdog's Scan and Sync threads — can
+        // both see isRunning() === false and each spawn a daemon. Observed
+        // result: two af-packet instances on the same interface, doubled
+        // log volume. flock is cross-process; re-check isRunning() once the
+        // lock is held, since the winner may have finished starting by then.
+        $startLock = @fopen(sys_get_temp_dir() . '/security-one-suricata-start.lock', 'c');
+        if ($startLock) {
+            flock($startLock, LOCK_EX);
+            if ($this->isRunning()) {
+                flock($startLock, LOCK_UN);
+                fclose($startLock);
+                $this->applyInlineNetfilter($mode);
+                return ['success' => true, 'message' => 'Suricata is already running'];
+            }
+        }
+
         // isRunning() returned false, so any pidfile still on disk is stale
         // (process died without cleanup). Suricata refuses to start when a
         // stale pidfile exists, so remove it here.
@@ -388,6 +406,11 @@ class SuricataEngine
         } catch (\Exception $e) {
             Log::error('Failed to start Suricata: ' . $e->getMessage());
             return ['success' => false, 'error' => $e->getMessage()];
+        } finally {
+            if ($startLock) {
+                flock($startLock, LOCK_UN);
+                fclose($startLock);
+            }
         }
     }
 
@@ -655,6 +678,27 @@ class SuricataEngine
 
         file_put_contents($rulesFile, $rulesContent);
         Log::info('Applied custom Suricata rules', ['rules_file' => $rulesFile]);
+
+        // Hub-synced rulesets can contain Snort-syntax rules Suricata cannot
+        // parse (e.g. sticky-buffer `http_uri;` before any `content`). They
+        // never load, and every engine start / rule reload dumps the full
+        // error list into suricata.log — thousands of lines per pass, which
+        // once filled /var/log to 200+ GB. Disable unparseable rules before
+        // signaling the reload.
+        $sanitizer = '/usr/local/bin/suricata-rule-sanitize';
+        if (!$this->isWindows() && PHP_OS !== 'Darwin' && is_executable($sanitizer)) {
+            try {
+                $result = Process::timeout(300)->run($sanitizer);
+                if (!$result->successful()) {
+                    Log::warning('Suricata rule sanitize failed', [
+                        'exit_code' => $result->exitCode(),
+                        'output' => substr($result->output(), -500),
+                    ]);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Suricata rule sanitize error: ' . $e->getMessage());
+            }
+        }
 
         // Live-reload rules
         if ($this->isRunning()) {

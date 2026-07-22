@@ -1,0 +1,86 @@
+#!/bin/bash
+# Comment out rules Suricata cannot parse so they stop spamming suricata.log
+# on every engine start / rule reload. Failed rules never loaded anyway, so
+# disabling them changes no detection behavior.
+# Runs `suricata -T`, collects "from file <path> at line <N>" errors, prefixes
+# those lines with a marker, and repeats until the config tests clean.
+set -u
+
+CONFIG=/etc/suricata/suricata.yaml
+MARKER='#DISABLED(unparseable-by-suricata)# '
+MAX_PASS=5
+LOG_TAG="suricata-rule-sanitize"
+
+log() { echo "$(date '+%F %T') $*"; logger -t "$LOG_TAG" "$*" 2>/dev/null || true; }
+
+for pass in $(seq 1 "$MAX_PASS"); do
+    out=$(suricata -T -c "$CONFIG" 2>&1)
+    rc=$?
+
+    mapfile -t bad < <(printf '%s\n' "$out" \
+        | grep -oP 'from file \K[^ ]+ at line \d+' \
+        | sed 's/ at line /:/' | sort -u)
+
+    if [ "${#bad[@]}" -eq 0 ]; then
+        if [ "$rc" -eq 0 ]; then
+            log "pass $pass: config tests clean"
+            exit 0
+        fi
+
+        # Duplicate-signature errors on very long rules get truncated by
+        # Suricata's 2048-char log limit before the "from file X at line N"
+        # tail, so locate them by msg instead: keep the first active copy
+        # (rule-files load order), comment out the rest.
+        mapfile -t dupmsgs < <(printf '%s\n' "$out" \
+            | grep -oP 'Duplicate signature "[^"]*msg:"\K[^"]+' | sort -u)
+        if [ "${#dupmsgs[@]}" -gt 0 ]; then
+            log "pass $pass: de-duplicating ${#dupmsgs[@]} signature msg(s) without line info"
+            rulefiles=$(awk '/^rule-files:/{f=1;next} f&&/^[^ ]/{exit} f&&/^ *- /{sub(/^ *- */,"");print}' "$CONFIG")
+            ruledir=$(awk -F': *' '/^default-rule-path:/{print $2}' "$CONFIG")
+            for msg in "${dupmsgs[@]}"; do
+                seen=0
+                for rf in $rulefiles; do
+                    f="$ruledir/$rf"
+                    [ -w "$f" ] || continue
+                    seen=$seen awk -v msg="msg:\"$msg\"" -v marker="$MARKER" '
+                        BEGIN { seen = ENVIRON["seen"] + 0 }
+                        index($0, msg) && $0 !~ /^#/ {
+                            if (seen++) { print marker $0; next }
+                        }
+                        { print }
+                        END { exit seen }
+                    ' "$f" > "$f.sanitize.tmp"
+                    newseen=$?
+                    mv "$f.sanitize.tmp" "$f"
+                    seen=$newseen
+                done
+            done
+            continue
+        fi
+
+        log "pass $pass: no per-rule errors but suricata -T rc=$rc; leaving as-is"
+        printf '%s\n' "$out" | tail -5
+        exit "$rc"
+    fi
+
+    log "pass $pass: disabling ${#bad[@]} unparseable rule line(s)"
+
+    declare -A lines_by_file=()
+    for entry in "${bad[@]}"; do
+        f="${entry%%:*}"; n="${entry##*:}"
+        lines_by_file["$f"]+="$n "
+    done
+
+    for f in "${!lines_by_file[@]}"; do
+        [ -w "$f" ] || { log "skip unwritable $f"; continue; }
+        awk -v lines="${lines_by_file[$f]}" -v marker="$MARKER" '
+            BEGIN { n = split(lines, a, " "); for (i = 1; i <= n; i++) skip[a[i]] = 1 }
+            { if (FNR in skip && $0 !~ /^#/) print marker $0; else print }
+        ' "$f" > "$f.sanitize.tmp" && mv "$f.sanitize.tmp" "$f"
+        log "  $f: disabled $(echo "${lines_by_file[$f]}" | wc -w) line(s)"
+    done
+    unset lines_by_file
+done
+
+log "still failing after $MAX_PASS passes"
+exit 1
