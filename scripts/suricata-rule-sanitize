@@ -14,7 +14,10 @@ LOG_TAG="suricata-rule-sanitize"
 log() { echo "$(date '+%F %T') $*"; logger -t "$LOG_TAG" "$*" 2>/dev/null || true; }
 
 for pass in $(seq 1 "$MAX_PASS"); do
-    out=$(suricata -T -c "$CONFIG" 2>&1)
+    # Disable the file logging output for the test runs — otherwise every
+    # -T pass over a dirty ruleset dumps the full error list (tens of MB)
+    # into suricata.log, the very problem this script exists to prevent.
+    out=$(suricata -T -c "$CONFIG" --set logging.outputs.1.file.enabled=no 2>&1)
     rc=$?
 
     mapfile -t bad < <(printf '%s\n' "$out" \
