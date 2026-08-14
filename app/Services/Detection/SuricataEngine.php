@@ -590,9 +590,39 @@ class SuricataEngine
         $alerts = [];
 
         try {
-            // Read last N lines (eve.json can be large)
-            $result = Process::run("tail -n " . ($limit * 2) . " " . escapeshellarg($logPath));
-            $lines = explode("\n", trim($result->output()));
+            // Escalating byte window rather than a line count, because eve.json
+            // is not mostly alerts. Suricata writes a stats record every ~8
+            // seconds and each one is around 8KB on this host, so a quiet
+            // period is a solid wall of them: measured, the last 2,000 lines of
+            // a live eve.json contained 2,000 stats records and zero alerts,
+            // and the last 16MB contained none either because 5.5 hours of
+            // quiet is ~21MB of stats alone.
+            //
+            // The previous implementation read `tail -n (limit * 2)`, which with
+            // the default limit meant 100 lines — about twelve minutes of stats.
+            // On any host without an alert in the last few minutes it returned
+            // an empty array, indistinguishable from a host with nothing to
+            // report. It has no callers today, which is the only reason this was
+            // latent rather than a live blind spot.
+            //
+            // Filtering with grep before parsing keeps the cost flat: a 256MB
+            // window over a 3.4GB log measured 0.18s.
+            $lines = [];
+
+            foreach ([32, 64, 128, 256] as $megabytes) {
+                $result = Process::run(sprintf(
+                    'tail -c %dM %s | grep -a %s',
+                    $megabytes,
+                    escapeshellarg($logPath),
+                    escapeshellarg('"event_type":"\(alert\|drop\)"')
+                ));
+
+                $lines = explode("\n", trim($result->output()));
+
+                if (count(array_filter($lines)) >= $limit) {
+                    break;
+                }
+            }
 
             foreach (array_reverse($lines) as $line) {
                 if (empty($line)) {
