@@ -384,6 +384,33 @@ class EdrRuleEngine
             );
         }
 
+        /* FIM-007 — a monitored file no longer matches its baseline ---------
+         * Deliberately separate from FIM-002. That rule says a critical file
+         * was touched; this one says its content is now different from what
+         * it has been for as long as we have been watching, and carries the
+         * previous digest so the change can be reviewed and, if need be,
+         * proved reverted. A first sighting is not a deviation — you cannot
+         * deviate from a baseline you never had. */
+        $baseline = is_array($event['file']['baseline'] ?? null) ? $event['file']['baseline'] : null;
+
+        if ($baseline !== null
+            && !empty($baseline['known'])
+            && !empty($baseline['changed'])
+            && $this->isCriticalPath($path)
+        ) {
+            $previous = substr((string) ($baseline['previous_sha256'] ?? ''), 0, 12);
+            $current = substr((string) ($event['file']['sha256'] ?? ''), 0, 12);
+
+            $findings[] = $this->finding(
+                'FIM-007',
+                'Monitored file deviates from its baseline',
+                'high',
+                'T1565.001',
+                "{$path} content changed from {$previous}… to {$current}… — "
+                . 'compare against your change record before treating it as routine'
+            );
+        }
+
         /* FIM-005 — a monitored file was deleted ----------------------------
          * Deleting a watched file is how you remove evidence or disable a
          * control, and it is not something routine maintenance does to the

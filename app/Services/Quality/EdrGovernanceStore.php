@@ -130,6 +130,95 @@ class EdrGovernanceStore
                 value TEXT
             )
         SQL);
+
+        // Known-good digests for monitored files. "This file changed" is a
+        // weak statement — package updates change /etc/ssh/sshd_config all
+        // the time. "This file no longer matches what it has been since we
+        // started watching, and here is the previous digest" is something an
+        // analyst can act on.
+        $this->pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS file_baseline (
+                path        TEXT PRIMARY KEY,
+                sha256      TEXT NOT NULL,
+                size        INTEGER,
+                established INTEGER NOT NULL,
+                last_seen   INTEGER NOT NULL,
+                changes     INTEGER NOT NULL DEFAULT 0
+            )
+        SQL);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* File baseline                                                       */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Compare a file's digest against what we have seen before.
+     *
+     * @return array{known:bool, changed:bool, previous:?string, established:?int, changes:int}
+     */
+    public function checkFileDigest(string $path, string $sha256, ?int $size = null): array
+    {
+        $unknown = ['known' => false, 'changed' => false, 'previous' => null, 'established' => null, 'changes' => 0];
+
+        if ($path === '' || $sha256 === '') {
+            return $unknown;
+        }
+
+        try {
+            $stmt = $this->pdo()->prepare('SELECT * FROM file_baseline WHERE path = ?');
+            $stmt->execute([$path]);
+            $row = $stmt->fetch();
+
+            if ($row === false) {
+                return $unknown;
+            }
+
+            return [
+                'known' => true,
+                'changed' => (string) $row['sha256'] !== $sha256,
+                'previous' => (string) $row['sha256'],
+                'established' => (int) $row['established'],
+                'changes' => (int) $row['changes'],
+            ];
+        } catch (PDOException $e) {
+            return $unknown;
+        }
+    }
+
+    /**
+     * Record the current digest as the reference for this path.
+     */
+    public function recordFileDigest(string $path, string $sha256, ?int $size = null, bool $countChange = false): void
+    {
+        if ($path === '' || $sha256 === '') {
+            return;
+        }
+
+        try {
+            $now = time();
+            $stmt = $this->pdo()->prepare(
+                'INSERT INTO file_baseline (path, sha256, size, established, last_seen, changes)
+                 VALUES (?, ?, ?, ?, ?, 0)
+                 ON CONFLICT(path) DO UPDATE SET
+                    sha256 = excluded.sha256,
+                    size = excluded.size,
+                    last_seen = excluded.last_seen,
+                    changes = file_baseline.changes + ?'
+            );
+            $stmt->execute([$path, $sha256, $size, $now, $now, $countChange ? 1 : 0]);
+        } catch (PDOException $e) {
+            Log::debug('[EDR quality] recordFileDigest failed: ' . $e->getMessage());
+        }
+    }
+
+    public function fileBaselineCount(): int
+    {
+        try {
+            return (int) $this->pdo()->query('SELECT COUNT(*) FROM file_baseline')->fetchColumn();
+        } catch (PDOException $e) {
+            return 0;
+        }
     }
 
     public function isAvailable(): bool

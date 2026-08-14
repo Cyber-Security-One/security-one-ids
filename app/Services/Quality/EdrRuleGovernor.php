@@ -301,6 +301,33 @@ class EdrRuleGovernor
         return mb_substr(trim($value), 0, 200);
     }
 
+    /**
+     * Compare a file digest against the recorded baseline, and keep the
+     * baseline current.
+     *
+     * During the learning window a first sighting simply establishes the
+     * reference. Afterwards, a first sighting is itself notable — a file
+     * appearing in a monitored path for the first time after the host is
+     * understood is a different event from one that has always been there.
+     *
+     * @return array{known:bool, changed:bool, previous:?string, established:?int, changes:int}
+     */
+    public function compareFileDigest(
+        string $path,
+        string $sha256,
+        ?int $size = null,
+        int $baselineDays = self::DEFAULT_BASELINE_DAYS
+    ): array {
+        $comparison = $this->store->checkFileDigest($path, $sha256, $size);
+
+        // Record either way: an unknown path gains a reference, and a changed
+        // one has its reference moved forward so the next change is measured
+        // against what is actually there now rather than reported forever.
+        $this->store->recordFileDigest($path, $sha256, $size, $comparison['changed']);
+
+        return $comparison;
+    }
+
     /* ------------------------------------------------------------------ */
     /* Environment profile                                                 */
     /* ------------------------------------------------------------------ */

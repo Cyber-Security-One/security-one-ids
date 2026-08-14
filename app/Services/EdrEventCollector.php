@@ -124,6 +124,7 @@ class EdrEventCollector
         }
 
         $this->attributeFileEvents($events);
+        $this->compareFileDigests($events);
 
         // Pass two: evaluate.
         foreach ($events as $eventIndex => $event) {
@@ -857,6 +858,46 @@ class EdrEventCollector
             if (($event['username'] ?? '') === '' && $best['confidence'] !== 'low') {
                 $event['username'] = (string) $best['process']['username'];
             }
+        }
+        unset($event);
+    }
+
+    /**
+     * Compare each hashed file event against the digest we last saw.
+     *
+     * "This file changed" is a weak statement on its own — package updates
+     * rewrite /etc/ssh/sshd_config regularly. "This no longer matches what it
+     * has been since we started watching, and the previous digest was X" is
+     * something an analyst can act on, and it is also what makes a restore
+     * verifiable afterwards.
+     *
+     * @param array<int, array> $events
+     */
+    private function compareFileDigests(array &$events): void
+    {
+        foreach ($events as &$event) {
+            if (!str_starts_with((string) ($event['action'] ?? ''), 'file_')) {
+                continue;
+            }
+
+            $digest = (string) ($event['file']['sha256'] ?? '');
+            $path = (string) ($event['path'] ?? '');
+
+            // osquery only hashes when it can read the file at flush time; a
+            // deletion or a file already replaced leaves this empty.
+            if ($digest === '' || $path === '') {
+                continue;
+            }
+
+            $comparison = $this->governor->compareFileDigest($path, $digest, $event['file']['size'] ?? null);
+
+            $event['file']['baseline'] = [
+                'known' => $comparison['known'],
+                'changed' => $comparison['changed'],
+                'previous_sha256' => $comparison['previous'],
+                'established_at' => $comparison['established'],
+                'prior_changes' => $comparison['changes'],
+            ];
         }
         unset($event);
     }
