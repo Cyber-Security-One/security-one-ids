@@ -114,10 +114,36 @@ with that instruction. Confirm with:
 php artisan ids:sync-edr --status   # expect: backend: endpointsecurity
 ```
 
+## If the icon does not appear
+
+The app is a background agent with no window, so "running" and "visible" are
+separate things and neither implies the other. Check which one you have:
+
+```bash
+pgrep -lf SecurityOne
+```
+
+A PID means it is running and the icon is the problem — most often a crowded
+menu bar, or a notched display where items to the left of the notch are hidden.
+Quitting a few other menu bar items is the quickest test.
+
+No PID means it exited. Run the binary in the foreground to see why:
+
+```bash
+/Applications/SecurityOne.app/Contents/MacOS/SecurityOne
+```
+
 ## Status
 
-Written and reviewed on Linux; the PHP side that produces the snapshot is
-tested and running, but **the Swift has not been compiled or run** — there is
-no macOS host here to do it on. Build it on the Mac before trusting it. Every
-macOS defect found on this branch so far turned up on a real machine and none
-of them turned up before.
+Written on Linux with no macOS host to test on, so the first build was done on
+a real Mac. It compiled clean, ran, and showed nothing: the status item was
+being created as a property initialiser, which runs before `app.run()` and
+therefore before there is a menu bar to put it in. Allocated, retained, every
+call succeeding, permanently invisible — and a live process with no icon looks
+identical from the outside to an app that failed to launch. It is now created
+in `applicationDidFinishLaunching`, which is the only point at which that is
+guaranteed to work.
+
+Worth stating because it is the pattern behind most of this branch's defects:
+the failure was silent, the component reported success at every step, and the
+only thing that revealed it was running the real thing on a real machine.

@@ -256,16 +256,28 @@ enum AgentReader {
 
 // MARK: - Menu bar
 
-final class Controller: NSObject, NSMenuDelegate {
-    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    /// Created on launch, not at construction.
+    ///
+    /// A status item made before the app has finished launching is made before
+    /// there is a menu bar to put it in: it is allocated, it is retained, every
+    /// call on it succeeds, and it never appears. The process stays alive with
+    /// nothing on screen and nothing in the log — which is exactly the failure
+    /// that is hardest to reason about from the outside, because "running" and
+    /// "working" have come apart with no signal in between.
+    private var item: NSStatusItem?
     private let menu = NSMenu()
     private var snapshot = Snapshot()
     private var timer: Timer?
     private var refreshing = false
 
-    func start() {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.item = item
+
         menu.delegate = self
         item.menu = menu
+
         render()
         refresh()
 
@@ -302,18 +314,29 @@ final class Controller: NSObject, NSMenuDelegate {
     }
 
     private func renderButton() {
-        guard let button = item.button else { return }
+        guard let button = item?.button else { return }
 
         let health = snapshot.failure == nil ? snapshot.overall : Health.unknown
-        let title = NSAttributedString(
-            string: health.symbol,
+
+        // A shield next to the dot, because a lone coloured dot in a crowded
+        // menu bar is genuinely hard to find, and someone who cannot find it
+        // has no way to tell that from the app not running. Template rendering
+        // makes it follow the menu bar the way a native icon does; if the
+        // symbol is unavailable the dot alone still works.
+        if let shield = NSImage(systemSymbolName: "shield.lefthalf.fill", accessibilityDescription: "Security One") {
+            shield.isTemplate = true
+            button.image = shield
+            button.imagePosition = .imageLeading
+        }
+
+        button.attributedTitle = NSAttributedString(
+            string: " " + health.symbol,
             attributes: [
                 .foregroundColor: health.color,
-                .font: NSFont.systemFont(ofSize: 13),
+                .font: NSFont.systemFont(ofSize: 11),
             ]
         )
 
-        button.attributedTitle = title
         button.toolTip = snapshot.failure ?? "Security One Agent — \(snapshot.hostName)"
     }
 
@@ -472,11 +495,16 @@ final class Controller: NSObject, NSMenuDelegate {
 // MARK: - Entry point
 
 let app = NSApplication.shared
+
 // Accessory, not regular: this belongs in the menu bar and has no business
 // taking a Dock tile or a window.
 app.setActivationPolicy(.accessory)
 
+// Held by a top-level binding on purpose. NSApplication does not retain its
+// delegate, and a delegate that is deallocated between here and the first run
+// loop pass takes the status item with it — silently, since nothing about a
+// missing menu bar icon says why it is missing.
 let controller = Controller()
-controller.start()
+app.delegate = controller
 
 app.run()
