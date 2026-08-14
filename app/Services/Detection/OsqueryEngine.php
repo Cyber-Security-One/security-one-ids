@@ -282,8 +282,19 @@ class OsqueryEngine
                 'logger_plugin' => 'filesystem',
                 'logger_path' => $this->logDir,
                 'logger_rotate' => true,
-                'logger_rotate_size' => 33554432,   // 32 MB per file
-                'logger_rotate_max_files' => 4,     // ≤128 MB on disk, then recycled
+                // The raw sensor log is a credential store we do not control:
+                // osquery writes command lines verbatim, so secrets land here
+                // before the agent's redaction can strip them on the way into
+                // the spool. Keeping it small bounds how long a password that
+                // was passed on a command line survives on disk.
+                //
+                // Sizing it larger would not buy resilience anyway — the
+                // collector skips ahead when the backlog exceeds its 8 MB
+                // per-cycle budget, so a huge log is read past, not caught up
+                // on. 16 MB x 2 leaves roughly a minute of slack on a busy
+                // host at a quarter of the previous exposure.
+                'logger_rotate_size' => 16777216,   // 16 MB per file
+                'logger_rotate_max_files' => 2,     // <=32 MB on disk, then recycled
                 'schedule_splay_percent' => 10,
                 'utc' => true,
                 'disable_distributed' => true,
