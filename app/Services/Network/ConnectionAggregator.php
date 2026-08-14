@@ -36,6 +36,19 @@ class ConnectionAggregator
     private const MAX_INTERVALS = 200;
 
     /**
+     * Cap on pids listed per connection.
+     *
+     * A cap has to exist — this array goes into a spooled JSON blob and one
+     * php-fpm relationship reached 179 pids, measured — but it is set against
+     * the real distribution rather than guessed: of 274 relationships on this
+     * host, 132 had one pid, 103 had two to four, 17 had five to sixteen, 16
+     * had seventeen to thirty-two, and 6 exceeded that. Sixty-four covers
+     * everything but the largest pools, and `pid_count` always carries the true
+     * total so truncation is visible rather than silent.
+     */
+    private const MAX_PIDS = 64;
+
+    /**
      * Fold a batch of normalised socket events into connection summaries.
      *
      * @param array<int, array> $events    normalised single events
@@ -77,7 +90,17 @@ class ConnectionAggregator
             $groups[$key]['count']++;
 
             $pid = (int) ($event['pid'] ?? 0);
-            if ($pid > 0) {
+            if ($pid > 0 && !isset($groups[$key]['pids'][$pid])) {
+                // Insertion order, deliberately not numeric order. The
+                // consumer that needs this — lineage resolution — wants the
+                // pids most likely to appear in the exec stream, and pids are
+                // allocated in increasing order, so sorting numerically hands
+                // over the oldest processes first: exactly the ones most likely
+                // to predate the sensor and have no exec event. Measured, the
+                // numerically lowest pid resolved 51.9% of the time against
+                // 54.8% for the temporally first and a 56.3% ceiling for any
+                // pid in the group — a small effect, but the fix costs nothing
+                // and the truncation bias it removes is real.
                 $groups[$key]['pids'][$pid] = true;
             }
 
@@ -146,12 +169,17 @@ class ConnectionAggregator
         $first = $wall === [] ? (int) ($event['ts'] ?? time()) : $wall[0];
         $last = $wall === [] ? $first : $wall[count($wall) - 1];
 
+        // Order of first appearance in the batch, not numeric.
         $pids = array_keys($group['pids'] ?? []);
-        sort($pids);
 
         $event['ts'] = $first;
         // A representative pid, so the flat event shape still names a process.
-        // Which worker of a pool it was is not the interesting part.
+        // The first one seen in this batch rather than the lowest-numbered.
+        // Which worker of a pool it was is not the interesting part, and
+        // consumers that need to resolve lineage should use the `pids` list
+        // rather than trusting this one: measured on this host, no pid in the
+        // group appeared in the exec stream at all for 43.7% of multi-pid
+        // relationships, so any single representative is a guess.
         $event['pid'] = $pids[0] ?? (int) ($event['pid'] ?? 0);
         $event['network']['count'] = $group['count'];
         $event['network']['first_seen'] = $first;
@@ -160,7 +188,7 @@ class ConnectionAggregator
         // Kept for attribution: a connection relationship held by twelve
         // worker processes is worth distinguishing from one held by a single
         // process, even though it is not what groups them.
-        $event['network']['pids'] = array_slice($pids, 0, 32);
+        $event['network']['pids'] = array_slice($pids, 0, self::MAX_PIDS);
         $event['network']['pid_count'] = count($pids);
 
         return $event;

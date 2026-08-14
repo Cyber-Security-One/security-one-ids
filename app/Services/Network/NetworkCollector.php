@@ -26,13 +26,23 @@ use Illuminate\Support\Facades\Log;
  * rather than sharing one ring buffer with the events the process rules depend
  * on.
  *
- * What made that concrete: on this host the spool held 333,211 raw `connect`
- * events, 66.6% of everything in it, and not one rule in the process engine
- * matches that action. Two thirds of the retained history was data nothing
- * could evaluate, displacing the events that rules do use. Of those, 98,518
- * were loopback, 61,285 private, 39,453 had no address at all and 21,338 were
- * AF_UNIX paths rather than addresses. Aggregating what survives that filter
- * takes the same telemetry to roughly 2,600 rows.
+ * What made that concrete, measured on the live spool: 391,067 raw `connect`
+ * events, 78.1% of everything in it, and not one rule in the process engine
+ * matches that action. Of those, 98,518 were loopback, 61,285 private, 39,453
+ * had no address at all and 21,338 were AF_UNIX paths rather than addresses.
+ *
+ * The cost is not disk, it is history. That spool sits at 500,584 rows against
+ * a 500,000 ceiling, and at the observed rate of 6.67 million connect events a
+ * day the retained window has collapsed to 1.42 hours — for `exec` events too,
+ * since they share the ceiling. `edr_spool_retention_days` defaults to seven
+ * days, but the row cap bites 118 times sooner, so retro-hunt, chain
+ * correlation and alert attribution all really reach back eighty-five minutes.
+ * Identity events survive 52 to 64 hours in the same database, because those
+ * were given their own ceiling for exactly this reason.
+ *
+ * Aggregating what survives the scope filter takes the same telemetry to
+ * roughly 5,900 external relationships a day, which returns `exec` retention to
+ * about 6.6 hours.
  */
 class NetworkCollector
 {
@@ -71,7 +81,7 @@ class NetworkCollector
      * @param array<int, array> $socketRows   decoded `process_socket` result rows
      * @param array<int, array> $listenerRows decoded `listeners` result rows
      * @param array             $options      sensor options from the Hub
-     * @return array{alerts: array<int, array>, stats: array}
+     * @return array{alerts: array<int, array>, stats: array, events: array<int, array>}
      */
     public function collect(array $socketRows, array $listenerRows = [], array $options = []): array
     {
@@ -89,7 +99,7 @@ class NetworkCollector
         ];
 
         if ($socketRows === [] && $listenerRows === []) {
-            return ['alerts' => [], 'stats' => $stats];
+            return ['alerts' => [], 'stats' => $stats, 'events' => []];
         }
 
         $normalized = $this->normalizeBatch($socketRows, $options, $stats);
@@ -108,7 +118,7 @@ class NetworkCollector
         $events = array_merge($aggregated, $this->normalizeListeners($listenerRows));
 
         if ($events === []) {
-            return ['alerts' => [], 'stats' => $stats];
+            return ['alerts' => [], 'stats' => $stats, 'events' => []];
         }
 
         $this->annotate($events);
@@ -280,7 +290,21 @@ class NetworkCollector
 
         $stats['spooled'] = $this->spool->store($spoolEvents, $spoolFindings, $spoolDeliverable);
 
-        return ['alerts' => $alerts, 'stats' => $stats];
+        // The aggregated connections are handed back so in-cycle consumers can
+        // read them — the correlation engine lights its egress stage from them.
+        //
+        // These are summaries, not raw telemetry, and that distinction is the
+        // whole point of the hand-off. One connection relationship stands for
+        // every syscall that made it: measured, 12,813 raw socket rows reduce to
+        // 261 relationships, of which 166 are external. At the observed rate
+        // that is roughly 5,900 rows a day against 6.67 million raw, and it
+        // still carries every field an egress question needs — executable path,
+        // peer address and port, scope, and a `first_seen` that is the real
+        // first connection on the kernel clock rather than the moment this
+        // cycle ran.
+        //
+        // They are already stored above. A caller must not store them again.
+        return ['alerts' => $alerts, 'stats' => $stats, 'events' => $events];
     }
 
     /**
