@@ -25,11 +25,30 @@ class WafSyncService
         
         $this->agentName = config('ids.agent_name') ?? env('AGENT_NAME', gethostname());
 
-        // Fallback: directly parse .env file if values are still empty
+        // Fallback: directly parse .env file if values are still empty.
+        //
+        // Guarded on readability, not existence. The file holds the agent
+        // token, so it is deliberately root-only — and `file_exists()` returns
+        // true for a file the current user cannot open, so the next line
+        // emitted a warning that Laravel promotes to an exception. The whole
+        // command died, and the message named `parse_ini_file` rather than the
+        // actual problem, which is that this was not run as root. Every
+        // operator's first instinct on a desktop is to run without sudo, so
+        // that is the common case and not the edge one.
         if (empty($this->wafUrl) || empty($this->agentToken)) {
             $envFile = base_path('.env');
-            if (file_exists($envFile)) {
-                $envValues = parse_ini_file($envFile);
+
+            if (file_exists($envFile) && !is_readable($envFile)) {
+                Log::warning(
+                    '[WafSync] Cannot read .env — the Hub URL and agent token are unavailable. '
+                    . 'It is root-only by design because it holds the token; run this command with sudo '
+                    . 'if it needs to reach the Hub.',
+                    ['path' => $envFile]
+                );
+            }
+
+            if (is_readable($envFile)) {
+                $envValues = @parse_ini_file($envFile);
                 if ($envValues) {
                     if (empty($this->wafUrl) && !empty($envValues['WAF_URL'])) {
                         $this->wafUrl = rtrim($envValues['WAF_URL'], '/');
