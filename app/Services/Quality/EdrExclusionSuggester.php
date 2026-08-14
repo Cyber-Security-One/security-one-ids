@@ -53,7 +53,7 @@ class EdrExclusionSuggester
 
             $occurrences = (int) $observation['occurrences'];
 
-            $suggestions[] = [
+            $suggestion = [
                 'rule' => $rule,
                 'pattern' => $pattern,
                 'occurrences' => $occurrences,
@@ -61,6 +61,17 @@ class EdrExclusionSuggester
                 'confidence' => $this->confidenceFor($occurrences, $observation),
                 'rationale' => $this->rationaleFor($rule, $occurrences, $observation),
             ];
+
+            // Emitted only when the exclusion should be narrowed to one
+            // account, so a suggestion for root or an unknown user carries no
+            // constraint rather than an empty one that reads like a constraint.
+            $user = $this->userFor($observation);
+
+            if ($user !== null) {
+                $suggestion['user'] = $user;
+            }
+
+            $suggestions[] = $suggestion;
 
             if (count($suggestions) >= $limit) {
                 break;
@@ -76,6 +87,36 @@ class EdrExclusionSuggester
      * Anchored on the binary rather than the whole line: the arguments are
      * what vary between runs, and an exclusion that only matches one exact
      * invocation excludes nothing useful tomorrow.
+     */
+    /**
+     * Build the exclusion pattern for an observed shape.
+     *
+     * The anchor is the whole difficulty here, and the first version got it
+     * wrong in a way that made every suggestion inert.
+     *
+     * `EdrRuleEngine::isExcluded()` matches against the executable path and the
+     * command line joined by a space, so the start of the haystack is the path.
+     * This method takes its stable prefix from the *command line* and then
+     * anchored it with `^` — which pinned a command-line fragment to the start
+     * of a path. Measured against the real haystack
+     * `/bin/sh sh -c -- 'stty 2> /dev/null'`, the emitted
+     * `#^sh \-c \-\- .stty#` never matched, and neither did it with an empty
+     * path, because the join leaves a leading space.
+     *
+     * The failure was completely silent. An operator approves a suggestion, the
+     * Hub ships it, `setExclusions()` accepts it because the regex is
+     * syntactically valid, and nothing is excluded. The only symptom is that the
+     * noisy rule keeps firing — which reads as "the exclusion did not work
+     * yet", not as "the exclusion cannot ever work".
+     *
+     * The fix keeps the anchor rather than dropping it, because an unanchored
+     * command-line fragment is a bypass: anything that manages to put the
+     * approved text anywhere in its own arguments would be excused. Instead the
+     * pattern is anchored the way the haystack is actually shaped — an optional
+     * directory prefix, the binary this was approved for, a space, then the
+     * command-line prefix. Verified against the real sample, and verified to
+     * refuse `/tmp/evil --arg="sh -c -- 'stty"`, which an unanchored form
+     * accepts.
      */
     private function patternFor(array $observation): ?string
     {
@@ -103,15 +144,54 @@ class EdrExclusionSuggester
             return null;
         }
 
-        $escaped = preg_quote($stable, '#');
+        // `(?:\S*/)?` is the directory part: present for /bin/sh, absent when
+        // the sensor recorded a bare name. It cannot span a space, so it cannot
+        // run past the path into the command line.
+        $pattern = '#^(?:\S*/)?'
+            . preg_quote($binary, '#')
+            . '\s'
+            . preg_quote($stable, '#')
+            . '#';
 
-        // Bind the exclusion to the user as well when it is a service account,
-        // so approving it for www-data does not also excuse root.
-        if ($user !== '?' && $user !== '' && $user !== 'root') {
-            return '#^' . $escaped . '#';
+        if (@preg_match($pattern, '') === false) {
+            // Should not happen with quoted input, but an unusable pattern must
+            // never be published: the Hub would accept it and it would sit in
+            // the exclusion list doing nothing.
+            return null;
         }
 
-        return '#^' . $escaped . '#';
+        return $pattern;
+    }
+
+    /**
+     * The account an exclusion should be bound to, or null for all accounts.
+     *
+     * Approving a noisy shape for `www-data` must not also excuse the identical
+     * command run by root — an attacker who can read the exclusion list would
+     * otherwise be handed a way to run an approved command line as root and
+     * have every rule ignore it.
+     *
+     * This was previously promised by a comment and by two branches that
+     * returned the same string, so the property did not exist while appearing to.
+     * The exclusion format now carries the constraint separately, which is what
+     * made it expressible at all: the matched haystack is path plus command
+     * line and has never contained the user.
+     *
+     * Root is deliberately not bound. An exclusion approved for something root
+     * does is already as broad as it can be, and pinning it to `root` would
+     * only invite the misreading that the binding narrows it.
+     */
+    private function userFor(array $observation): ?string
+    {
+        $parts = explode('|', (string) $observation['signature'], 4);
+
+        if (count($parts) < 4) {
+            return null;
+        }
+
+        $user = $parts[1];
+
+        return ($user === '?' || $user === '' || $user === 'root') ? null : $user;
     }
 
     private function confidenceFor(int $occurrences, array $observation): string

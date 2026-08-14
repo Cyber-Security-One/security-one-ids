@@ -235,6 +235,141 @@ class EdrRuleGovernorTest extends TestCase
      * Promotion to enforce is proposed, never automatic — and never on a rule
      * nobody has judged, because silence is not evidence of correctness.
      */
+    /**
+     * A suggestion has to actually exclude the thing it was generated from.
+     *
+     * Nothing asserted this before, and the consequence was that every
+     * suggestion this class produced was inert. `isExcluded()` matches against
+     * path-then-command-line, so `^` anchors to the start of the *path*, while
+     * `patternFor()` took its prefix from the command line and anchored it with
+     * `^`. Measured on the real haystack `/bin/sh sh -c -- 'stty 2> /dev/null'`
+     * the emitted pattern matched nothing, and no test noticed because the
+     * suggester and the matcher were only ever tested apart.
+     *
+     * Completely silent in production too: an operator approves the suggestion,
+     * the Hub ships it, `setExclusions()` accepts it because the regex is valid,
+     * and the noisy rule keeps firing — which reads as "not applied yet" rather
+     * than "cannot ever apply".
+     */
+    public function test_a_generated_suggestion_actually_excludes_its_own_sample(): void
+    {
+        $engine = new \App\Services\EdrRuleEngine();
+        $suggester = new EdrExclusionSuggester($this->store);
+
+        $event = [
+            'path' => '/bin/sh',
+            'cmdline' => "sh -c -- 'stty 2> /dev/null'",
+            'username' => 'www-data',
+        ];
+
+        $governor = new EdrRuleGovernor($this->store);
+        $signature = $governor->signatureFor(['rule' => 'EDR-060'], $event);
+
+        for ($i = 0; $i < 30; $i++) {
+            $this->store->observe('EDR-060', $signature, $event['cmdline']);
+        }
+
+        $suggestions = array_values(array_filter(
+            $suggester->suggest(5, 20),
+            static fn (array $s): bool => $s['rule'] === 'EDR-060'
+        ));
+
+        $this->assertNotEmpty($suggestions, 'a shape seen thirty times should be suggested');
+
+        $engine->setExclusions([$suggestions[0]['pattern']]);
+        $this->assertTrue(
+            $engine->isExcluded($event),
+            'the suggestion must exclude the very event it was derived from'
+        );
+    }
+
+    /**
+     * The anchor is kept rather than dropped, because an unanchored
+     * command-line fragment is a bypass: anything that can place the approved
+     * text somewhere in its own arguments would be excused by it.
+     */
+    public function test_a_suggestion_cannot_be_borrowed_by_another_binary(): void
+    {
+        $engine = new \App\Services\EdrRuleEngine();
+        $suggester = new EdrExclusionSuggester($this->store);
+
+        $event = [
+            'path' => '/bin/sh',
+            'cmdline' => "sh -c -- 'stty 2> /dev/null'",
+            'username' => 'www-data',
+        ];
+
+        $governor = new EdrRuleGovernor($this->store);
+
+        for ($i = 0; $i < 30; $i++) {
+            $this->store->observe('EDR-061', $governor->signatureFor(['rule' => 'EDR-061'], $event), $event['cmdline']);
+        }
+
+        $suggestions = array_values(array_filter(
+            $suggester->suggest(5, 20),
+            static fn (array $s): bool => $s['rule'] === 'EDR-061'
+        ));
+
+        $this->assertNotEmpty($suggestions);
+        $engine->setExclusions([$suggestions[0]['pattern']]);
+
+        $this->assertFalse($engine->isExcluded([
+            'path' => '/tmp/evil',
+            'cmdline' => '/tmp/evil --arg="sh -c -- \'stty 2> /dev/null\'"',
+            'username' => 'www-data',
+        ]), 'another binary must not inherit the approval by quoting it');
+    }
+
+    /**
+     * Approving a shape for a service account must not excuse root running the
+     * same command.
+     *
+     * This property was previously asserted by a comment and by two branches
+     * that returned identical strings, so it did not exist while appearing to —
+     * and an attacker able to read the exclusion list would have been handed a
+     * pre-approved command line to run as root.
+     */
+    public function test_an_exclusion_bound_to_an_account_does_not_excuse_root(): void
+    {
+        $engine = new \App\Services\EdrRuleEngine();
+        $suggester = new EdrExclusionSuggester($this->store);
+
+        $event = [
+            'path' => '/bin/sh',
+            'cmdline' => "sh -c -- 'stty 2> /dev/null'",
+            'username' => 'www-data',
+        ];
+
+        $governor = new EdrRuleGovernor($this->store);
+
+        for ($i = 0; $i < 30; $i++) {
+            $this->store->observe('EDR-062', $governor->signatureFor(['rule' => 'EDR-062'], $event), $event['cmdline']);
+        }
+
+        $suggestions = array_values(array_filter(
+            $suggester->suggest(5, 20),
+            static fn (array $s): bool => $s['rule'] === 'EDR-062'
+        ));
+
+        $this->assertNotEmpty($suggestions);
+        $this->assertSame('www-data', $suggestions[0]['user'] ?? null, 'a service account must be carried');
+
+        $engine->setExclusions([[
+            'pattern' => $suggestions[0]['pattern'],
+            'user' => $suggestions[0]['user'],
+        ]]);
+
+        $this->assertTrue($engine->isExcluded($event), 'the approved account is excused');
+
+        $this->assertFalse($engine->isExcluded(array_merge($event, ['username' => 'root'])),
+            'root running the same command is not');
+
+        // And a plain string exclusion still means "any account", which is what
+        // every existing hand-written exclusion is.
+        $engine->setExclusions([$suggestions[0]['pattern']]);
+        $this->assertTrue($engine->isExcluded(array_merge($event, ['username' => 'root'])));
+    }
+
     public function test_promotion_candidates_require_judged_clean_history(): void
     {
         $suggester = new EdrExclusionSuggester($this->store);

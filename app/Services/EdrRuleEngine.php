@@ -74,12 +74,41 @@ class EdrRuleEngine
     /** Cached result of the container check. */
     private ?bool $inContainer = null;
 
+    /**
+     * Install the exclusion list.
+     *
+     * Two shapes are accepted. A bare string is a regex matched against the
+     * executable path and command line, which is what every existing exclusion
+     * is and stays working unchanged. An array of `{pattern, user}` binds the
+     * same regex to a single account.
+     *
+     * The second shape exists because the property it provides was previously
+     * only promised. The suggester's docblock said an exclusion approved for
+     * `www-data` should not also excuse root, and both branches of the code that
+     * claimed to do it returned the same string — so an attacker who could read
+     * the exclusion list could run an approved command line as root and have
+     * every rule ignore it. The constraint could not be expressed in the pattern
+     * because the matched haystack is path plus command line and has never
+     * contained the user, which is why it is carried alongside instead.
+     */
     public function setExclusions(array $patterns): void
     {
         $this->exclusions = [];
 
-        foreach ($patterns as $pattern) {
-            if (!is_string($pattern) || $pattern === '') {
+        foreach ($patterns as $entry) {
+            $pattern = null;
+            $user = null;
+
+            if (is_string($entry)) {
+                $pattern = $entry;
+            } elseif (is_array($entry)) {
+                $pattern = isset($entry['pattern']) && is_string($entry['pattern']) ? $entry['pattern'] : null;
+                $user = isset($entry['user']) && is_string($entry['user']) && $entry['user'] !== ''
+                    ? $entry['user']
+                    : null;
+            }
+
+            if ($pattern === null || $pattern === '') {
                 continue;
             }
 
@@ -89,7 +118,7 @@ class EdrRuleEngine
                 continue;
             }
 
-            $this->exclusions[] = $pattern;
+            $this->exclusions[] = ['pattern' => $pattern, 'user' => $user];
         }
     }
 
@@ -658,12 +687,28 @@ class EdrRuleEngine
             return false;
         }
 
+        // Path first, then the command line. Worth stating because it is what
+        // an anchored pattern anchors to: `^` binds to the start of the *path*,
+        // not the command line. A generated exclusion that took its prefix from
+        // the command line and anchored it with `^` could therefore never match
+        // anything, which is exactly what happened.
         $haystack = ($event['path'] ?? '') . ' ' . ($event['cmdline'] ?? '');
+        $username = (string) ($event['username'] ?? '');
 
-        foreach ($this->exclusions as $pattern) {
-            if (@preg_match($pattern, $haystack) === 1) {
-                return true;
+        foreach ($this->exclusions as $exclusion) {
+            if (@preg_match($exclusion['pattern'], $haystack) !== 1) {
+                continue;
             }
+
+            // An exclusion bound to an account excuses that account only. The
+            // same command run by anyone else is still evaluated, which is the
+            // point: approving a noisy shape for a service account must not
+            // hand an attacker a pre-approved command line to run as root.
+            if ($exclusion['user'] !== null && $exclusion['user'] !== $username) {
+                continue;
+            }
+
+            return true;
         }
 
         return false;
