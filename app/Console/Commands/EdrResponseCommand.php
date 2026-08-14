@@ -142,10 +142,21 @@ class EdrResponseCommand extends Command
         EdrActionLedger $ledger,
         NetworkContainment $network
     ): int {
-        if (!$network->isActive()) {
+        $state = $network->state();
+
+        if ($state === false) {
             $this->line('Network isolation is not active on this host.');
 
             return 0;
+        }
+
+        if ($state === null) {
+            // This is the break-glass path, so it does not stop here: not
+            // knowing whether the host is isolated is a reason to attempt the
+            // release, not a reason to skip it. Said out loud because the
+            // operator needs to know the verification is unavailable.
+            $this->warn('Cannot determine whether isolation is active (iptables unreadable — are you root?).');
+            $this->warn('Attempting the release anyway; verify manually with: iptables -n -L SECONE_EDR_OUT');
         }
 
         $result = $network->release();

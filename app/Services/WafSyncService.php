@@ -950,6 +950,16 @@ class WafSyncService
                 Log::warning('[EDR response] Rollback pass', $expired);
             }
 
+            // Rows recorded but never resolved. The expiry pass above cannot
+            // see them — it only looks at actions that reached `applied` — so
+            // before this sweep existed, a crash between the ledger write and
+            // the action completing left a possibly-isolated host with no timer
+            // watching it and nothing reported to the Hub.
+            $swept = $responder->sweepStuckPending();
+            if (($swept['swept'] ?? 0) > 0) {
+                Log::error('[EDR response] Swept actions stuck in pending', $swept);
+            }
+
             // Catches the case where the ledger believes this host is
             // isolated but the rules are gone — a reboot, a firewall reload,
             // someone clearing the chains by hand.
@@ -3507,12 +3517,34 @@ class WafSyncService
             $ledger = app(\App\Services\Response\EdrActionLedger::class)->stats();
             $network = app(\App\Services\Response\NetworkContainment::class);
 
+            $containment = $network->state();
+
             return [
-                'network_isolated' => $network->isActive(),
+                // Only true when the chains are known to be installed.
+                'network_isolated' => $containment === true,
+                // The state the bool cannot carry. A console that renders
+                // `network_isolated: false` as "this host is reachable" would
+                // be wrong whenever iptables could not be read — which is every
+                // cycle on the www-data scheduler path.
+                'network_containment_state' => $containment === null
+                    ? 'unknown'
+                    : ($containment ? 'active' : 'inactive'),
                 'actions_applied' => $ledger['applied'],
                 'actions_failed' => $ledger['failed'],
                 'actions_unreported' => $ledger['unreported'],
                 'actions_total' => $ledger['total'],
+                // Computed by the ledger and previously dropped here. It is the
+                // count that means "an action was recorded and we never learned
+                // whether it took effect", which for isolation means the host
+                // may be cut off with nothing watching the clock. Excluded from
+                // `unreported` on purpose, so without this it reached nobody.
+                'actions_pending' => $ledger['pending'],
+                // Whether the ledger could be read at all. Its stats are
+                // pre-seeded to zero, so a database that cannot be opened
+                // reports the same numbers as a host that has never taken an
+                // action — and zero unreported actions then reads as healthy
+                // rather than as unknown.
+                'ledger_available' => $ledger['available'],
             ];
         } catch (\Throwable $e) {
             Log::debug('[EDR response] Status probe failed: ' . $e->getMessage());

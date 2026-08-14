@@ -35,6 +35,23 @@ class EdrResponder
     /** Commands older than this are refused. */
     private const DEFAULT_MAX_COMMAND_AGE = 900;
 
+    /**
+     * The ceiling on that window, whatever the Hub configures.
+     *
+     * `edr_command_max_age` arrives in the same payload as the commands it
+     * bounds, and was read unclamped — so the gate configured itself. A blob
+     * setting it to a year would have revived every command in that blob for a
+     * year, which is not a freshness gate at all.
+     *
+     * Gate zero already refuses orders from a channel a local account can
+     * forge, so the local-attacker path is closed. This closes the other one: a
+     * Hub that is compromised, or simply buggy, sending a window wide enough to
+     * make replay protection meaningless. An hour is well beyond any legitimate
+     * delivery delay — the sync cycle is thirty seconds — and far short of the
+     * spans that make replay useful to an attacker.
+     */
+    private const MAX_ALLOWED_COMMAND_AGE = 3600;
+
     /** Isolation always gets a deadline, whatever the Hub asked for. */
     private const DEFAULT_ISOLATION_TTL = 3600;
     private const MAX_ISOLATION_TTL = 86400;
@@ -219,7 +236,11 @@ class EdrResponder
 
         // Gate 2 — freshness. An old config blob replayed by a rollback, a
         // restored backup or a stale cache must not act.
-        $maxAge = (int) ($options['max_command_age'] ?? self::DEFAULT_MAX_COMMAND_AGE);
+        //
+        // Clamped, because the bound arrives in the same payload as the
+        // commands: read raw, this gate configured itself, and a blob asking for
+        // a year-long window would have revived every command in it for a year.
+        $maxAge = $this->clampCommandAge($options);
         $issuedAt = isset($command['issued_at']) ? (int) $command['issued_at'] : 0;
 
         if ($issuedAt <= 0) {
@@ -527,6 +548,77 @@ class EdrResponder
     }
 
     /**
+     * Deal with actions that were recorded and then never resolved.
+     *
+     * `pending` is the state that means we do not know: the row is written
+     * before the action runs, so a crash in that window — which for isolation
+     * contains the iptables calls themselves — leaves a host that may be cut
+     * off, a ledger that says nothing was applied, and no path back. The expiry
+     * sweep ignored these rows because it only looks at `applied`, the Hub never
+     * saw them because `unreported` excludes pending, and re-issuing the command
+     * was skipped as `already_seen`.
+     *
+     * So the reversal is attempted rather than assumed unnecessary. For a
+     * reversible action that is cheap and idempotent — releasing a chain that is
+     * not there is a no-op — and it is the only way a stuck isolation lifts
+     * without someone reaching a console. A kill cannot be undone, so it is
+     * recorded as failed rather than pretended away.
+     *
+     * @return array{swept:int, reverted:int, failed:int}
+     */
+    public function sweepStuckPending(int $graceSeconds = 300): array
+    {
+        $summary = ['swept' => 0, 'reverted' => 0, 'failed' => 0];
+
+        foreach ($this->ledger->stuckPending($graceSeconds) as $action) {
+            $summary['swept']++;
+
+            $type = (string) ($action['type'] ?? '');
+
+            Log::error('[EDR response] Action stuck in pending, its effect on this host is unknown', [
+                'action_id' => $action['action_id'],
+                'type' => $type,
+                'created_at' => $action['created_at'] ?? null,
+            ]);
+
+            if (!in_array($type, ['isolate_network', 'quarantine_file', 'suspend_process'], true)) {
+                // Nothing to undo, or nothing that can be undone. Recorded as
+                // failed so it stops being invisible and stops blocking a retry.
+                $this->ledger->markFailed($action['action_id'], 'stuck_pending_unresolvable');
+                $summary['failed']++;
+
+                continue;
+            }
+
+            $result = $this->revert($action);
+
+            if (!empty($result['success'])) {
+                $this->ledger->markReverted(
+                    $action['action_id'],
+                    EdrActionLedger::STATE_REVERTED,
+                    array_merge($result['result'] ?? [], ['note' => 'swept_from_pending'])
+                );
+                $summary['reverted']++;
+
+                Log::warning('[EDR response] Stuck action reversed', [
+                    'action_id' => $action['action_id'],
+                    'type' => $type,
+                ]);
+
+                continue;
+            }
+
+            $this->ledger->markFailed(
+                $action['action_id'],
+                'stuck_pending_revert_failed: ' . (string) ($result['error'] ?? 'unknown')
+            );
+            $summary['failed']++;
+        }
+
+        return $summary;
+    }
+
+    /**
      * @return array{success:bool, error:?string, result:?array}
      */
     private function revert(array $action): array
@@ -544,6 +636,29 @@ class EdrResponder
             // and it never carries a deadline.
             default => ['success' => false, 'error' => 'not_reversible', 'result' => null],
         };
+    }
+
+    /**
+     * The freshness window, bounded at both ends.
+     *
+     * A floor as well as a ceiling: a window shorter than the sync cycle would
+     * refuse every command that arrived normally, which is a denial of the
+     * feature dressed as a security setting.
+     */
+    private function clampCommandAge(array $options): int
+    {
+        $configured = (int) ($options['max_command_age'] ?? self::DEFAULT_MAX_COMMAND_AGE);
+        $clamped = max(60, min(self::MAX_ALLOWED_COMMAND_AGE, $configured));
+
+        if ($clamped !== $configured) {
+            Log::warning('[EDR response] Command freshness window clamped', [
+                'requested' => $configured,
+                'applied' => $clamped,
+                'ceiling' => self::MAX_ALLOWED_COMMAND_AGE,
+            ]);
+        }
+
+        return $clamped;
     }
 
     /**
@@ -647,7 +762,7 @@ class EdrResponder
         // that is nearly right would have silently pinned this to the default
         // and made the Hub's setting look applied — the same shape as reading
         // `deliver` where the governor returns `emit`.
-        $maxAge = max(60, (int) ($options['max_command_age'] ?? self::DEFAULT_MAX_COMMAND_AGE));
+        $maxAge = $this->clampCommandAge($options);
         $now = time();
 
         foreach ($confirmations as $confirmation) {
@@ -857,7 +972,26 @@ class EdrResponder
         foreach ($this->ledger->applied('isolate_network') as $action) {
             $summary['checked']++;
 
-            if (!$this->network->isActive()) {
+            $state = $this->network->state();
+
+            if ($state === null) {
+                // The state could not be read, which is not the same as the
+                // rules being gone. Correcting the record here is how an
+                // isolation becomes permanent: the ledger would say reverted,
+                // the Hub would be told the host is free, and expireOverdue()
+                // would never touch it again — while the rules stayed in place.
+                //
+                // Measured cause, not a hypothetical: as www-data every
+                // iptables query returns rc=4 permission denied, and the agent
+                // runs reconcile on that path.
+                Log::warning('[EDR response] Cannot verify isolation, leaving the record alone', [
+                    'action_id' => $action['action_id'],
+                ]);
+
+                continue;
+            }
+
+            if ($state === false) {
                 Log::warning('[EDR response] Isolation recorded but not in effect, correcting record', [
                     'action_id' => $action['action_id'],
                 ]);

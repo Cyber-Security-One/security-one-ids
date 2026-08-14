@@ -66,6 +66,99 @@ class NetworkContainmentTest extends TestCase
         );
     }
 
+    /**
+     * "Not isolated" and "cannot tell" must never be the same answer.
+     *
+     * The previous probe returned a bool and collapsed them. Measured on this
+     * host the two are different exit codes and only one means the host is
+     * free: root with the chain absent gives rc=1 and
+     * "No chain/target/match by that name", while www-data gives rc=4 and
+     * "Permission denied (you must be root)" for every query. The agent runs on
+     * both paths — root from the watchdog, www-data from
+     * `php artisan schedule:work`.
+     *
+     * What the conflation caused: reconcile() treats "not active" as proof the
+     * rules are gone and marks the ledger reverted, so a permission error on
+     * the www-data path recorded a live isolation as lifted, told the Hub the
+     * host was fine, and removed it from the expiry queue for good — while the
+     * rules stayed in place. release() had the mirror, reporting a successful
+     * teardown it could not see.
+     */
+    public function test_an_unreadable_firewall_is_not_reported_as_a_free_host(): void
+    {
+        // A command that fails the way a missing chain fails.
+        $absent = new NetworkContainment('sh -c \'echo "iptables: No chain/target/match by that name." >&2; exit 1\' --');
+        $this->assertFalse($absent->state(), 'iptables saying the chain is absent means absent');
+        $this->assertFalse($absent->isActive());
+
+        // A command that fails the way a permission problem fails.
+        $denied = new NetworkContainment('sh -c \'echo "Permission denied (you must be root)" >&2; exit 4\' --');
+        $this->assertNull($denied->state(), 'a permission error is not evidence the host is free');
+        $this->assertFalse($denied->isActive(), 'isActive stays strict: unknown is not active');
+
+        // A missing binary, and a command that times out or dies oddly.
+        $missing = new NetworkContainment('/nonexistent/iptables');
+        $this->assertNull($missing->state());
+
+        // And the success case still works.
+        $present = new NetworkContainment('true');
+        $this->assertTrue($present->state());
+    }
+
+    /**
+     * An unverifiable teardown is not a successful teardown. Reporting success
+     * is how a host stays cut off while the record says it was freed.
+     */
+    public function test_release_reports_unverified_rather_than_success(): void
+    {
+        // Everything succeeds except reading the containment chain. `-L INPUT`
+        // has to keep working, because that is the support probe release()
+        // runs first — without it the fixture fails for the wrong reason.
+        $unverifiable = new NetworkContainment(
+            'sh -c \'if [ "$2" = "-L" ] && [ "$3" != "INPUT" ]; then echo "Permission denied (you must be root)" >&2; exit 4; fi; exit 0\' --'
+        );
+
+        $result = $unverifiable->release();
+
+        $this->assertFalse($result['success']);
+        $this->assertSame('release_unverified', $result['error']);
+    }
+
+    /**
+     * Isolation is refused when the current state cannot be read. If iptables
+     * cannot be queried it almost certainly cannot be written either, and
+     * applying rules blind risks a chain that neither isolates nor releases
+     * cleanly.
+     */
+    public function test_isolation_is_refused_when_the_state_is_unknown(): void
+    {
+        $unknown = new NetworkContainment(
+            'sh -c \'if [ "$2" = "-L" ] && [ "$3" != "INPUT" ]; then echo "Permission denied (you must be root)" >&2; exit 4; fi; exit 0\' --'
+        );
+
+        $result = $unknown->isolate('https://hub.example', []);
+
+        $this->assertFalse($result['success']);
+        $this->assertSame('containment_state_unknown', $result['error']);
+    }
+
+    /**
+     * The status payload carries the third state, because a console rendering
+     * `active: false` as "this host is reachable" is wrong every cycle the
+     * firewall cannot be read.
+     */
+    public function test_status_distinguishes_inactive_from_unknown(): void
+    {
+        $denied = new NetworkContainment('sh -c \'echo "Permission denied (you must be root)" >&2; exit 4\' --');
+        $status = $denied->getStatus();
+
+        $this->assertFalse($status['active']);
+        $this->assertSame('unknown', $status['state']);
+
+        $absent = new NetworkContainment('sh -c \'echo "iptables: No chain/target/match by that name." >&2; exit 1\' --');
+        $this->assertSame('inactive', $absent->getStatus()['state']);
+    }
+
     public function test_allowlist_covers_every_hub_address_and_the_resolvers(): void
     {
         $allow = $this->host->resolveAllowlist('https://198.51.100.9:8443');

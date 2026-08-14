@@ -300,6 +300,145 @@ class EdrResponderTest extends TestCase
     }
 
     /**
+     * The freshness gate cannot be widened arbitrarily by the payload it is
+     * supposed to bound.
+     *
+     * `edr_command_max_age` arrives in the same blob as the commands, and was
+     * read unclamped — so a blob asking for a year-long window revived every
+     * command in it for a year, which is not a freshness gate. Gate zero closes
+     * the local-attacker path; this closes the compromised-or-buggy-Hub one.
+     */
+    public function test_the_freshness_window_cannot_be_widened_without_limit(): void
+    {
+        $pid = $this->spawn();
+        $startTime = (new ProcessResponder())->inspect($pid)['start_time'];
+
+        // Two hours old, with the Hub asking for a year of tolerance.
+        $summary = $this->responder()->processCommands([
+            $this->command([
+                'id' => 'clamp-1',
+                'type' => 'suspend_process',
+                'target' => ['pid' => $pid, 'start_time' => $startTime],
+                'issued_at' => time() - 7200,
+            ]),
+        ], array_merge(self::ALL_CAPABILITIES, ['max_command_age' => 31536000]));
+
+        $this->assertSame(0, $summary['executed']);
+        $this->assertSame('command_stale', $summary['outcomes'][0]['reason']);
+
+        // Inside the ceiling it still works, so the clamp is a bound and not a
+        // blanket refusal.
+        $ok = $this->responder()->processCommands([
+            $this->command([
+                'id' => 'clamp-2',
+                'type' => 'suspend_process',
+                'target' => ['pid' => $pid, 'start_time' => $startTime],
+                'issued_at' => time() - 1800,
+            ]),
+        ], array_merge(self::ALL_CAPABILITIES, ['max_command_age' => 31536000]));
+
+        $this->assertSame(1, $ok['executed']);
+    }
+
+    /**
+     * An action recorded and never resolved must not be invisible.
+     *
+     * The ledger row is written before the action runs — deliberately, since an
+     * effect with no record is worse than a record with no effect. But nothing
+     * looked at rows that stayed `pending`, and that combination had teeth: a
+     * crash between the write and completion (a window that for isolation
+     * contains the iptables calls themselves) left a host that may be cut off,
+     * `dueForExpiry()` ignoring the row because it only selects `applied`, the
+     * Hub seeing nothing because `unreported` excludes pending, and a retry of
+     * the same command skipped as `already_seen`. Console-only recovery.
+     */
+    public function test_an_action_stuck_in_pending_is_swept_rather_than_left(): void
+    {
+        $pid = $this->spawn();
+        $startTime = (new ProcessResponder())->inspect($pid)['start_time'];
+
+        $this->responder()->processCommands([
+            $this->command([
+                'id' => 'stuck-1',
+                'type' => 'suspend_process',
+                'target' => ['pid' => $pid, 'start_time' => $startTime],
+                'ttl_seconds' => 60,
+            ]),
+        ], self::ALL_CAPABILITIES);
+
+        // Put it back into the state a mid-action crash would have left, and
+        // age it. The age has to be real rather than passed in as a grace of
+        // zero: `stuckPending()` floors the grace at 60 seconds so a
+        // misconfiguration cannot sweep an action that is still running, and a
+        // clamp like that silently eating a test parameter is how a test comes
+        // to assert nothing at all.
+        $pdo = new \PDO('sqlite:' . $this->ledgerPath);
+        $pdo->exec("UPDATE actions SET state = 'pending', applied_at = NULL WHERE action_id = 'stuck-1'");
+        $pdo = null;
+
+        // The expiry pass cannot help: it only looks at applied actions.
+        $this->assertSame(0, $this->responder()->expireOverdue()['reverted']);
+
+        // Nor is it counted as unreported, which is why the Hub saw nothing.
+        $stats = $this->ledger()->stats();
+        $this->assertSame(1, $stats['pending']);
+        $this->assertSame(0, $stats['unreported']);
+
+        // Inside the grace period nothing is touched — an action legitimately
+        // mid-flight must not be yanked out from under itself.
+        $this->assertSame(0, $this->responder()->sweepStuckPending(300)['swept']);
+
+        // Age it past the grace period.
+        $pdo = new \PDO('sqlite:' . $this->ledgerPath);
+        $pdo->exec('UPDATE actions SET created_at = ' . (time() - 600) . " WHERE action_id = 'stuck-1'");
+        $pdo = null;
+
+        // Now the effect is undone and the row stops being invisible.
+        $swept = $this->responder()->sweepStuckPending(300);
+
+        $this->assertSame(1, $swept['swept']);
+        $this->assertSame(1, $swept['reverted']);
+
+        $action = $this->ledger()->find('stuck-1');
+        $this->assertSame('reverted', $action['state']);
+        $this->assertSame(0, $this->ledger()->stats()['pending']);
+    }
+
+    /**
+     * A kill cannot be undone, so a stuck kill is recorded as failed rather
+     * than quietly reversed — but it still stops being invisible, and it stops
+     * blocking a retry of the same action id.
+     */
+    public function test_a_stuck_irreversible_action_is_recorded_as_failed(): void
+    {
+        $pid = $this->spawn();
+        $startTime = (new ProcessResponder())->inspect($pid)['start_time'];
+
+        $this->responder()->processCommands([
+            $this->command([
+                'id' => 'stuck-kill',
+                'type' => 'kill_process',
+                'target' => ['pid' => $pid, 'start_time' => $startTime],
+            ]),
+        ], self::ALL_CAPABILITIES);
+
+        $pdo = new \PDO('sqlite:' . $this->ledgerPath);
+        $pdo->exec("UPDATE actions SET state = 'pending', applied_at = NULL, created_at = "
+            . (time() - 600) . " WHERE action_id = 'stuck-kill'");
+        $pdo = null;
+
+        $swept = $this->responder()->sweepStuckPending(300);
+
+        $this->assertSame(1, $swept['swept']);
+        $this->assertSame(1, $swept['failed']);
+        $this->assertSame(0, $swept['reverted'], 'a kill is never claimed to be undone');
+
+        $action = $this->ledger()->find('stuck-kill');
+        $this->assertSame('failed', $action['state']);
+        $this->assertStringContainsString('stuck_pending', (string) $action['error']);
+    }
+
+    /**
      * Gate zero: is it really the Hub asking?
      *
      * The other four gates ask whether the Hub is allowed to do this. None of

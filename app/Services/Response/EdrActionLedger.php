@@ -361,6 +361,48 @@ class EdrActionLedger
     }
 
     /**
+     * Actions stuck in `pending`, which is the state that means we do not know.
+     *
+     * A row is written as pending before the action runs, deliberately: an
+     * effect applied without a record is worse than a record without an effect,
+     * because only one of them is recoverable. But nothing ever looked at rows
+     * that stayed pending, and that left a gap with teeth.
+     *
+     * If the process dies between the write and `markApplied()` — a window that
+     * for isolation contains the actual iptables calls — the outcome was: the
+     * rules may be fully or partly in place, so the host may be cut off;
+     * `dueForExpiry()` ignores the row because it only selects `applied`, so the
+     * safety timer never fires; `stats()` excludes pending from `unreported`, so
+     * the Hub sees nothing wrong; and re-issuing the same command is skipped as
+     * `already_seen`, so it cannot be retried. Recovery was console-only.
+     *
+     * The grace period exists so an action that is legitimately mid-flight is
+     * not yanked out from under itself by a concurrent cycle. A dispatch takes
+     * seconds; anything pending for minutes is not running any more.
+     *
+     * @return array<int, array>
+     */
+    public function stuckPending(int $graceSeconds = 300, ?int $now = null): array
+    {
+        $cutoff = ($now ?? time()) - max(60, $graceSeconds);
+
+        try {
+            $stmt = $this->pdo()->prepare(
+                'SELECT * FROM actions
+                 WHERE state = ? AND created_at <= ?
+                 ORDER BY id ASC'
+            );
+            $stmt->execute([self::STATE_PENDING, $cutoff]);
+
+            return array_map([$this, 'hydrate'], $stmt->fetchAll());
+        } catch (PDOException $e) {
+            Log::warning('[EDR response] Stuck-pending query failed: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
+    /**
      * Applied actions whose deadline has passed and which must be undone.
      *
      * @return array<int, array>

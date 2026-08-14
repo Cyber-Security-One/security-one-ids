@@ -66,17 +66,89 @@ class NetworkContainment
     }
 
     /**
-     * True when the containment chains are currently installed.
+     * Whether the containment chains are installed, or null when it cannot be
+     * determined.
+     *
+     * Three states, not two, and the third one is the whole point of this
+     * method existing in this shape.
+     *
+     * The previous version returned a bool, collapsing "the chain is not there"
+     * and "the question could not be answered" into the same `false`. Measured
+     * on this host, those two are different exit codes and only one of them
+     * means the host is free:
+     *
+     *   root, chain absent   rc=1  "iptables: No chain/target/match by that name."
+     *   root, chain present  rc=0
+     *   www-data, any query  rc=4  "Permission denied (you must be root)"
+     *
+     * The agent runs both as root, from the watchdog, and as www-data, from
+     * `php artisan schedule:work`. So the permission case is not hypothetical:
+     * on the www-data path every query answered rc=4, and a bool-returning
+     * probe reported the host as not isolated.
+     *
+     * What that caused is the worst divergence in the subsystem.
+     * `EdrResponder::reconcile()` treats "not active" as proof that the rules
+     * are gone and marks the ledger reverted with the note
+     * `rules_absent_at_reconcile`. So the root watchdog isolates a host, the
+     * www-data scheduler fails to read iptables, the ledger records the
+     * isolation as lifted, and the Hub is told the host is fine — while the
+     * rules are still in place. And once the ledger says reverted,
+     * `expireOverdue()` will never revert it, so the isolation becomes
+     * permanent by way of a permission error.
+     *
+     * `release()` had the mirror of it: an unreadable chain read as a
+     * successful teardown.
+     *
+     * stderr is captured rather than discarded, because that is what
+     * distinguishes the cases — the old call redirected it to /dev/null and
+     * threw away the only usable signal. Absence is only concluded from
+     * iptables actually saying the chain is not there.
+     */
+    public function state(): ?bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux') {
+            return false;
+        }
+
+        try {
+            $result = Process::timeout(10)->run($this->iptables . ' -n -L ' . self::CHAIN_OUT);
+
+            if ($result->successful()) {
+                return true;
+            }
+
+            $stderr = $result->errorOutput() . "\n" . $result->output();
+
+            // The one message that means the chain genuinely is not installed.
+            if (stripos($stderr, 'No chain/target/match by that name') !== false) {
+                return false;
+            }
+
+            Log::warning('[EDR response] Containment state could not be determined', [
+                'exit_code' => $result->exitCode(),
+                'stderr' => mb_substr(trim($stderr), 0, 300),
+            ]);
+
+            return null;
+        } catch (\Throwable $e) {
+            Log::warning('[EDR response] Containment state probe failed: ' . $e->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * True only when the chains are known to be installed.
+     *
+     * Deliberately not the inverse of "free": `!isActive()` is true both for a
+     * host that is not isolated and for a host whose state is unknown, which is
+     * exactly the conflation that made an unreadable iptables look like a
+     * lifted isolation. Anything that acts on the absence of containment must
+     * call `state()` and handle null.
      */
     public function isActive(): bool
     {
-        try {
-            return Process::timeout(10)
-                ->run($this->iptables . ' -n -L ' . self::CHAIN_OUT . ' 2>/dev/null')
-                ->successful();
-        } catch (\Exception $e) {
-            return false;
-        }
+        return $this->state() === true;
     }
 
     /**
@@ -164,8 +236,18 @@ class NetworkContainment
             return $this->failure('iptables_unavailable');
         }
 
-        if ($this->isActive()) {
+        $state = $this->state();
+
+        if ($state === true) {
             return $this->failure('already_isolated');
+        }
+
+        if ($state === null) {
+            // If iptables cannot be read it almost certainly cannot be written
+            // either, and applying rules without knowing the current state
+            // risks a half-configured chain that neither isolates nor releases
+            // cleanly.
+            return $this->failure('containment_state_unknown');
         }
 
         $allow = $this->resolveAllowlist($hubUrl, $extraAllowed);
@@ -320,12 +402,22 @@ class NetworkContainment
             $this->runIgnoringMissing("{$ipt} -X {$chain}", $errors);
         }
 
-        $stillActive = $this->isActive();
+        $stillActive = $this->state();
 
-        if ($stillActive) {
+        if ($stillActive === true) {
             Log::error('[EDR response] Containment could not be fully removed', ['errors' => $errors]);
 
             return ['success' => false, 'error' => 'release_incomplete', 'result' => ['errors' => $errors]];
+        }
+
+        if ($stillActive === null) {
+            // The teardown commands may well have worked, but claiming success
+            // here is how a host stays cut off while the record says it was
+            // freed. Reporting it unverified keeps the action in the ledger for
+            // the next reconcile pass to settle.
+            Log::error('[EDR response] Containment teardown could not be verified', ['errors' => $errors]);
+
+            return ['success' => false, 'error' => 'release_unverified', 'result' => ['errors' => $errors]];
         }
 
         Log::warning('[EDR response] Network isolation lifted');
@@ -398,9 +490,16 @@ class NetworkContainment
 
     public function getStatus(): array
     {
+        $state = $this->state();
+
         return [
             'supported' => $this->isSupported(),
-            'active' => $this->isActive(),
+            // Kept as a bool for the existing contract, but only true when the
+            // chains are known to be present.
+            'active' => $state === true,
+            // The distinction the bool cannot carry. A consumer that treats
+            // `active: false` as "this host is free" needs to see this.
+            'state' => $state === null ? 'unknown' : ($state ? 'active' : 'inactive'),
             'chains' => [self::CHAIN_OUT, self::CHAIN_IN],
         ];
     }
