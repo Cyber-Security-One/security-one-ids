@@ -145,7 +145,15 @@ class EdrAlertUploader
         ];
 
         try {
-            $request = $this->sync->httpClient(60);
+            // Authenticate in the header as well as the body. The body copy is
+            // the existing Hub contract, but a gzipped body cannot be read
+            // until it is decompressed — so a Hub that authenticates before
+            // decompressing sees only compressed bytes where the token should
+            // be and rejects every compressed upload. The header is readable
+            // either way, which makes the compressed path independent of that
+            // ordering.
+            $request = $this->sync->httpClient(60)
+                ->withHeaders(['Authorization' => 'Bearer ' . $config['token']]);
 
             // Compression is negotiated, not assumed: PHP does not decode a
             // gzipped request body on its own and nginx will not do it for

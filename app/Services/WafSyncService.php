@@ -478,8 +478,32 @@ class WafSyncService
             return;
         }
 
+        // Verdicts before collection, so this cycle's decisions already
+        // reflect whatever an analyst just marked wrong.
+        $this->applyEdrRuleVerdicts($addons);
+
         $this->collectEdrAlerts($addons);
         $this->pruneEdrSpool($addons);
+        $this->maybeReportEdrRuleQuality($addons);
+    }
+
+    /**
+     * Quality metrics go up hourly rather than every cycle: they change
+     * slowly, and a 30-second EDR loop would turn a reporting nicety into a
+     * fleet-wide load problem.
+     */
+    private function maybeReportEdrRuleQuality(array $addons): void
+    {
+        $marker = storage_path('app/edr_quality_reported_at.txt');
+        $last = is_file($marker) ? (int) @file_get_contents($marker) : 0;
+        $interval = max(300, (int) ($addons['edr_quality_report_interval'] ?? 3600));
+
+        if (time() - $last < $interval) {
+            return;
+        }
+
+        @file_put_contents($marker, (string) time());
+        $this->reportEdrRuleQuality($addons);
     }
 
     /**
@@ -593,7 +617,100 @@ class WafSyncService
             // — PHP does not do it automatically and nginx will not do it for
             // us, so assuming support would turn every upload into a 400.
             'upload_compression' => (bool) ($addons['edr_upload_compression'] ?? false),
+
+            // Rule governance. These decide what a match is allowed to do on
+            // this host, which matters far more now that a rule can trigger a
+            // response than it did when the worst case was a noisy list.
+            'baseline_days' => (int) ($addons['edr_baseline_days'] ?? 7),
+            'baseline_min_occurrences' => (int) ($addons['edr_baseline_min_occurrences'] ?? 5),
+            'default_stage' => (string) ($addons['edr_default_rule_stage'] ?? 'alert'),
+            'rule_stages' => is_array($addons['edr_rule_stages'] ?? null) ? $addons['edr_rule_stages'] : [],
         ];
+    }
+
+    /**
+     * Feed analyst verdicts back into per-rule quality tracking.
+     *
+     * This is the only input that turns a hit count into a false-positive
+     * rate. Without it the agent can measure how often a rule fires but not
+     * whether it was ever right, and "fires a lot" and "wrong a lot" are very
+     * different problems with opposite fixes.
+     */
+    private function applyEdrRuleVerdicts(array $addons): void
+    {
+        $verdicts = $addons['edr_rule_verdicts'] ?? null;
+
+        if (!is_array($verdicts) || $verdicts === []) {
+            return;
+        }
+
+        try {
+            $store = app(\App\Services\Quality\EdrGovernanceStore::class);
+            $applied = 0;
+
+            foreach ($verdicts as $verdict) {
+                if (!is_array($verdict)) {
+                    continue;
+                }
+
+                $rule = (string) ($verdict['rule'] ?? '');
+                if ($rule === '') {
+                    continue;
+                }
+
+                $store->recordVerdict(
+                    $rule,
+                    (bool) ($verdict['false_positive'] ?? false),
+                    max(1, (int) ($verdict['count'] ?? 1))
+                );
+                $applied++;
+            }
+
+            if ($applied > 0) {
+                Log::info('[EDR quality] Analyst verdicts applied', ['count' => $applied]);
+            }
+        } catch (\Exception $e) {
+            Log::warning('[EDR quality] Verdict application failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Send per-rule quality metrics and tuning proposals to the Hub.
+     *
+     * Suggestions are proposals only. An exclusion is a permanent blind spot,
+     * and the point of this whole module is that blind spots get chosen
+     * deliberately rather than acquired by accident.
+     */
+    private function reportEdrRuleQuality(array $addons): void
+    {
+        try {
+            $store = app(\App\Services\Quality\EdrGovernanceStore::class);
+            $governor = app(\App\Services\Quality\EdrRuleGovernor::class);
+            $suggester = app(\App\Services\Quality\EdrExclusionSuggester::class);
+
+            $options = $this->edrSensorOptions($addons);
+
+            $payload = [
+                'governance' => $governor->getStatus($options),
+                'rules' => $store->allRuleState(),
+                'exclusion_suggestions' => $suggester->suggest(),
+                'underperforming' => $suggester->underperformingRules(),
+                'promotion_candidates' => $suggester->promotionCandidates(),
+            ];
+
+            $this->reportAgentEvent(
+                'edr_rule_quality',
+                sprintf(
+                    '規則品質回報：追蹤 %d 條規則，%d 條排除建議，%d 條建議下架',
+                    count($payload['rules']),
+                    count($payload['exclusion_suggestions']),
+                    count($payload['underperforming'])
+                ),
+                $payload
+            );
+        } catch (\Exception $e) {
+            Log::warning('[EDR quality] Quality report failed: ' . $e->getMessage());
+        }
     }
 
     /**

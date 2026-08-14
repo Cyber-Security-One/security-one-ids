@@ -36,6 +36,7 @@ class EdrEventCollector
     private EdrRuleEngine $rules;
     private EdrEventSpool $spool;
     private EdrAlertFactory $factory;
+    private \App\Services\Quality\EdrRuleGovernor $governor;
 
     /** @var array<int, string> uid => username */
     private array $userCache = [];
@@ -44,12 +45,14 @@ class EdrEventCollector
         OsqueryEngine $engine,
         EdrRuleEngine $rules,
         EdrEventSpool $spool,
-        EdrAlertFactory $factory
+        EdrAlertFactory $factory,
+        \App\Services\Quality\EdrRuleGovernor $governor
     ) {
         $this->engine = $engine;
         $this->rules = $rules;
         $this->spool = $spool;
         $this->factory = $factory;
+        $this->governor = $governor;
     }
 
     /**
@@ -65,7 +68,9 @@ class EdrEventCollector
                 'events' => 0,
                 'alerts' => 0,
                 'spooled' => 0,
+                'suppressed' => 0,
                 'by_rule' => [],
+                'by_suppression' => [],
                 'backend' => $this->engine->resolveBackend(),
             ],
         ];
@@ -84,6 +89,7 @@ class EdrEventCollector
         $this->rules->setExclusions($options['exclusions'] ?? []);
         $this->rules->setWebAccountAllowlist($options['web_account_allowlist'] ?? []);
         $this->spool->setEncryption((bool) ($options['spool_encrypt'] ?? false));
+        $this->governor->ensureBaselineStarted();
 
         $read = $this->readNewLines($logPath);
         $lines = $read['lines'];
@@ -100,6 +106,9 @@ class EdrEventCollector
         $alerts = [];
         $byRule = [];
         $findingsByEvent = [];
+        $deliverable = [];
+        $bySuppression = [];
+        $suppressed = 0;
 
         foreach ($lines as $line) {
             $event = $this->normalize($line);
@@ -115,27 +124,70 @@ class EdrEventCollector
                 continue;
             }
 
-            $findingsByEvent[$eventIndex] = $findings;
+            // Governance decides what a match is allowed to do here: an
+            // unproven rule, a host still learning, or a shape that recurs
+            // constantly on this machine all produce a hit that is counted
+            // but not raised.
+            $emitted = [];
 
             foreach ($findings as $finding) {
+                $decision = $this->governor->assess($finding, $event, $options);
+                $this->governor->record($decision, $finding, $event, $options);
+
+                // Count every hit, including suppressed ones — the suppression
+                // rate per rule is exactly what tells you whether a rule is
+                // earning its place.
                 $byRule[$finding['rule']] = ($byRule[$finding['rule']] ?? 0) + 1;
+
+                if ($decision['emit']) {
+                    $finding['stage'] = $decision['stage'];
+                    $finding['allow_response'] = $decision['allow_response'];
+                    $emitted[] = $finding;
+                } else {
+                    $suppressed++;
+                    $bySuppression[$decision['reason'] ?? 'unknown'] =
+                        ($bySuppression[$decision['reason'] ?? 'unknown'] ?? 0) + 1;
+                }
             }
 
-            if (count($alerts) < self::MAX_ALERTS_PER_CYCLE) {
-                $alerts[] = ['event' => $event, 'findings' => $findings];
+            // Store every finding, emitted or not. A suppressed match is the
+            // raw material for tuning, and a retro-hunt after new intel needs
+            // to see what was held back at the time.
+            $findingsByEvent[$eventIndex] = $findings;
+            $deliverable[$eventIndex] = $emitted !== [];
+
+            if ($emitted !== [] && count($alerts) < self::MAX_ALERTS_PER_CYCLE) {
+                $alerts[] = ['event' => $event, 'findings' => $emitted];
             }
         }
 
         $alerts = $this->collapseWrappers($alerts);
 
-        // Cross-event rules run over the whole batch.
+        // Cross-event rules run over the whole batch, and go through the same
+        // governance as single-event ones — a burst rule is no more entitled
+        // to bypass a learning window than any other.
         foreach ($this->rules->evaluateBatch($events) as $batchHit) {
+            $emitted = [];
+
             foreach ($batchHit['findings'] as $finding) {
+                $decision = $this->governor->assess($finding, $batchHit['event'], $options);
+                $this->governor->record($decision, $finding, $batchHit['event'], $options);
+
                 $byRule[$finding['rule']] = ($byRule[$finding['rule']] ?? 0) + 1;
+
+                if ($decision['emit']) {
+                    $finding['stage'] = $decision['stage'];
+                    $finding['allow_response'] = $decision['allow_response'];
+                    $emitted[] = $finding;
+                } else {
+                    $suppressed++;
+                    $bySuppression[$decision['reason'] ?? 'unknown'] =
+                        ($bySuppression[$decision['reason'] ?? 'unknown'] ?? 0) + 1;
+                }
             }
 
-            if (count($alerts) < self::MAX_ALERTS_PER_CYCLE) {
-                $alerts[] = $batchHit;
+            if ($emitted !== [] && count($alerts) < self::MAX_ALERTS_PER_CYCLE) {
+                $alerts[] = ['event' => $batchHit['event'], 'findings' => $emitted];
             }
         }
 
@@ -146,7 +198,7 @@ class EdrEventCollector
         // value is being able to answer "did this binary ever run here" when
         // the intel arrives a week later.
         $spoolEnabled = $options['spool_enabled'] ?? true;
-        $spooled = $spoolEnabled ? $this->spool->store($events, $findingsByEvent) : 0;
+        $spooled = $spoolEnabled ? $this->spool->store($events, $findingsByEvent, $deliverable) : 0;
 
         // Advance the cursor only now. If the spool write failed we leave it
         // where it was and re-read the same window next cycle: duplicated
@@ -174,7 +226,10 @@ class EdrEventCollector
                 'events' => count($events),
                 'alerts' => count($alerts),
                 'spooled' => $spooled,
+                'suppressed' => $suppressed,
                 'by_rule' => $byRule,
+                'by_suppression' => $bySuppression,
+                'learning' => $this->governor->isLearning((int) ($options['baseline_days'] ?? 7)),
                 'backend' => $this->engine->resolveBackend(),
             ],
         ];

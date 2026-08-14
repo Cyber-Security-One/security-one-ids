@@ -210,11 +210,17 @@ class EdrEventSpool
      * Never throws: a spool failure must degrade the agent to its previous
      * stateless behaviour, not take down the collection cycle.
      *
-     * @param  array<int, array>  $events   normalised events
-     * @param  array<int, array>  $findings rule hits keyed by the event's array index
+     * @param  array<int, array> $events      normalised events
+     * @param  array<int, array> $findings    rule hits keyed by the event's array index
+     * @param  array<int, bool>  $deliverable which of those hits may go to the Hub,
+     *                                        keyed the same way. A finding that
+     *                                        governance suppressed is still stored —
+     *                                        retro-hunt and rule tuning both need to
+     *                                        see what was held back — but it is not
+     *                                        queued for delivery.
      * @return int number of rows written
      */
-    public function store(array $events, array $findings = []): int
+    public function store(array $events, array $findings = [], array $deliverable = []): int
     {
         if ($events === []) {
             return 0;
@@ -271,9 +277,10 @@ class EdrEventSpool
                     ':extra' => $this->encodeExtra($event),
                     ':severity' => $hits !== [] ? EdrRuleEngine::worstSeverity($hits) : null,
                     ':rule_hits' => $hits !== [] ? json_encode($hits, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
-                    // Only rule hits are queued for the Hub. Everything else
-                    // stays here so a retro-hunt has something to hunt through.
-                    ':deliver' => $hits !== [] ? 1 : 0,
+                    // Only rule hits are queued for the Hub, and only those
+                    // governance let through. Everything else stays here so a
+                    // retro-hunt has something to hunt through.
+                    ':deliver' => ($hits !== [] && ($deliverable[$index] ?? true)) ? 1 : 0,
                 ]);
 
                 $written++;
