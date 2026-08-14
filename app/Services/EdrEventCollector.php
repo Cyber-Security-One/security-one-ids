@@ -84,8 +84,14 @@ class EdrEventCollector
         $this->rules->setExclusions($options['exclusions'] ?? []);
         $this->rules->setWebAccountAllowlist($options['web_account_allowlist'] ?? []);
 
-        $lines = $this->readNewLines($logPath);
+        $read = $this->readNewLines($logPath);
+        $lines = $read['lines'];
+
         if ($lines === []) {
+            // Nothing to spool, so the cursor can move immediately — this is
+            // the path that skips past an idle or already-drained file.
+            $this->commitCursor($read['cursor']);
+
             return $empty;
         }
 
@@ -138,9 +144,20 @@ class EdrEventCollector
         // only over past alerts is pointless — you already have those. The
         // value is being able to answer "did this binary ever run here" when
         // the intel arrives a week later.
-        $spooled = $options['spool_enabled'] ?? true
-            ? $this->spool->store($events, $findingsByEvent)
-            : 0;
+        $spoolEnabled = $options['spool_enabled'] ?? true;
+        $spooled = $spoolEnabled ? $this->spool->store($events, $findingsByEvent) : 0;
+
+        // Advance the cursor only now. If the spool write failed we leave it
+        // where it was and re-read the same window next cycle: duplicated
+        // events are cheap, and a gap in the retro-hunt corpus is not
+        // recoverable.
+        if (!$spoolEnabled || $events === [] || $spooled > 0) {
+            $this->commitCursor($read['cursor']);
+        } else {
+            Log::warning('[EDR] Spool write failed, holding cursor to re-read next cycle', [
+                'events' => count($events),
+            ]);
+        }
 
         // Returned for the dry-run view only. Real delivery happens from the
         // spool, so an alert surviving a Hub outage does not depend on the
@@ -249,87 +266,237 @@ class EdrEventCollector
     /* ------------------------------------------------------------------ */
 
     /**
-     * Read whatever is new since last cycle, tracking the inode so a rotation
-     * restarts cleanly instead of replaying or silently stalling.
+     * Read whatever is new since last cycle.
      *
-     * @return array<int, string>
+     * The cursor is returned rather than saved. Committing it here would mean
+     * a crash between the read and the spool write silently loses that
+     * window — the cursor would already say those bytes were handled. The
+     * caller commits only once the events are durably on disk, so the worst
+     * case becomes re-reading a batch (harmless) instead of dropping one.
+     *
+     * @return array{lines: array<int, string>, cursor: ?array}
      */
     private function readNewLines(string $logPath): array
     {
-        $stateFile = storage_path('app/edr_log_position.json');
-        $state = [];
-
-        if (is_file($stateFile)) {
-            $state = json_decode((string) @file_get_contents($stateFile), true) ?: [];
-        }
+        $state = $this->loadCursor();
 
         clearstatcache(true, $logPath);
         $stat = @stat($logPath);
         if ($stat === false) {
-            return [];
+            return ['lines' => [], 'cursor' => null];
         }
 
         $inode = (int) $stat['ino'];
         $size = (int) $stat['size'];
         $position = (int) ($state['position'] ?? 0);
+        $previousInode = (int) ($state['inode'] ?? 0);
 
-        // New file (rotation) or truncation → start over from the top.
-        if ((int) ($state['inode'] ?? 0) !== $inode || $size < $position) {
+        // Fingerprint the head of the file. Inode plus size cannot detect a
+        // truncate-and-rewrite that lands on a similar length — the cursor
+        // would sit past the new content and the agent would silently stop
+        // reading. Comparing the first bytes is what log shippers do, and it
+        // is the only thing that catches this case.
+        $fingerprint = $this->fingerprint($logPath);
+        $previousFingerprint = (string) ($state['fingerprint'] ?? '');
+
+        $lines = [];
+        $budget = self::MAX_BYTES_PER_CYCLE;
+
+        // Rotation: the file we were following still exists under another
+        // name, and its tail holds every event written between our last read
+        // and the rotation. Drain that first — without this, a rotation
+        // silently eats up to one cycle's worth of telemetry.
+        if ($previousInode !== 0 && $previousInode !== $inode) {
+            $rotated = $this->findRotatedFile($logPath, $previousInode);
+
+            if ($rotated !== null) {
+                $tail = $this->readFrom($rotated, $position, $budget);
+                $lines = $tail['lines'];
+                $budget -= $tail['consumed'];
+
+                Log::info('[EDR] Drained rotated sensor log', [
+                    'file' => basename($rotated),
+                    'lines' => count($tail['lines']),
+                ]);
+            }
+
+            // Either way the new file starts from the top.
+            $position = 0;
+        } elseif ($size < $position
+            || ($previousFingerprint !== '' && $fingerprint !== null && $fingerprint !== $previousFingerprint)
+        ) {
+            // Replaced in place (truncate-and-rewrite) — nothing to recover
+            // from the old content, but we must not stay parked past the end
+            // of the new content.
+            Log::warning('[EDR] Sensor log replaced in place, restarting from top');
             $position = 0;
         }
 
         if ($size <= $position) {
-            $this->saveState($stateFile, $inode, $position);
-
-            return [];
+            return [
+                'lines' => $lines,
+                'cursor' => ['inode' => $inode, 'position' => $position, 'fingerprint' => $fingerprint],
+            ];
         }
 
         // On a backlog, skip forward rather than trying to catch up: stale
         // process events are not worth blocking the sync cycle for.
-        $skipped = 0;
-        if ($size - $position > self::MAX_BYTES_PER_CYCLE) {
-            $skipped = $size - $position - self::MAX_BYTES_PER_CYCLE;
-            $position = $size - self::MAX_BYTES_PER_CYCLE;
+        if ($size - $position > $budget) {
+            $skipped = $size - $position - $budget;
+            $position = $size - $budget;
             Log::warning('[EDR] Sensor backlog exceeded cycle budget, skipping ahead', [
                 'skipped_bytes' => $skipped,
             ]);
         }
 
-        $handle = @fopen($logPath, 'r');
+        $current = $this->readFrom($logPath, $position, $budget, $position > 0 && $size - $position >= $budget);
+
+        return [
+            'lines' => array_merge($lines, $current['lines']),
+            'cursor' => [
+                'inode' => $inode,
+                'position' => $position + $current['consumed'],
+                'fingerprint' => $fingerprint,
+            ],
+        ];
+    }
+
+    /**
+     * Hash of the file's opening bytes, used to notice that the file we are
+     * following has been replaced even when inode and size look unchanged.
+     */
+    private function fingerprint(string $path, int $bytes = 256): ?string
+    {
+        $handle = @fopen($path, 'r');
         if ($handle === false) {
-            return [];
+            return null;
         }
 
-        fseek($handle, $position);
+        $head = fread($handle, $bytes);
+        fclose($handle);
 
-        // A skip-ahead almost certainly landed mid-line; drop the partial.
-        if ($skipped > 0) {
-            fgets($handle);
+        return $head === false || $head === '' ? null : md5($head);
+    }
+
+    /**
+     * Read complete lines from an offset, never consuming a partial trailing
+     * line: osquery may be mid-write, and advancing past half a JSON object
+     * would drop that event permanently.
+     *
+     * @return array{lines: array<int, string>, consumed: int}
+     */
+    private function readFrom(string $path, int $offset, int $budget, bool $dropFirstPartial = false): array
+    {
+        $handle = @fopen($path, 'r');
+        if ($handle === false) {
+            return ['lines' => [], 'consumed' => 0];
+        }
+
+        fseek($handle, $offset);
+
+        $consumed = 0;
+
+        // A skip-ahead almost certainly landed mid-line; drop the remainder.
+        if ($dropFirstPartial) {
+            $discard = fgets($handle);
+            if ($discard !== false) {
+                $consumed += strlen($discard);
+            }
         }
 
         $lines = [];
-        while (($line = fgets($handle)) !== false) {
-            $line = trim($line);
+
+        while ($consumed < $budget && ($raw = fgets($handle)) !== false) {
+            // No trailing newline means the writer has not finished this
+            // line. Leave it for the next cycle.
+            if (!str_ends_with($raw, "\n")) {
+                break;
+            }
+
+            $consumed += strlen($raw);
+
+            $line = trim($raw);
             if ($line !== '') {
                 $lines[] = $line;
             }
         }
 
-        $newPosition = ftell($handle);
         fclose($handle);
 
-        $this->saveState($stateFile, $inode, $newPosition === false ? $size : $newPosition);
-
-        return $lines;
+        return ['lines' => $lines, 'consumed' => $consumed];
     }
 
-    private function saveState(string $stateFile, int $inode, int $position): void
+    /**
+     * Locate the file we were following after a rotation, by inode. Matching
+     * on inode rather than a naming convention means this keeps working
+     * whether osquery rotates to `.1`, a timestamp suffix, or something else
+     * entirely.
+     */
+    private function findRotatedFile(string $logPath, int $inode): ?string
     {
-        @file_put_contents($stateFile, json_encode([
+        foreach ((array) @glob($logPath . '*') as $candidate) {
+            if ($candidate === $logPath || !is_file($candidate)) {
+                continue;
+            }
+
+            clearstatcache(true, $candidate);
+            $stat = @stat($candidate);
+
+            if ($stat !== false && (int) $stat['ino'] === $inode) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function loadCursor(): array
+    {
+        $stateFile = storage_path('app/edr_log_position.json');
+
+        if (!is_file($stateFile)) {
+            return [];
+        }
+
+        $state = json_decode((string) @file_get_contents($stateFile), true);
+
+        return is_array($state) ? $state : [];
+    }
+
+    /**
+     * Persist the cursor. Called only after the batch is safely spooled.
+     */
+    private function commitCursor(?array $cursor): void
+    {
+        if ($cursor === null) {
+            return;
+        }
+
+        $this->saveState(
+            storage_path('app/edr_log_position.json'),
+            (int) $cursor['inode'],
+            (int) $cursor['position'],
+            $cursor['fingerprint'] ?? null
+        );
+    }
+
+    private function saveState(string $stateFile, int $inode, int $position, ?string $fingerprint = null): void
+    {
+        // Write-then-rename so a crash mid-write cannot leave a truncated
+        // cursor file, which would restart the collector from byte zero and
+        // replay the whole sensor log.
+        $payload = json_encode([
             'inode' => $inode,
             'position' => $position,
+            'fingerprint' => $fingerprint,
             'updated_at' => now()->toIso8601String(),
-        ]));
+        ]);
+
+        $tmp = $stateFile . '.tmp';
+
+        if (@file_put_contents($tmp, $payload) !== false) {
+            @rename($tmp, $stateFile);
+        }
     }
 
     /* ------------------------------------------------------------------ */

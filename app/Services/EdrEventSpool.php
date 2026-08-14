@@ -156,6 +156,20 @@ class EdrEventSpool
         $this->pdo->exec('CREATE INDEX IF NOT EXISTS idx_events_severity ON events (severity) WHERE severity IS NOT NULL');
     }
 
+    /**
+     * Release the connection.
+     *
+     * In production the agent restarts between releases, so the upgrade path
+     * never has a stale handle. Maintenance work that rewrites the file —
+     * and any test that manipulates the schema underneath us — needs this,
+     * because SQLite in WAL mode will not alter a table while a connection
+     * is open against it.
+     */
+    public function close(): void
+    {
+        $this->pdo = null;
+    }
+
     public function isAvailable(): bool
     {
         try {
