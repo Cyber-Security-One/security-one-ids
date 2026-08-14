@@ -222,20 +222,53 @@ class OsqueryEngine
      */
     public function resolveBackend(): string
     {
+        if ($this->isDarwin()) {
+            return $this->supportsEndpointSecurity() ? 'endpointsecurity' : '';
+        }
+
         if ($this->supportsBpf()) {
             return 'bpf';
         }
 
-        if (!$this->isWindows() && PHP_OS !== 'Darwin' && !$this->auditdIsActive()) {
+        if (!$this->isWindows() && !$this->auditdIsActive()) {
             return 'audit';
         }
 
         return '';
     }
 
+    /**
+     * macOS is supported through EndpointSecurity, Linux through eBPF or
+     * audit. Windows is not: ETW needs a different sensor entirely.
+     */
     public function isSupportedPlatform(): bool
     {
-        return !$this->isWindows() && PHP_OS !== 'Darwin';
+        return !$this->isWindows();
+    }
+
+    public function isDarwin(): bool
+    {
+        return PHP_OS_FAMILY === 'Darwin';
+    }
+
+    /**
+     * Is EndpointSecurity usable here?
+     *
+     * Two conditions the operator has to satisfy and this agent cannot:
+     * osquery must be present (its macOS package is signed and installed by
+     * hand, not fetched), and the binary must hold the EndpointSecurity
+     * entitlement with Full Disk Access granted. Neither can be arranged from
+     * userland, so the honest report is "not available", never a silent
+     * fallback to a backend that does not exist on this platform.
+     */
+    public function supportsEndpointSecurity(): bool
+    {
+        if (!$this->isDarwin()) {
+            return false;
+        }
+
+        // Darwin 19 is macOS 10.15, the first release with EndpointSecurity.
+        return version_compare(php_uname('r'), '19.0.0', '>=') && $this->isInstalled();
     }
 
     /* ------------------------------------------------------------------ */
@@ -260,12 +293,20 @@ class OsqueryEngine
             return false;
         }
 
+        // Guard against PID reuse: the pidfile may outlive the daemon and a
+        // brand new, unrelated process can land on the same number. The
+        // command line is the evidence; where it is read from is a platform
+        // question, and macOS has no /proc at all.
+        if ($this->isDarwin()) {
+            $out = (string) @shell_exec('ps -p ' . escapeshellarg((string) $pid) . ' -o command= 2>/dev/null');
+
+            return str_contains($out, 'osqueryd');
+        }
+
         if (!file_exists("/proc/{$pid}")) {
             return false;
         }
 
-        // Guard against PID reuse: the pidfile may outlive the daemon and a
-        // brand new, unrelated process can land on the same number.
         $cmdline = (string) @file_get_contents("/proc/{$pid}/cmdline");
 
         return str_contains($cmdline, 'osqueryd');
@@ -295,8 +336,12 @@ class OsqueryEngine
         $interval = max(5, min(300, (int) ($options['interval'] ?? 15)));
         $wantSockets = (bool) ($options['socket_events'] ?? false);
 
-        $processTable = $backend === 'bpf' ? 'bpf_process_events' : 'process_events';
-        $socketTable = $backend === 'bpf' ? 'bpf_socket_events' : 'socket_events';
+        // Table names are a property of the platform and its publisher, so
+        // they come from the profile rather than a conditional here — the same
+        // reason every other platform fact does.
+        $tables = \App\Services\Platform\EdrPlatformProfile::current()->sensorTables($backend);
+        $processTable = $tables['process'];
+        $socketTable = $tables['socket'];
 
         $schedule = [
             'process_exec' => [
@@ -307,6 +352,14 @@ class OsqueryEngine
             ],
         ];
 
+        // macOS has no per-process socket event table — EndpointSecurity does
+        // not publish one, and nothing in userland can synthesise it. The
+        // listener snapshot below still works, so a new listening port is
+        // visible; an outbound connection is not. That gap is reported rather
+        // than papered over: a scheduled query naming a table that does not
+        // exist makes osquery log an error every interval and produces
+        // nothing, which reads like a broken sensor rather than a platform
+        // limit.
         if ($wantSockets) {
             // Listening sockets come from a point-in-time table rather than
             // from the socket event stream, because the event stream cannot
@@ -332,15 +385,22 @@ class OsqueryEngine
                 'description' => 'Listening sockets with owning process (EDR)',
             ];
 
-            $schedule['process_socket'] = [
-                'query' => "SELECT * FROM {$socketTable};",
-                // Socket events are an order of magnitude noisier than exec;
-                // flush them less often so a chatty host cannot swamp the
-                // collector between sync cycles.
-                'interval' => $interval * 2,
-                'removed' => false,
-                'description' => 'Per-process network telemetry (EDR)',
-            ];
+            // The event stream itself only exists where the platform
+            // publishes one. Scheduling a query against a table that is not
+            // there makes osquery log an error every interval and return
+            // nothing, which reads like a broken sensor rather than a
+            // platform that cannot answer the question.
+            if ($socketTable !== null) {
+                $schedule['process_socket'] = [
+                    'query' => "SELECT * FROM {$socketTable};",
+                    // Socket events are an order of magnitude noisier than
+                    // exec; flush them less often so a chatty host cannot
+                    // swamp the collector between sync cycles.
+                    'interval' => $interval * 2,
+                    'removed' => false,
+                    'description' => 'Per-process network telemetry (EDR)',
+                ];
+            }
         }
 
         // File integrity monitoring rides the same daemon. The inotify
@@ -390,6 +450,11 @@ class OsqueryEngine
             'options' => [
                 'disable_events' => false,
                 'enable_bpf_events' => $backend === 'bpf',
+                // EndpointSecurity is macOS's only publisher and needs the
+                // binary to carry Apple's entitlement plus Full Disk Access —
+                // neither of which this agent can grant itself.
+                'disable_endpointsecurity' => $backend !== 'endpointsecurity',
+                'enable_endpointsecurity' => $backend === 'endpointsecurity',
                 'disable_audit' => $backend !== 'audit',
                 'audit_allow_config' => $backend === 'audit',
                 'audit_allow_process_events' => $backend === 'audit',
@@ -597,11 +662,29 @@ class OsqueryEngine
     public function install(string $version = '5.15.0'): array
     {
         if (!$this->isSupportedPlatform()) {
-            return ['success' => false, 'error' => 'Endpoint sensor is Linux-only in this release'];
+            return ['success' => false, 'error' => 'Endpoint sensor does not support Windows in this release'];
         }
 
         if ($this->isInstalled()) {
             return ['success' => true, 'message' => 'Already installed', 'version' => $this->getVersion()];
+        }
+
+        // macOS is deliberately not auto-installed.
+        //
+        // The package is notarised and its EndpointSecurity entitlement only
+        // takes effect once an administrator grants Full Disk Access through
+        // System Settings — a decision a person has to make in a GUI. An agent
+        // that "installed" osquery here would leave a daemon that starts,
+        // reports healthy, and produces no events at all, which is exactly the
+        // failure this pipeline is built to avoid making invisible.
+        if ($this->isDarwin()) {
+            return [
+                'success' => false,
+                'error' => 'macOS requires the osquery package to be installed by an administrator, '
+                    . 'and Full Disk Access granted to osqueryd so EndpointSecurity can attach. '
+                    . 'The agent will use the sensor once it is present.',
+                'manual' => true,
+            ];
         }
 
         $arch = $this->detectArch();

@@ -19,10 +19,19 @@ namespace App\Services;
  */
 class EdrRuleEngine
 {
-    /** Accounts a web server runs as. A shell here is the classic webshell tell. */
+    /**
+     * Accounts a web server runs as. A shell here is the classic webshell tell.
+     *
+     * Both platforms' names are listed rather than selected, because the cost
+     * of being wrong is asymmetric: an account that does not exist on this
+     * host simply never matches, while a missing one silently removes the
+     * highest-value detection in the product. macOS prefixes service accounts
+     * with an underscore, so `_www` is Apache's there.
+     */
     private const WEB_ACCOUNTS = [
         'www-data', 'nginx', 'apache', 'apache2', 'httpd', 'nobody',
         'php-fpm', 'www', 'lighttpd', 'caddy',
+        '_www', '_httpd', '_appserver', '_devicemgr',
     ];
 
     /**
