@@ -92,16 +92,21 @@ class EdrRuleGovernor
 
     public function isLearning(int $baselineDays = self::DEFAULT_BASELINE_DAYS): bool
     {
-        $startedAt = $this->baselineStartedAt();
-
-        if ($startedAt === null) {
-            return true;
-        }
-
-        // Zero disables the window entirely, for a redeployment onto a host
-        // whose behaviour is already understood.
+        // An explicit zero disables the window outright — for a redeployment
+        // onto a host whose behaviour is already understood. This is checked
+        // first on purpose: an operator turning learning off must not be
+        // overruled by the absence of a start marker, which is exactly the
+        // state a fresh install is in.
         if ($baselineDays <= 0) {
             return false;
+        }
+
+        $startedAt = $this->baselineStartedAt();
+
+        // No marker yet means the clock has not been started, so treat the
+        // host as still learning until it has been.
+        if ($startedAt === null) {
+            return true;
         }
 
         return (time() - $startedAt) < ($baselineDays * 86400);

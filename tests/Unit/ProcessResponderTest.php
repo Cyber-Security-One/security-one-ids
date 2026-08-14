@@ -125,7 +125,10 @@ class ProcessResponderTest extends TestCase
 
         $this->assertTrue($result['success']);
         $this->assertTrue($result['confirmed_dead']);
-        $this->assertNull($this->responder->inspect($pid));
+
+        // Reaped or a zombie — either way it has exited. Whether the parent
+        // has collected it yet is not something the response layer controls.
+        $this->assertFalse($this->responder->isAlive($pid), 'the process must no longer be running');
 
         $again = $this->responder->kill($pid, $info['start_time']);
         $this->assertFalse($again['success']);

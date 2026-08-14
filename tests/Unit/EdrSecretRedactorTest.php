@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Services\EdrEventSpool;
 use App\Services\EdrSecretRedactor;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -53,9 +54,7 @@ class EdrSecretRedactorTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider secretProvider
-     */
+    #[DataProvider('secretProvider')]
     public function test_redacts_credential_shapes(string $cmdline, string $secret): void
     {
         $this->assertStringNotContainsString($secret, $this->redactor->redact($cmdline));
@@ -72,9 +71,7 @@ class EdrSecretRedactorTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider benignProvider
-     */
+    #[DataProvider('benignProvider')]
     public function test_leaves_ordinary_commands_untouched(string $cmdline): void
     {
         $this->assertSame($cmdline, $this->redactor->redact($cmdline));

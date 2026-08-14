@@ -77,7 +77,12 @@ class EdrCollectorCursorTest extends TestCase
             $this->engine(),
             new EdrRuleEngine(),
             new EdrEventSpool($spoolPath ?? $this->spoolPath),
-            new EdrAlertFactory()
+            new EdrAlertFactory(),
+            // Learning disabled: these tests are about cursor mechanics, and
+            // a live baseline window would suppress the findings they rely on.
+            new \App\Services\Quality\EdrRuleGovernor(
+                new \App\Services\Quality\EdrGovernanceStore($this->dir . '/governance.sqlite')
+            )
         );
     }
 

@@ -66,18 +66,40 @@ class ProcessResponder
         preg_match('/^Name:\s*(.+)$/m', $status, $nameMatch);
         preg_match('/^State:\s*(\S)/m', $status, $stateMatch);
 
+        $state = $stateMatch[1] ?? null;
+
         return [
             'pid' => $pid,
             'ppid' => isset($ppidMatch[1]) ? (int) $ppidMatch[1] : null,
             'uid' => isset($uidMatch[1]) ? (int) $uidMatch[1] : null,
             'name' => isset($nameMatch[1]) ? trim($nameMatch[1]) : null,
-            'state' => $stateMatch[1] ?? null,
+            'state' => $state,
             'path' => $exe !== false ? $exe : null,
             'cmdline' => trim(str_replace("\0", ' ', $cmdlineRaw)),
             'start_time' => $startTime,
-            // An empty cmdline with a live /proc entry is a kernel thread.
-            'kernel_thread' => $cmdlineRaw === '',
+            // A kernel thread has no command line — but neither does a
+            // zombie, whose argv is torn down when it exits. Classifying a
+            // zombie as a kernel thread would put it behind the never-touch
+            // guardrail, so a process that has already exited could never be
+            // reported as dead.
+            'kernel_thread' => $cmdlineRaw === '' && $state !== 'Z',
+            'exited' => $state === 'Z',
         ];
+    }
+
+    /**
+     * Whether a process is still running. A zombie has exited and is only
+     * waiting to be reaped, so it counts as gone.
+     */
+    public function isAlive(int $pid, ?int $expectedStartTime = null): bool
+    {
+        $check = $this->verifyIdentity($pid, $expectedStartTime);
+
+        if (!$check['ok']) {
+            return false;
+        }
+
+        return ($check['process']['state'] ?? null) !== 'Z';
     }
 
     /**
