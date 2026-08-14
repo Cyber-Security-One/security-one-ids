@@ -98,7 +98,13 @@ enum AgentReader {
     /// never close: the console freezes on stale data, or — worse, and this is
     /// how it was found — a diagnostic that had already computed its answer
     /// sits waiting to print it.
-    static let readTimeout: TimeInterval = 20
+    ///
+    /// Forty-five seconds, not twenty. A cold call was measured at 16.5s on a
+    /// Mac where osqueryd's version probe burned its entire fifteen second
+    /// timeout, and a limit set just above what has been observed converts the
+    /// next slow host into a reported hang. The bound is here to stop waiting
+    /// forever, not to police the agent's response time.
+    static let readTimeout: TimeInterval = 45
 
     static func read() -> Snapshot {
         guard let php = resolvePHP() else {
