@@ -109,11 +109,33 @@ class SyncEdr extends Command
         }
 
         if (!$status['supported']) {
-            $this->warn('  → This platform is not supported yet (Linux only).');
+            $this->warn('  → This platform has no sensor yet (Windows needs ETW).');
         } elseif (!$status['installed']) {
-            $this->warn('  → Not installed. Run: php artisan ids:sync-edr --install');
+            // The next step is genuinely different per platform, and pointing
+            // a Mac operator at `--install` sends them to a command that
+            // refuses by design. An instruction that cannot work is worse than
+            // none: it reads as a broken agent rather than a step nobody can
+            // automate.
+            if ($engine->isDarwin()) {
+                $this->warn('  → Not installed. macOS needs the package installed by hand:');
+                $this->line('      brew install --cask osquery');
+                $this->line('    then grant Full Disk Access to osqueryd in');
+                $this->line('      System Settings → Privacy & Security → Full Disk Access');
+            } else {
+                $this->warn('  → Not installed. Run: php artisan ids:sync-edr --install');
+            }
         } elseif ($status['backend'] === '') {
-            $this->error('  → No usable backend: needs kernel 5.8+ with BTF, or auditd stopped.');
+            if ($engine->isDarwin()) {
+                // Installed but no backend on a Mac means one thing: the
+                // entitlement has not taken effect, which is always the Full
+                // Disk Access grant. Naming the actual cause saves an hour of
+                // looking for a broken install.
+                $this->error('  → osquery is present but EndpointSecurity has not attached.');
+                $this->line('    Grant Full Disk Access to osqueryd, then re-check:');
+                $this->line('      System Settings → Privacy & Security → Full Disk Access');
+            } else {
+                $this->error('  → No usable backend: needs kernel 5.8+ with BTF, or auditd stopped.');
+            }
         } elseif (!$status['running']) {
             $this->warn('  → Installed but not running. Run: php artisan ids:sync-edr --start');
         }
