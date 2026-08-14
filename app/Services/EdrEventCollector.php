@@ -83,6 +83,7 @@ class EdrEventCollector
 
         $this->rules->setExclusions($options['exclusions'] ?? []);
         $this->rules->setWebAccountAllowlist($options['web_account_allowlist'] ?? []);
+        $this->spool->setEncryption((bool) ($options['spool_encrypt'] ?? false));
 
         $read = $this->readNewLines($logPath);
         $lines = $read['lines'];

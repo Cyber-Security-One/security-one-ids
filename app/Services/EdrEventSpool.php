@@ -43,10 +43,27 @@ class EdrEventSpool
 
     private ?PDO $pdo = null;
     private string $path;
+    private EdrSecretRedactor $redactor;
 
-    public function __construct(?string $path = null)
+    /**
+     * Optional field encryption for the command line. Off by default and
+     * documented as such: the key lives in .env on the same host, so this
+     * defends against a stolen disk or an exfiltrated backup, not against an
+     * attacker with root. Redaction is the control that actually removes the
+     * exposure; this exists for deployments that need the compliance
+     * checkbox on top.
+     */
+    private bool $encrypt = false;
+
+    public function __construct(?string $path = null, ?EdrSecretRedactor $redactor = null)
     {
         $this->path = $path ?? storage_path('app/edr/spool.sqlite');
+        $this->redactor = $redactor ?? new EdrSecretRedactor();
+    }
+
+    public function setEncryption(bool $enabled): void
+    {
+        $this->encrypt = $enabled;
     }
 
     public function getPath(): string
@@ -230,6 +247,11 @@ class EdrEventSpool
             foreach ($events as $index => $event) {
                 $hits = $findings[$index] ?? [];
 
+                // Secrets are removed before anything touches disk, so they
+                // never reach the spool, the Hub, a support bundle, or a
+                // backup. Detection already ran against the raw value.
+                $cmdline = $this->redactor->redact($event['cmdline'] ?? null);
+
                 $stmt->execute([
                     ':schema_version' => self::SCHEMA_VERSION,
                     ':ts' => (int) ($event['ts'] ?? $now),
@@ -242,7 +264,7 @@ class EdrEventSpool
                     ':uid' => isset($event['uid']) ? (int) $event['uid'] : null,
                     ':username' => $event['username'] ?? null,
                     ':path' => $event['path'] ?? null,
-                    ':cmdline' => $event['cmdline'] ?? null,
+                    ':cmdline' => $this->encode($cmdline),
                     ':cwd' => $event['cwd'] ?? null,
                     ':container_id' => ($event['container_id'] ?? '') !== '' ? $event['container_id'] : null,
                     ':syscall' => $event['syscall'] ?? null,
@@ -268,6 +290,61 @@ class EdrEventSpool
         }
 
         return $written;
+    }
+
+    /** Marks a stored value as encrypted, so mixed-mode files stay readable. */
+    private const ENCRYPTED_PREFIX = 'enc:v1:';
+
+    private function encode(?string $value): ?string
+    {
+        if ($value === null || $value === '' || !$this->encrypt) {
+            return $value;
+        }
+
+        try {
+            return self::ENCRYPTED_PREFIX . \Illuminate\Support\Facades\Crypt::encryptString($value);
+        } catch (\Throwable $e) {
+            // Never lose the event because encryption failed — the value is
+            // already redacted, so storing it plain is an acceptable
+            // degradation and far better than a gap in the corpus.
+            Log::warning('[EDR spool] Encryption failed, storing redacted plaintext: ' . $e->getMessage());
+
+            return $value;
+        }
+    }
+
+    /**
+     * Rows written before encryption was switched on stay plaintext, so this
+     * decides per value rather than per file.
+     */
+    private function decode(?string $value): ?string
+    {
+        if ($value === null || !str_starts_with($value, self::ENCRYPTED_PREFIX)) {
+            return $value;
+        }
+
+        try {
+            return \Illuminate\Support\Facades\Crypt::decryptString(substr($value, strlen(self::ENCRYPTED_PREFIX)));
+        } catch (\Throwable $e) {
+            Log::warning('[EDR spool] Decryption failed (key rotated?): ' . $e->getMessage());
+
+            return '[UNDECRYPTABLE]';
+        }
+    }
+
+    /**
+     * @param array<int, array> $rows
+     * @return array<int, array>
+     */
+    private function decodeRows(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            if (array_key_exists('cmdline', $row)) {
+                $row['cmdline'] = $this->decode($row['cmdline']);
+            }
+        }
+
+        return $rows;
     }
 
     /**
@@ -312,7 +389,7 @@ class EdrEventSpool
             $stmt->bindValue(':limit', max(1, $limit), PDO::PARAM_INT);
             $stmt->execute();
 
-            return $stmt->fetchAll();
+            return $this->decodeRows($stmt->fetchAll());
         } catch (PDOException $e) {
             Log::warning('[EDR spool] Pending query failed: ' . $e->getMessage());
 
@@ -378,9 +455,19 @@ class EdrEventSpool
             $params[] = '%' . $filters['path_like'] . '%';
         }
 
+        // Encrypted command lines cannot be matched in SQL. Rather than
+        // silently returning nothing — which would read as "this binary never
+        // ran here" during an investigation — the filter is applied in PHP
+        // after decryption, at the cost of scanning more rows.
+        $postFilterCmdline = null;
+
         if (!empty($filters['cmdline_like'])) {
-            $where[] = 'cmdline LIKE ?';
-            $params[] = '%' . $filters['cmdline_like'] . '%';
+            if ($this->encrypt) {
+                $postFilterCmdline = (string) $filters['cmdline_like'];
+            } else {
+                $where[] = 'cmdline LIKE ?';
+                $params[] = '%' . $filters['cmdline_like'] . '%';
+            }
         }
 
         if (!empty($filters['severity'])) {
@@ -401,14 +488,27 @@ class EdrEventSpool
         if ($where !== []) {
             $sql .= ' WHERE ' . implode(' AND ', $where);
         }
+        $limit = max(1, min(10000, (int) ($filters['limit'] ?? 100)));
+
         $sql .= ' ORDER BY ts DESC, id DESC LIMIT ?';
-        $params[] = max(1, min(10000, (int) ($filters['limit'] ?? 100)));
+        // Over-fetch when filtering after decryption, so the caller still
+        // gets a full page of matches.
+        $params[] = $postFilterCmdline !== null ? min(50000, $limit * 20) : $limit;
 
         try {
             $stmt = $this->pdo()->prepare($sql);
             $stmt->execute($params);
+            $rows = $this->decodeRows($stmt->fetchAll());
 
-            return $stmt->fetchAll();
+            if ($postFilterCmdline !== null) {
+                $rows = array_values(array_filter(
+                    $rows,
+                    static fn (array $row): bool => stripos((string) ($row['cmdline'] ?? ''), $postFilterCmdline) !== false
+                ));
+                $rows = array_slice($rows, 0, $limit);
+            }
+
+            return $rows;
         } catch (PDOException $e) {
             Log::warning('[EDR spool] Query failed: ' . $e->getMessage());
 

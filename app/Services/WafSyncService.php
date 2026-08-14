@@ -575,6 +575,11 @@ class WafSyncService
             'spool_enabled' => (bool) ($addons['edr_spool_enabled'] ?? true),
             'spool_retention_days' => (int) ($addons['edr_spool_retention_days'] ?? 7),
             'spool_max_rows' => (int) ($addons['edr_spool_max_rows'] ?? 500000),
+            // Credential redaction is always on and is the control that
+            // actually removes the exposure. This flag adds field encryption
+            // on top for deployments that need it — it defends a stolen disk,
+            // not an attacker who already has root and the .env key.
+            'spool_encrypt' => (bool) ($addons['edr_spool_encrypt'] ?? false),
             'upload_batch_size' => (int) ($addons['edr_upload_batch_size'] ?? 200),
             // Off until the Hub confirms it can decode a gzipped request body
             // — PHP does not do it automatically and nginx will not do it for
