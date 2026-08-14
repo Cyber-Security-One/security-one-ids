@@ -448,6 +448,12 @@ class WafSyncService
 
         $engine = app(\App\Services\Detection\OsqueryEngine::class);
 
+        // Rollback and reconciliation run before the enablement check and
+        // regardless of it. Turning EDR off at the Hub must never be able to
+        // strand a host that is currently network-isolated — the safety timer
+        // has to keep running even when the feature that armed it is gone.
+        $this->runEdrResponseSafetyPass($addons);
+
         if (empty($addons['edr_enabled'])) {
             // Disabled at the Hub — make sure we are not leaving a sensor
             // running on a host that is no longer supposed to have one.
@@ -459,6 +465,8 @@ class WafSyncService
 
             return;
         }
+
+        $this->runEdrResponseCommands($addons);
 
         if (!$engine->isSupportedPlatform()) {
             Log::debug('[EDR] Platform not supported yet (Linux only)');
@@ -585,6 +593,95 @@ class WafSyncService
             // — PHP does not do it automatically and nginx will not do it for
             // us, so assuming support would turn every upload into a 400.
             'upload_compression' => (bool) ($addons['edr_upload_compression'] ?? false),
+        ];
+    }
+
+    /**
+     * Undo anything past its deadline, correct the record where reality has
+     * diverged, and push outcomes to the Hub.
+     *
+     * Deliberately independent of `edr_enabled`. A host is only safe to leave
+     * isolated because something is watching the clock; if disabling the
+     * feature also stopped the timer, turning EDR off would be a way to make
+     * an isolation permanent.
+     */
+    private function runEdrResponseSafetyPass(array $addons): void
+    {
+        try {
+            $responder = app(\App\Services\Response\EdrResponder::class);
+
+            $expired = $responder->expireOverdue();
+            if (($expired['reverted'] ?? 0) > 0 || ($expired['failed'] ?? 0) > 0) {
+                Log::warning('[EDR response] Rollback pass', $expired);
+            }
+
+            // Catches the case where the ledger believes this host is
+            // isolated but the rules are gone — a reboot, a firewall reload,
+            // someone clearing the chains by hand.
+            $responder->reconcile();
+
+            $report = $responder->reportOutcomes();
+            if (($report['reported'] ?? 0) > 0) {
+                Log::info('[EDR response] Reported outcomes to Hub', $report);
+            }
+        } catch (\Exception $e) {
+            Log::error('[EDR response] Safety pass failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Execute response commands published by the Hub.
+     */
+    private function runEdrResponseCommands(array $addons): void
+    {
+        $commands = $addons['edr_response_commands'] ?? null;
+        $confirmations = $addons['edr_response_confirmations'] ?? null;
+
+        if (!is_array($commands) && !is_array($confirmations)) {
+            return;
+        }
+
+        try {
+            $responder = app(\App\Services\Response\EdrResponder::class);
+
+            if (is_array($confirmations) && $confirmations !== []) {
+                $extended = $responder->applyConfirmations($confirmations);
+                if ($extended > 0) {
+                    Log::info('[EDR response] Confirmations applied', ['count' => $extended]);
+                }
+            }
+
+            if (is_array($commands) && $commands !== []) {
+                $summary = $responder->processCommands($commands, $this->edrResponseOptions($addons));
+
+                Log::info('[EDR response] Command batch processed', [
+                    'executed' => $summary['executed'],
+                    'refused' => $summary['refused'],
+                    'skipped' => $summary['skipped'],
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('[EDR response] Command processing failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Response capabilities, all denied by default.
+     *
+     * Granting is per capability rather than a single on/off switch: a
+     * customer who bought detection should never implicitly hand us the
+     * ability to kill processes or cut the network on their machines.
+     */
+    private function edrResponseOptions(array $addons): array
+    {
+        return [
+            'allow_process_control' => (bool) ($addons['edr_allow_process_control'] ?? false),
+            'allow_file_quarantine' => (bool) ($addons['edr_allow_file_quarantine'] ?? false),
+            'allow_network_isolation' => (bool) ($addons['edr_allow_network_isolation'] ?? false),
+            'max_command_age' => (int) ($addons['edr_command_max_age'] ?? 900),
+            'isolation_allowlist' => is_array($addons['edr_isolation_allowlist'] ?? null)
+                ? $addons['edr_isolation_allowlist']
+                : [],
         ];
     }
 
@@ -2987,6 +3084,10 @@ class WafSyncService
                     'size_bytes' => $spool['size_bytes'],
                     'oldest_ts' => $spool['oldest_ts'],
                 ],
+                // What response actions are currently in effect on this host.
+                // `network_isolated` is the one an operator needs to see
+                // immediately: it explains why a machine went quiet.
+                'response' => $this->getEdrResponseInfo(),
             ];
         } catch (\Exception $e) {
             Log::debug('[EDR] Status probe failed: ' . $e->getMessage());
@@ -2997,6 +3098,32 @@ class WafSyncService
                 'running' => false,
                 'error' => $e->getMessage(),
             ];
+        }
+    }
+
+    /**
+     * Response state for the heartbeat.
+     *
+     * Reported even when EDR is disabled, because an action can outlive the
+     * feature that created it and the Hub needs to be able to see that.
+     */
+    private function getEdrResponseInfo(): array
+    {
+        try {
+            $ledger = app(\App\Services\Response\EdrActionLedger::class)->stats();
+            $network = app(\App\Services\Response\NetworkContainment::class);
+
+            return [
+                'network_isolated' => $network->isActive(),
+                'actions_applied' => $ledger['applied'],
+                'actions_failed' => $ledger['failed'],
+                'actions_unreported' => $ledger['unreported'],
+                'actions_total' => $ledger['total'],
+            ];
+        } catch (\Exception $e) {
+            Log::debug('[EDR response] Status probe failed: ' . $e->getMessage());
+
+            return ['network_isolated' => false, 'error' => $e->getMessage()];
         }
     }
 
