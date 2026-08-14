@@ -769,7 +769,47 @@ class WafSyncService
 
         try {
             $store = app(\App\Services\Quality\EdrGovernanceStore::class);
+
+            // Verdicts are counted, and this method runs on EVERY sync cycle.
+            //
+            // The config blob is state, not a message queue: the Hub sets
+            // `edr_rule_verdicts` and the agent re-reads it every thirty
+            // seconds. `recordVerdict()` increments, so without a guard one
+            // analyst marking one rule wrong once became 2,880 false positives
+            // a day — and that number drives whether a rule stays enabled, so
+            // a single click would silently retire a working detection.
+            //
+            // Preferred: each verdict carries a stable `id` and is applied at
+            // most once. Failing that, the whole blob is applied only when it
+            // differs from the last one seen, which is safe but cannot
+            // distinguish the same verdict genuinely sent twice.
+            $seen = json_decode((string) $store->getMeta('verdict_applied_ids', '[]'), true);
+            $seen = is_array($seen) ? $seen : [];
+            $seenIndex = array_flip($seen);
+
+            $hasIds = false;
+            foreach ($verdicts as $verdict) {
+                if (is_array($verdict) && ($verdict['id'] ?? '') !== '') {
+                    $hasIds = true;
+                    break;
+                }
+            }
+
+            $blobHash = hash('sha256', (string) json_encode($verdicts));
+
+            if (!$hasIds) {
+                if ($store->getMeta('verdict_last_blob') === $blobHash) {
+                    return;
+                }
+
+                Log::warning(
+                    '[EDR quality] Verdict batch carries no ids; applying once per distinct batch. '
+                    . 'The Hub should send a stable id per verdict so a repeat can be told from a replay.'
+                );
+            }
+
             $applied = 0;
+            $skipped = 0;
 
             foreach ($verdicts as $verdict) {
                 if (!is_array($verdict)) {
@@ -781,16 +821,42 @@ class WafSyncService
                     continue;
                 }
 
+                $id = (string) ($verdict['id'] ?? '');
+
+                if ($id !== '' && isset($seenIndex[$id])) {
+                    $skipped++;
+
+                    continue;
+                }
+
                 $store->recordVerdict(
                     $rule,
                     (bool) ($verdict['false_positive'] ?? false),
                     max(1, (int) ($verdict['count'] ?? 1))
                 );
                 $applied++;
+
+                if ($id !== '') {
+                    $seen[] = $id;
+                    $seenIndex[$id] = true;
+                }
             }
 
-            if ($applied > 0) {
-                Log::info('[EDR quality] Analyst verdicts applied', ['count' => $applied]);
+            // Bounded: an id ledger that grows forever is its own problem.
+            // Five hundred is far more than a fleet produces between config
+            // pushes, and the blob-hash guard covers anything that falls off.
+            if (count($seen) > 500) {
+                $seen = array_slice($seen, -500);
+            }
+
+            $store->setMeta('verdict_applied_ids', (string) json_encode(array_values($seen)));
+            $store->setMeta('verdict_last_blob', $blobHash);
+
+            if ($applied > 0 || $skipped > 0) {
+                Log::info('[EDR quality] Analyst verdicts applied', [
+                    'applied' => $applied,
+                    'already_seen' => $skipped,
+                ]);
             }
         } catch (\Throwable $e) {
             Log::warning('[EDR quality] Verdict application failed: ' . $e->getMessage());
@@ -914,7 +980,11 @@ class WafSyncService
             $responder = app(\App\Services\Response\EdrResponder::class);
 
             if (is_array($confirmations) && $confirmations !== []) {
-                $extended = $responder->applyConfirmations($confirmations);
+                // Same options as commands: a confirmation is subject to the
+                // same freshness gate, because a frozen config file replayed
+                // every cycle is otherwise indistinguishable from an analyst
+                // still holding the containment open.
+                $extended = $responder->applyConfirmations($confirmations, $this->edrResponseOptions($addons));
                 if ($extended > 0) {
                     Log::info('[EDR response] Confirmations applied', ['count' => $extended]);
                 }

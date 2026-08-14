@@ -39,6 +39,25 @@ class EdrResponder
     private const DEFAULT_ISOLATION_TTL = 3600;
     private const MAX_ISOLATION_TTL = 86400;
 
+    /**
+     * The hard ceiling on how long an action may stay applied, counted from
+     * when it was applied and not from the last confirmation.
+     *
+     * This exists because every other guard in this file depends on the Hub
+     * behaving correctly, and the scenario that needs the safety timer most is
+     * the one where the Hub is gone. Network isolation makes the Hub
+     * unreachable more likely, not less — only the pinned Hub addresses survive
+     * the cut — so "the Hub will stop confirming" is not a safe assumption to
+     * build the release on.
+     *
+     * Three days is deliberately generous. A real incident can justify keeping
+     * a host contained for days, and this is not a limit on that: a reachable
+     * Hub with an analyst behind it re-authorises well inside the window. What
+     * it bounds is how long a host can stay cut off with nothing but a stale
+     * config file speaking for the analyst.
+     */
+    private const ABSOLUTE_MAX_APPLIED_SECONDS = 259200;
+
     /** Types that change or destroy state, and so need an explicit confirm. */
     private const DESTRUCTIVE_TYPES = ['kill_process', 'quarantine_file', 'isolate_network'];
 
@@ -465,11 +484,54 @@ class EdrResponder
      * Confirmations from the Hub push the deadline out, which is how an
      * isolation survives past its safety timer.
      *
-     * @param array<int, array> $confirmations [{id, ttl_seconds}]
+     * Which makes this the one place in the file where getting it wrong turns
+     * the safety timer off, and the first version did.
+     *
+     * It read only `id` and `ttl_seconds`. No freshness, no single-use, no
+     * capability check — while a command in the same payload is refused without
+     * an `issued_at` and refused again if it is older than 900 seconds. The
+     * asymmetry is what made it dangerous: the replay problem looks solved when
+     * you read the command path.
+     *
+     * The consequence, traced end to end. `runEdrSync()` reads addons from
+     * `storage/app/waf_config.json` on disk, and `syncConfigFromHub()` only
+     * runs after a *successful* heartbeat, so an unreachable Hub leaves that
+     * file frozen with whatever it last contained. The EDR cycle runs every 30
+     * seconds. So a frozen confirmation was re-applied 120 times an hour,
+     * each time setting the deadline to now plus its TTL, and `expireOverdue()`
+     * never saw an overdue action. A host isolated on a bad call would have
+     * stayed isolated forever, recoverable only from a console — and isolation
+     * is precisely what makes the Hub unreachable, so this failure mode
+     * selects for itself. This host has 98 heartbeat exceptions, 49 heartbeat
+     * failures and 4 connection errors in four days of logs, and
+     * `edr_allow_network_isolation` is currently true.
+     *
+     * Two independent defences, because one of them must not depend on the Hub:
+     *
+     * Freshness and monotonicity stop the replay. A confirmation now needs an
+     * `issued_at`, is refused when stale by the same age gate as commands, and
+     * is refused when its `issued_at` is not strictly newer than the last one
+     * recorded for that action. A frozen file therefore extends nothing on its
+     * second reading, while a live Hub sending a new confirmation each cycle
+     * works exactly as before.
+     *
+     * The absolute ceiling bounds the damage even if a replay were somehow
+     * fresh. No confirmation can push a deadline past `ABSOLUTE_MAX_APPLIED_SECONDS`
+     * after the action was applied. This is the defence that survives a
+     * compromised or misbehaving Hub, which is the case the four gates exist
+     * for in the first place.
+     *
+     * @param array<int, array> $confirmations [{id, ttl_seconds, issued_at}]
      */
-    public function applyConfirmations(array $confirmations): int
+    public function applyConfirmations(array $confirmations, array $options = []): int
     {
         $applied = 0;
+        // `max_command_age`, the key the command path uses. Reading a name
+        // that is nearly right would have silently pinned this to the default
+        // and made the Hub's setting look applied — the same shape as reading
+        // `deliver` where the governor returns `emit`.
+        $maxAge = max(60, (int) ($options['max_command_age'] ?? self::DEFAULT_MAX_COMMAND_AGE));
+        $now = time();
 
         foreach ($confirmations as $confirmation) {
             if (!is_array($confirmation)) {
@@ -486,8 +548,70 @@ class EdrResponder
                 continue;
             }
 
+            $issuedAt = isset($confirmation['issued_at']) ? (int) $confirmation['issued_at'] : 0;
+
+            if ($issuedAt <= 0) {
+                // Same standard as a command. Without it there is no way to
+                // tell a fresh decision from a frozen file.
+                Log::warning('[EDR response] Confirmation refused, no issued_at', ['action_id' => $actionId]);
+                continue;
+            }
+
+            if ($now - $issuedAt > $maxAge) {
+                Log::warning('[EDR response] Confirmation refused as stale', [
+                    'action_id' => $actionId,
+                    'age_seconds' => $now - $issuedAt,
+                    'max_age' => $maxAge,
+                ]);
+                continue;
+            }
+
+            $lastConfirmed = isset($action['last_confirmed_at']) ? (int) $action['last_confirmed_at'] : 0;
+
+            if ($issuedAt <= $lastConfirmed) {
+                // The replay case, and the one that actually happens: the same
+                // config file read again 30 seconds later. Logged at debug
+                // because on a healthy host with a stale file this fires twice
+                // a minute and is not itself a problem.
+                Log::debug('[EDR response] Confirmation already applied, not extending', [
+                    'action_id' => $actionId,
+                    'issued_at' => $issuedAt,
+                    'last_confirmed_at' => $lastConfirmed,
+                ]);
+                continue;
+            }
+
             $ttl = (int) ($confirmation['ttl_seconds'] ?? self::DEFAULT_ISOLATION_TTL);
-            $this->ledger->extendExpiry($actionId, time() + min(self::MAX_ISOLATION_TTL, max(60, $ttl)));
+            $requested = $now + min(self::MAX_ISOLATION_TTL, max(60, $ttl));
+
+            $appliedAt = isset($action['applied_at']) ? (int) $action['applied_at'] : 0;
+
+            if ($appliedAt > 0) {
+                $ceiling = $appliedAt + self::ABSOLUTE_MAX_APPLIED_SECONDS;
+
+                if ($requested > $ceiling) {
+                    Log::warning('[EDR response] Confirmation capped at the absolute ceiling', [
+                        'action_id' => $actionId,
+                        'requested_expiry' => $requested,
+                        'ceiling' => $ceiling,
+                        'applied_at' => $appliedAt,
+                    ]);
+
+                    $requested = $ceiling;
+                }
+
+                if ($ceiling <= $now) {
+                    // Already past the ceiling: refuse rather than write a
+                    // deadline in the past, and let expireOverdue() undo it.
+                    Log::warning('[EDR response] Confirmation refused, action past its absolute ceiling', [
+                        'action_id' => $actionId,
+                        'applied_at' => $appliedAt,
+                    ]);
+                    continue;
+                }
+            }
+
+            $this->ledger->extendExpiry($actionId, $requested, $issuedAt);
             $applied++;
         }
 

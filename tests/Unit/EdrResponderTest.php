@@ -265,8 +265,156 @@ class EdrResponderTest extends TestCase
         $pdo->exec('UPDATE actions SET expires_at = ' . (time() - 1) . " WHERE action_id = 'susp-2'");
         $pdo = null;
 
-        $this->assertSame(1, $this->responder()->applyConfirmations([['id' => 'susp-2', 'ttl_seconds' => 3600]]));
+        $this->assertSame(1, $this->responder()->applyConfirmations(
+            [['id' => 'susp-2', 'ttl_seconds' => 3600, 'issued_at' => time()]],
+            self::ALL_CAPABILITIES
+        ));
         $this->assertSame(0, $this->responder()->expireOverdue()['reverted']);
+    }
+
+    /**
+     * The failure that would have made containment permanent.
+     *
+     * `runEdrSync()` reads addons from waf_config.json on disk, and that file is
+     * only refreshed by a *successful* heartbeat, so an unreachable Hub leaves
+     * it frozen. The EDR cycle runs every 30 seconds. A confirmation with no
+     * freshness check was therefore re-applied 120 times an hour, each time
+     * setting the deadline to now plus its TTL, so `expireOverdue()` never saw
+     * an overdue action and a host isolated on a bad call stayed isolated until
+     * someone reached a console.
+     *
+     * What made it worse than an ordinary replay bug: isolation is itself what
+     * makes the Hub unreachable, since only the pinned Hub addresses survive the
+     * cut. The scenario that needs the safety timer is the scenario that
+     * disabled it. And a command in the same payload was correctly refused as
+     * stale, so reading the command path made replay look handled.
+     */
+    public function test_a_replayed_confirmation_cannot_hold_an_action_open(): void
+    {
+        $pid = $this->spawn();
+        $startTime = (new ProcessResponder())->inspect($pid)['start_time'];
+
+        $this->responder()->processCommands([
+            $this->command([
+                'id' => 'susp-replay',
+                'type' => 'suspend_process',
+                'target' => ['pid' => $pid, 'start_time' => $startTime],
+                'ttl_seconds' => 60,
+            ]),
+        ], self::ALL_CAPABILITIES);
+
+        $issuedAt = time();
+        $confirmation = [['id' => 'susp-replay', 'ttl_seconds' => 3600, 'issued_at' => $issuedAt]];
+
+        // The Hub speaks once: honoured.
+        $this->assertSame(1, $this->responder()->applyConfirmations($confirmation, self::ALL_CAPABILITIES));
+
+        // The same frozen blob, read again on the next cycle: it must change
+        // nothing. This is the assertion the bug failed.
+        $this->assertSame(0, $this->responder()->applyConfirmations($confirmation, self::ALL_CAPABILITIES));
+        $this->assertSame(0, $this->responder()->applyConfirmations($confirmation, self::ALL_CAPABILITIES));
+
+        // Force the deadline past and confirm the timer now fires despite the
+        // frozen confirmation still being present in the config.
+        $pdo = new \PDO('sqlite:' . $this->ledgerPath);
+        $pdo->exec('UPDATE actions SET expires_at = ' . (time() - 1) . " WHERE action_id = 'susp-replay'");
+        $pdo = null;
+
+        $this->assertSame(0, $this->responder()->applyConfirmations($confirmation, self::ALL_CAPABILITIES));
+        $this->assertSame(1, $this->responder()->expireOverdue()['reverted'], 'the safety timer must still fire');
+    }
+
+    /**
+     * A confirmation is held to the same standard as a command. Without an
+     * issued_at there is no way to tell a fresh decision from a stale file, and
+     * the command path has refused undated payloads from the start.
+     */
+    public function test_undated_and_stale_confirmations_are_refused(): void
+    {
+        $pid = $this->spawn();
+        $startTime = (new ProcessResponder())->inspect($pid)['start_time'];
+
+        $this->responder()->processCommands([
+            $this->command([
+                'id' => 'susp-dated',
+                'type' => 'suspend_process',
+                'target' => ['pid' => $pid, 'start_time' => $startTime],
+                'ttl_seconds' => 60,
+            ]),
+        ], self::ALL_CAPABILITIES);
+
+        $this->assertSame(0, $this->responder()->applyConfirmations(
+            [['id' => 'susp-dated', 'ttl_seconds' => 3600]],
+            self::ALL_CAPABILITIES
+        ), 'no issued_at');
+
+        $this->assertSame(0, $this->responder()->applyConfirmations(
+            [['id' => 'susp-dated', 'ttl_seconds' => 3600, 'issued_at' => time() - 5000]],
+            self::ALL_CAPABILITIES
+        ), 'older than the age gate');
+
+        $this->assertSame(1, $this->responder()->applyConfirmations(
+            [['id' => 'susp-dated', 'ttl_seconds' => 3600, 'issued_at' => time()]],
+            self::ALL_CAPABILITIES
+        ), 'fresh and dated');
+    }
+
+    /**
+     * The defence that does not depend on the Hub behaving.
+     *
+     * Every other guard here assumes the Hub sends sane payloads. This one
+     * holds when it does not: no sequence of confirmations, however fresh, can
+     * keep an action applied beyond the absolute ceiling measured from when it
+     * was applied. That matters because the case the response gates exist for
+     * is a Hub that is compromised or wrong, and a host cut off from its
+     * management plane cannot be rescued by that plane.
+     */
+    public function test_no_confirmation_can_extend_past_the_absolute_ceiling(): void
+    {
+        $pid = $this->spawn();
+        $startTime = (new ProcessResponder())->inspect($pid)['start_time'];
+
+        $this->responder()->processCommands([
+            $this->command([
+                'id' => 'susp-ceiling',
+                'type' => 'suspend_process',
+                'target' => ['pid' => $pid, 'start_time' => $startTime],
+                'ttl_seconds' => 60,
+            ]),
+        ], self::ALL_CAPABILITIES);
+
+        // Rewind the application to two days ago; the ceiling is three.
+        $appliedAt = time() - 2 * 86400;
+        $pdo = new \PDO('sqlite:' . $this->ledgerPath);
+        $pdo->exec("UPDATE actions SET applied_at = {$appliedAt} WHERE action_id = 'susp-ceiling'");
+        $pdo = null;
+
+        // A fresh confirmation asking for the maximum day-long TTL.
+        $this->assertSame(1, $this->responder()->applyConfirmations(
+            [['id' => 'susp-ceiling', 'ttl_seconds' => 86400, 'issued_at' => time()]],
+            self::ALL_CAPABILITIES
+        ));
+
+        $action = $this->ledger()->find('susp-ceiling');
+        $this->assertLessThanOrEqual(
+            $appliedAt + 259200,
+            (int) $action['expires_at'],
+            'the deadline may not pass three days from application'
+        );
+
+        // Now push application past the ceiling entirely: no confirmation may
+        // revive it, and the timer must be free to undo it.
+        $pdo = new \PDO('sqlite:' . $this->ledgerPath);
+        $pdo->exec('UPDATE actions SET applied_at = ' . (time() - 4 * 86400)
+            . ', expires_at = ' . (time() - 1) . " WHERE action_id = 'susp-ceiling'");
+        $pdo = null;
+
+        $this->assertSame(0, $this->responder()->applyConfirmations(
+            [['id' => 'susp-ceiling', 'ttl_seconds' => 86400, 'issued_at' => time()]],
+            self::ALL_CAPABILITIES
+        ), 'past the ceiling, a confirmation must not extend');
+
+        $this->assertSame(1, $this->responder()->expireOverdue()['reverted']);
     }
 
     /**

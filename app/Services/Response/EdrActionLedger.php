@@ -115,6 +115,20 @@ class EdrActionLedger
             )
         SQL);
 
+        // Added after the ceiling on a confirmation replay was found missing.
+        // ALTER rather than a bumped CREATE, because an existing ledger on a
+        // live host holds the record of what has been done to it and must not
+        // be recreated to gain a column.
+        $columns = [];
+
+        foreach ($this->pdo->query('PRAGMA table_info(actions)')->fetchAll(PDO::FETCH_ASSOC) as $column) {
+            $columns[(string) ($column['name'] ?? '')] = true;
+        }
+
+        if (!isset($columns['last_confirmed_at'])) {
+            $this->pdo->exec('ALTER TABLE actions ADD COLUMN last_confirmed_at INTEGER');
+        }
+
         $this->pdo->exec('CREATE INDEX IF NOT EXISTS idx_actions_state ON actions (state)');
         // The two hot lookups: what needs auto-reverting, and what the Hub
         // has not been told about yet.
@@ -264,9 +278,22 @@ class EdrActionLedger
      * Extend the deadline of an applied action — how a Hub confirmation keeps
      * an isolation in place instead of letting it auto-revert.
      */
-    public function extendExpiry(string $actionId, ?int $expiresAt): void
+    /**
+     * Push an action's deadline out, recording the authority that did it.
+     *
+     * `confirmedAt` is the Hub's `issued_at` for the confirmation, stored so a
+     * later confirmation carrying the same or an older value can be recognised
+     * as a replay rather than treated as fresh intent.
+     */
+    public function extendExpiry(string $actionId, ?int $expiresAt, ?int $confirmedAt = null): void
     {
-        $this->update($actionId, ['expires_at' => $expiresAt]);
+        $fields = ['expires_at' => $expiresAt];
+
+        if ($confirmedAt !== null) {
+            $fields['last_confirmed_at'] = $confirmedAt;
+        }
+
+        $this->update($actionId, $fields);
     }
 
     private function update(string $actionId, array $fields): void
