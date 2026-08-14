@@ -66,18 +66,20 @@ class NetworkRuleEngine
     /**
      * Below this, the timing is too perfect to have crossed a network.
      *
-     * Learned by getting it wrong. Deriving intervals from the osquery result
-     * row's `unixTime` produced fourteen "beacons" out of twenty-seven
-     * candidates on a healthy host, all at exactly 20.1 seconds with a
-     * coefficient of variation of 0.022 — because `unixTime` is the query
-     * flush time, shared by every event in a batch, so it was measuring the
-     * sensor's own schedule. The one genuine periodic connection found with
-     * the real event clock had a CV of 0.044: twice as jittery as the
-     * artifact.
+     * A narrow guard, and worth being precise about what it does and does not
+     * do. It rejects intervals that are effectively identical, which real
+     * network round-trips never are — they carry scheduling and routing
+     * jitter — but which a batching artifact or a placeholder value produces
+     * exactly.
      *
-     * Real network round-trips carry scheduling and routing jitter. Timing
-     * tighter than this is far more likely to be a measurement artifact than
-     * a beacon, so it is rejected rather than reported.
+     * It is not what fixed the false beacons. Deriving intervals from the
+     * osquery result row's `unixTime` produced fourteen of them out of
+     * twenty-seven candidates on a healthy host, and those sat at a CV of
+     * 0.022 — above this floor, so this would not have caught them. The fix
+     * for that was reading the kernel event clock instead, and this exists
+     * only as a second line against a future regression to a batched clock,
+     * plus the reminder that the genuine periodic connection on the same host
+     * measured 0.044, twice as jittery as the artifact it was competing with.
      */
     private const BEACON_MIN_CV = 0.005;
 
