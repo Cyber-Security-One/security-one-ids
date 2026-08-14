@@ -381,6 +381,60 @@ if [ "$INSTALL_SURICATA" = "yes" ]; then
     install_suricata || echo -e "${YELLOW}⚠️  Suricata installation skipped${NC}"
 fi
 
+# The endpoint sensor.
+#
+# Linux fetches its own package at runtime, so nothing is needed here. macOS
+# cannot: the osquery build that carries Apple's EndpointSecurity entitlement
+# only starts producing events once an administrator grants Full Disk Access
+# in System Settings, and no script can click that. Installing it here and
+# telling the operator exactly what remains is the honest split — an agent
+# that "installed" the sensor and left a daemon reporting healthy while
+# producing nothing is the failure this product exists to avoid.
+install_osquery_macos() {
+    if [ "$OS" != "macos" ]; then
+        return 0
+    fi
+
+    # Set locally: the earlier steps only assign it inside their own branches,
+    # so relying on it having been set is relying on ClamAV having run.
+    ORIGINAL_USER="${SUDO_USER:-$USER}"
+
+    if command -v osqueryd &> /dev/null || [ -x /opt/osquery/lib/osquery.app/Contents/MacOS/osqueryd ]; then
+        echo -e "${GREEN}✅ osquery already present${NC}"
+    else
+        echo -e "\n${CYAN}🔍 Installing osquery (endpoint sensor)...${NC}"
+
+        if command -v brew &> /dev/null; then
+            sudo -u "$ORIGINAL_USER" brew install --cask osquery 2>/dev/null \
+                || brew install --cask osquery 2>/dev/null \
+                || echo -e "${YELLOW}⚠️  Homebrew could not install osquery${NC}"
+        fi
+
+        if ! command -v osqueryd &> /dev/null && [ ! -x /opt/osquery/lib/osquery.app/Contents/MacOS/osqueryd ]; then
+            echo -e "${YELLOW}⚠️  osquery not installed. Download the signed package from${NC}"
+            echo -e "${YELLOW}    https://www.osquery.io/downloads and run it, then re-run this installer.${NC}"
+            return 1
+        fi
+    fi
+
+    # The part no installer can do.
+    echo -e "\n${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  ONE MANUAL STEP REMAINS — the sensor is blind without it ║${NC}"
+    echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo -e "  EndpointSecurity needs Full Disk Access, which only a person can grant:"
+    echo -e "    ${CYAN}System Settings → Privacy & Security → Full Disk Access${NC}"
+    echo -e "    add ${CYAN}osqueryd${NC}  (/opt/osquery/lib/osquery.app/Contents/MacOS/osqueryd)"
+    echo -e ""
+    echo -e "  Then confirm it actually attached:"
+    echo -e "    ${CYAN}cd $INSTALL_DIR && php artisan ids:sync-edr --status${NC}"
+    echo -e "  A backend of ${CYAN}endpointsecurity${NC} means it is watching."
+    echo -e "  An empty backend means the grant has not taken effect yet.\n"
+
+    return 0
+}
+
+install_osquery_macos || echo -e "${YELLOW}⚠️  Endpoint sensor unavailable; the rest of the agent still works${NC}"
+
 # Create directories
 echo -e "\n${CYAN}📂 Creating directories...${NC}"
 mkdir -p "$INSTALL_DIR"
