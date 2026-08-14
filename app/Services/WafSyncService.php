@@ -366,6 +366,8 @@ class WafSyncService
         // Save to storage
         file_put_contents($configPath, json_encode($mergedConfig, JSON_PRETTY_PRINT));
 
+        $this->persistResponseChannel($mergedConfig['addons'] ?? []);
+
         Log::info('Config synced from WAF Hub', [
             'ollama_url' => $config['ollama']['url'] ?? 'not set',
             'ollama_model' => $config['ollama']['model'] ?? 'not set',
@@ -381,6 +383,143 @@ class WafSyncService
             'code_scan_auto' => $config['addons']['code_scan_auto'] ?? null,
             'code_scan_now' => $config['addons']['code_scan_now'] ?? false,
         ]);
+    }
+
+    /**
+     * Fields that authorise a destructive action on this host.
+     *
+     * Carried on a separate, root-only channel rather than in the general
+     * config, because the general config has to be writable by the account the
+     * web tier runs as and these must not be.
+     */
+    private const RESPONSE_CHANNEL_KEYS = [
+        'edr_response_commands',
+        'edr_response_confirmations',
+        'edr_allow_process_control',
+        'edr_allow_file_quarantine',
+        'edr_allow_network_isolation',
+        'edr_isolation_allowlist',
+        'edr_command_max_age',
+    ];
+
+    /**
+     * Read the response authorisation from the root-only channel.
+     *
+     * Returns an empty array when the file is absent or unreadable, which
+     * authorises nothing — the safe direction. A missing channel means no
+     * root-privileged heartbeat has written one yet, and until then no
+     * destructive command should be honoured.
+     *
+     * @return array<string, mixed>
+     */
+    public function responseChannelAddons(): array
+    {
+        $path = $this->responseChannelPath();
+
+        if (!is_readable($path)) {
+            return [];
+        }
+
+        $decoded = json_decode((string) @file_get_contents($path), true);
+
+        if (!is_array($decoded) || !is_array($decoded['addons'] ?? null)) {
+            Log::warning('[EDR response] Response channel is unreadable or malformed', ['path' => $path]);
+
+            return [];
+        }
+
+        return $decoded['addons'];
+    }
+
+    /**
+     * The root-only channel carrying response authorisation.
+     *
+     * Inside `storage/app/edr` rather than `storage/app`, and the directory is
+     * the reason. A tight file in a loose directory is not a tight file: an
+     * attacker with write access to the directory replaces it rather than
+     * editing it, which is why the provenance gate checks both. `storage/app` is
+     * mode 777 on this host and has to stay writable by the web-tier account,
+     * while `storage/app/edr` is 750 root:root — the same directory the ledger
+     * and the event spool already live in for the same reason.
+     */
+    public function responseChannelPath(): string
+    {
+        return storage_path('app/edr/response.json');
+    }
+
+    /**
+     * Write the response authorisation to a channel only root can write.
+     *
+     * The general config file cannot carry these. `waf:heartbeat-dynamic` runs
+     * from `php artisan schedule:work` as www-data every ten seconds and writes
+     * that file, so it has to stay writable by www-data — and measured on this
+     * host it is mode 777 in a mode 777 directory. Meanwhile the root watchdog
+     * runs `ids:sync-edr`, which read those same fields and executed the
+     * commands in them with root privileges: iptables for isolation,
+     * posix_kill against any pid.
+     *
+     * So the general config is a channel through which anything running as
+     * www-data could authorise itself and have root carry it out within thirty
+     * seconds — and a compromised web account is exactly the event this product
+     * exists to detect. Tightening the mode was not available as a fix, because
+     * the account that must be able to write it is the account being defended
+     * against.
+     *
+     * Splitting it is. Response fields are written here, 0600 and root-owned,
+     * only ever by a root-privileged heartbeat: when www-data runs the
+     * heartbeat this write fails and is logged at debug, which is the correct
+     * outcome rather than a problem to fix. The response subsystem reads only
+     * this file, so a command that arrived through the www-data path is
+     * inert — it never reaches the channel the responder trusts.
+     *
+     * The Hub needs no change; the fields already travel in addons.
+     */
+    private function persistResponseChannel(array $addons): void
+    {
+        $channel = [];
+
+        foreach (self::RESPONSE_CHANNEL_KEYS as $key) {
+            if (array_key_exists($key, $addons)) {
+                $channel[$key] = $addons[$key];
+            }
+        }
+
+        $path = $this->responseChannelPath();
+
+        // Nothing to authorise. The file is still written, so that clearing a
+        // command list on the Hub actually clears it here rather than leaving
+        // the previous list in place — the same freeze that let a stale
+        // confirmation hold an isolation open.
+        $payload = json_encode(
+            ['written_at' => time(), 'addons' => $channel],
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+        );
+
+        if ($payload === false) {
+            Log::warning('[EDR response] Could not encode the response channel');
+
+            return;
+        }
+
+        // Create with tight permissions before any content lands in it, so
+        // there is no window where the authorisation is world-readable.
+        $existing = file_exists($path);
+
+        if (@file_put_contents($path, $payload) === false) {
+            // Expected on the www-data heartbeat path: that account must not be
+            // able to write this file, which is the entire point. Debug rather
+            // than warning, because it happens every ten seconds by design.
+            Log::debug('[EDR response] Response channel not writable by this account', [
+                'path' => $path,
+                'uid' => function_exists('posix_geteuid') ? posix_geteuid() : null,
+            ]);
+
+            return;
+        }
+
+        if (!$existing) {
+            @chmod($path, 0600);
+        }
     }
 
     /**
@@ -979,6 +1118,13 @@ class WafSyncService
      */
     private function runEdrResponseCommands(array $addons): void
     {
+        // Authorisation comes from the root-only channel, never from the
+        // general config. The general config has to stay writable by the
+        // account the web tier runs as, so a command found in it authorises
+        // nothing: overlaying the trusted copy here is what makes a forged
+        // command inert rather than merely refused.
+        $addons = array_merge($addons, $this->responseChannelAddons());
+
         $commands = $addons['edr_response_commands'] ?? null;
         $confirmations = $addons['edr_response_confirmations'] ?? null;
 

@@ -676,7 +676,10 @@ class EdrResponder
      */
     public function commandChannelProvenance(?string $path = null): array
     {
-        $path ??= $this->commandChannel ?? storage_path('app/waf_config.json');
+        // The root-only response channel, not the general config. The general
+        // config must stay writable by the web-tier account and so can never be
+        // a trusted channel; commands are sourced from the split file instead.
+        $path ??= $this->commandChannel ?? storage_path('app/edr/response.json');
 
         clearstatcache(true, $path);
 

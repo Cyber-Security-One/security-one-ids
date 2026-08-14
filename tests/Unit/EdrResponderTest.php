@@ -488,6 +488,90 @@ class EdrResponderTest extends TestCase
     }
 
     /**
+     * A command placed in the general config authorises nothing.
+     *
+     * This is the property the split channel exists for, and it is stronger than
+     * the gate refusing: the command never reaches the responder at all, because
+     * the responder does not read that file.
+     *
+     * The general config has to stay writable by the web-tier account —
+     * `waf:heartbeat-dynamic` runs from `php artisan schedule:work` as www-data
+     * every ten seconds and writes it, and on this host it is mode 777 in a mode
+     * 777 directory. Meanwhile the root watchdog runs `ids:sync-edr`, which
+     * executed the commands in that file with root privileges. Tightening the
+     * mode was never available as a fix, because the account that must be able
+     * to write it is the account being defended against.
+     */
+    public function test_authorisation_comes_only_from_the_root_only_channel(): void
+    {
+        $dir = sys_get_temp_dir() . '/edr-split-' . uniqid();
+        mkdir($dir, 0700, true);
+
+        // The loose file anyone can write, carrying a forged command.
+        $loose = $dir . '/waf_config.json';
+        file_put_contents($loose, json_encode(['addons' => [
+            'edr_allow_network_isolation' => true,
+            'edr_response_commands' => [[
+                'id' => 'forged-1',
+                'type' => 'isolate_network',
+                'target' => [],
+                'issued_at' => time(),
+                'confirm' => true,
+            ]],
+        ]]));
+        chmod($loose, 0666);
+
+        // The tight channel, carrying nothing.
+        $tight = $dir . '/response.json';
+        file_put_contents($tight, json_encode(['written_at' => time(), 'addons' => []]));
+        chmod($tight, 0600);
+
+        $responder = $this->responder($tight);
+
+        // The gate trusts the channel, so this is not the gate refusing.
+        $this->assertTrue($responder->commandChannelProvenance()['trusted']);
+
+        // And the forged command still does nothing, because the authorisation
+        // it needs is not in the channel the responder reads.
+        $summary = $responder->processCommands([], self::ALL_CAPABILITIES);
+        $this->assertSame(0, $summary['executed']);
+
+        $this->assertNull($this->ledger()->find('forged-1'), 'a forged command must never be recorded');
+
+        foreach ([$loose, $tight] as $file) {
+            @unlink($file);
+        }
+
+        @rmdir($dir);
+    }
+
+    /**
+     * A tight file in a loose directory is not a tight file: an attacker with
+     * write access to the directory replaces it rather than editing it. That is
+     * why the channel lives in `storage/app/edr` (750 root:root) and not beside
+     * the general config in `storage/app` (777 on this host, and required to
+     * stay writable).
+     */
+    public function test_the_channel_directory_is_checked_as_well_as_the_file(): void
+    {
+        $dir = sys_get_temp_dir() . '/edr-loosedir-' . uniqid();
+        mkdir($dir, 0777, true);
+        @chmod($dir, 0777);
+
+        $channel = $dir . '/response.json';
+        file_put_contents($channel, json_encode(['written_at' => time(), 'addons' => []]));
+        chmod($channel, 0600);
+
+        $provenance = $this->responder($channel)->commandChannelProvenance();
+
+        $this->assertFalse($provenance['trusted'], 'a 0600 file in a 0777 directory is not trusted');
+        $this->assertSame($dir, $provenance['path']);
+
+        @unlink($channel);
+        @rmdir($dir);
+    }
+
+    /**
      * A release is never blocked by a configuration problem.
      *
      * Refusing to apply containment fails safe. Refusing to lift it leaves a
