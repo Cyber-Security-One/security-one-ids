@@ -276,7 +276,9 @@ class EdrEventSpool
                     ':syscall' => $event['syscall'] ?? null,
                     ':extra' => $this->encodeExtra($event),
                     ':severity' => $hits !== [] ? EdrRuleEngine::worstSeverity($hits) : null,
-                    ':rule_hits' => $hits !== [] ? json_encode($hits, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null,
+                    ':rule_hits' => $hits !== []
+                        ? json_encode($this->redactFindings($hits), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                        : null,
                     // Only rule hits are queued for the Hub, and only those
                     // governance let through. Everything else stays here so a
                     // retro-hunt has something to hunt through.
@@ -297,6 +299,49 @@ class EdrEventSpool
         }
 
         return $written;
+    }
+
+    /**
+     * Strip secrets from anything a finding carries before it reaches disk.
+     *
+     * The `cmdline` column is already redacted, but a finding is free-form:
+     * its `reason`, and an incident's evidence rows, are written by rule
+     * authors and can quote whatever they like. No rule does that today, so
+     * this closes nothing that is currently open — it makes the guarantee
+     * structural instead of a thing every future rule author has to remember.
+     * A correlated incident in particular *wants* to describe what a chain
+     * did, which is exactly the place a command line gets pasted in.
+     *
+     * Flag names survive redaction on purpose: that a password was passed on
+     * the command line is evidence an analyst needs. Its value is not.
+     *
+     * @param  array<int, array> $hits
+     * @return array<int, array>
+     */
+    private function redactFindings(array $hits): array
+    {
+        foreach ($hits as $index => $hit) {
+            if (!is_array($hit)) {
+                continue;
+            }
+
+            if (isset($hit['reason']) && is_string($hit['reason'])) {
+                $hits[$index]['reason'] = (string) $this->redactor->redact($hit['reason']);
+            }
+
+            if (!isset($hit['incident']['evidence']) || !is_array($hit['incident']['evidence'])) {
+                continue;
+            }
+
+            foreach ($hit['incident']['evidence'] as $row => $entry) {
+                if (is_array($entry) && isset($entry['cmdline']) && is_string($entry['cmdline'])) {
+                    $hits[$index]['incident']['evidence'][$row]['cmdline'] =
+                        (string) $this->redactor->redact($entry['cmdline']);
+                }
+            }
+        }
+
+        return $hits;
     }
 
     /** Marks a stored value as encrypted, so mixed-mode files stay readable. */
@@ -702,6 +747,26 @@ class EdrEventSpool
     /**
      * Trim one class of event down to its own ceiling, oldest first.
      *
+     * **Alerts still queued for the Hub are never deleted here.** The age
+     * pruner has always protected them; the row ceiling did not, and the
+     * docblock's "unless the spool is genuinely over the row ceiling" read as
+     * an exception when on this host it fired five hundred times in a day,
+     * dropping one to six thousand rows each time. So the protection had never
+     * once applied on the path that matters.
+     *
+     * What it costs is exactly the thing the spool exists to prevent: queued
+     * alerts are the OLDEST undelivered rows, so during a Hub outage they sit
+     * precisely in the range this deletes first. They would vanish and
+     * `pending` would fall back to zero — indistinguishable from a successful
+     * delivery, on the one occasion when the difference is an intrusion nobody
+     * ever sees.
+     *
+     * Being unable to reach the ceiling is a real condition and gets said out
+     * loud rather than resolved by deleting the evidence: a delivery queue
+     * large enough to fill the buffer on its own means the Hub has been
+     * unreachable for a long time, and that is an alert about the fleet, not a
+     * disk-space decision to make quietly.
+     *
      * @param string $predicate SQL restricting which rows this ceiling covers
      * @return int rows removed
      */
@@ -717,13 +782,32 @@ class EdrEventSpool
 
         $stmt = $pdo->prepare(
             "DELETE FROM events WHERE id IN (
-                SELECT id FROM events WHERE {$predicate} ORDER BY id ASC LIMIT ?
+                SELECT id FROM events
+                WHERE {$predicate} AND NOT (deliver = 1 AND sent_at IS NULL)
+                ORDER BY id ASC LIMIT ?
              )"
         );
         $stmt->bindValue(1, $surplus, PDO::PARAM_INT);
         $stmt->execute();
 
         $removed = $stmt->rowCount();
+        $shortfall = $surplus - $removed;
+
+        if ($shortfall > 0) {
+            $queued = (int) $pdo->query(
+                "SELECT COUNT(*) FROM events WHERE {$predicate} AND deliver = 1 AND sent_at IS NULL"
+            )->fetchColumn();
+
+            Log::error('[EDR spool] Row ceiling cannot be met without discarding undelivered alerts', [
+                'class' => $label,
+                'dropped' => $removed,
+                'still_over_by' => $shortfall,
+                'undelivered_alerts_protected' => $queued,
+                'max_rows' => $maxRows,
+            ]);
+
+            return $removed;
+        }
 
         Log::warning('[EDR spool] Row ceiling hit, dropped oldest events', [
             'class' => $label,

@@ -42,6 +42,22 @@ class EdrEventCollector
     /** @var array<int, string> uid => username */
     private array $userCache = [];
 
+    /**
+     * Events this collector did not read from the sensor log but must still
+     * store: the anchoring event of an incident built on an aggregated network
+     * relationship. Keyed by the spool index assigned to it.
+     *
+     * @var array<int, array>
+     */
+    private array $extraSpoolEvents = [];
+
+    private ?\App\Services\Platform\EdrPlatformProfile $platform = null;
+
+    private function platform(): \App\Services\Platform\EdrPlatformProfile
+    {
+        return $this->platform ??= \App\Services\Platform\EdrPlatformProfile::current();
+    }
+
     public function __construct(
         OsqueryEngine $engine,
         EdrRuleEngine $rules,
@@ -107,20 +123,68 @@ class EdrEventCollector
         $alerts = [];
         $byRule = [];
         $findingsByEvent = [];
+        $governanceByEvent = [];
         $deliverable = [];
         $bySuppression = [];
         $suppressed = 0;
+        $correlatorStats = [];
 
         // Pass one: normalise everything. Attribution has to see the whole
         // batch before any rule runs, because a file event only becomes
         // meaningful once we have guessed which process caused it — and the
         // rule that matters most, a web account dropping a script into a web
         // root, is unreachable without that guess.
+        $this->extraSpoolEvents = [];
+        $socketRows = [];
+        $listenerRows = [];
+
         foreach ($lines as $line) {
+            // Network rows are not turned into per-connection events here.
+            //
+            // Raw socket events were 78% of the spool and had never produced a
+            // single deliverable finding — three quarters of the retained
+            // history was material no rule could evaluate, crowding out the
+            // events that rules do use. The network module aggregates them
+            // into relationships at roughly a thousand to one and spools those
+            // itself, which takes this host's process-telemetry retention from
+            // about 1.4 hours to 6.6.
+            $row = $this->networkRow($line);
+
+            if ($row !== null) {
+                if ($row['kind'] === 'listener') {
+                    $listenerRows[] = $row['row'];
+                } else {
+                    $socketRows[] = $row['row'];
+                }
+
+                continue;
+            }
+
             $event = $this->normalize($line);
 
             if ($event !== null && !$this->isAgentNoise($event)) {
                 $events[] = $event;
+            }
+        }
+
+        // The aggregated relationships rejoin the stream as ordinary events so
+        // the correlator can light its egress stage from them. They are NOT
+        // re-spooled below: the network module has already stored them.
+        $networkStats = [];
+        $networkEvents = [];
+
+        if ($socketRows !== [] || $listenerRows !== []) {
+            try {
+                $network = app(\App\Services\Network\NetworkCollector::class)
+                    ->collect($socketRows, $listenerRows, $options);
+
+                $networkStats = $network['stats'] ?? [];
+                $networkEvents = $network['events'] ?? [];
+            } catch (\Throwable $e) {
+                // Once per cycle. A failure here must not cost the process
+                // telemetry that shares this loop.
+                Log::warning('[EDR] Network collection failed this cycle: ' . $e->getMessage());
+                $networkStats = ['error' => $e->getMessage()];
             }
         }
 
@@ -140,7 +204,7 @@ class EdrEventCollector
             // but not raised.
             $emitted = [];
 
-            foreach ($findings as $finding) {
+            foreach ($findings as $findingIndex => $finding) {
                 $decision = $this->governor->assess($finding, $event, $options);
                 $this->governor->record($decision, $finding, $event, $options);
 
@@ -148,6 +212,17 @@ class EdrEventCollector
                 // rate per rule is exactly what tells you whether a rule is
                 // earning its place.
                 $byRule[$finding['rule']] = ($byRule[$finding['rule']] ?? 0) + 1;
+
+                // Kept for the correlator, which needs to know not just that a
+                // match was held back but *why*. "This rule is unproven" and
+                // "this host does this every day" are opposite facts about the
+                // same suppressed finding, and only one of them means the
+                // event is uninteresting.
+                $governanceByEvent[$eventIndex][$findingIndex] = [
+                    'emit' => $decision['emit'],
+                    'reason' => $decision['reason'],
+                    'allow_response' => $decision['allow_response'],
+                ];
 
                 if ($decision['emit']) {
                     $finding['stage'] = $decision['stage'];
@@ -179,12 +254,19 @@ class EdrEventCollector
         // to bypass a learning window than any other.
         foreach ($this->rules->evaluateBatch($events) as $batchHit) {
             $emitted = [];
+            $batchDecisions = [];
 
             foreach ($batchHit['findings'] as $finding) {
                 $decision = $this->governor->assess($finding, $batchHit['event'], $options);
                 $this->governor->record($decision, $finding, $batchHit['event'], $options);
 
                 $byRule[$finding['rule']] = ($byRule[$finding['rule']] ?? 0) + 1;
+
+                $batchDecisions[] = [
+                    'emit' => $decision['emit'],
+                    'reason' => $decision['reason'],
+                    'allow_response' => $decision['allow_response'],
+                ];
 
                 if ($decision['emit']) {
                     $finding['stage'] = $decision['stage'];
@@ -197,9 +279,74 @@ class EdrEventCollector
                 }
             }
 
+            // Batch findings have to reach the spool like every other finding.
+            //
+            // Delivery runs off spool->pending(), and $alerts is explicitly
+            // the dry-run view — so a cross-event rule that only ever pushed
+            // into $alerts was counted, governed, logged, and then never sent
+            // to the Hub at all. EDR-012 has never actually been delivered.
+            $batchIndex = $this->indexOfEvent($events, $batchHit['event']);
+
+            if ($batchIndex !== null) {
+                $findingsByEvent[$batchIndex] = array_merge(
+                    $findingsByEvent[$batchIndex] ?? [],
+                    $batchHit['findings']
+                );
+
+                foreach ($batchHit['findings'] as $offset => $finding) {
+                    $governanceByEvent[$batchIndex][] = $batchDecisions[$offset] ?? ['emit' => false, 'reason' => null];
+                }
+
+                if ($emitted !== []) {
+                    $deliverable[$batchIndex] = true;
+                }
+            }
+
             if ($emitted !== [] && count($alerts) < self::MAX_ALERTS_PER_CYCLE) {
                 $alerts[] = ['event' => $batchHit['event'], 'findings' => $emitted];
             }
+        }
+
+        // Behaviour correlation. Runs last, sees everything, and is the only
+        // stage that can look across events and across cycles.
+        //
+        // Structurally incapable of weakening what came before it: by the time
+        // it runs, $alerts and $findingsByEvent are complete, it only ever
+        // appends, and the whole call is inside one catch. If it throws, if
+        // its state file is unwritable, if the Hub pushes a nonsensical weight
+        // table, the eleven rules have already produced their findings and
+        // those findings ship exactly as they do today.
+        // Aggregated network relationships join the stream here, after the
+        // command-line rules have run — those rules are written against exec
+        // events and have nothing to say about a connection, while the network
+        // module has already evaluated its own. The correlator does have
+        // something to say: this is where its egress stage comes from.
+        //
+        // They are appended rather than merged in place so the indices the
+        // rules and the spool already use stay valid.
+        $spoolableCount = count($events);
+
+        foreach ($networkEvents as $networkEvent) {
+            $events[] = $networkEvent;
+        }
+
+        try {
+            $correlatorStats = $this->correlate(
+                $events,
+                $findingsByEvent,
+                $governanceByEvent,
+                $options,
+                $alerts,
+                $deliverable,
+                $byRule,
+                $suppressed,
+                $bySuppression,
+                $spoolableCount
+            );
+        } catch (\Throwable $e) {
+            // Once per cycle, never once per event.
+            Log::warning('[EDR] Correlator disabled this cycle: ' . $e->getMessage());
+            $correlatorStats = ['error' => $e->getMessage()];
         }
 
         arsort($byRule);
@@ -208,18 +355,28 @@ class EdrEventCollector
         // only over past alerts is pointless — you already have those. The
         // value is being able to answer "did this binary ever run here" when
         // the intel arrives a week later.
+        // Only the events this collector owns. The network module has already
+        // spooled its own, so re-storing them here would put the volume back
+        // that the aggregation was introduced to remove. Keys are preserved,
+        // so the findings and delivery maps stay aligned.
+        $spoolable = array_slice($events, 0, $spoolableCount, true) + $this->extraSpoolEvents;
+
         $spoolEnabled = $options['spool_enabled'] ?? true;
-        $spooled = $spoolEnabled ? $this->spool->store($events, $findingsByEvent, $deliverable) : 0;
+        $spooled = $spoolEnabled ? $this->spool->store($spoolable, $findingsByEvent, $deliverable) : 0;
 
         // Advance the cursor only now. If the spool write failed we leave it
         // where it was and re-read the same window next cycle: duplicated
         // events are cheap, and a gap in the retro-hunt corpus is not
         // recoverable.
-        if (!$spoolEnabled || $events === [] || $spooled > 0) {
+        // Judged on what this collector was responsible for storing. A cycle
+        // carrying nothing but network rows has nothing of its own to spool,
+        // and holding the cursor for that would re-read the same window
+        // forever.
+        if (!$spoolEnabled || $spoolable === [] || $spooled > 0) {
             $this->commitCursor($read['cursor']);
         } else {
             Log::warning('[EDR] Spool write failed, holding cursor to re-read next cycle', [
-                'events' => count($events),
+                'events' => count($spoolable),
             ]);
         }
 
@@ -241,9 +398,243 @@ class EdrEventCollector
                 'by_rule' => $byRule,
                 'by_suppression' => $bySuppression,
                 'learning' => $this->governor->isLearning((int) ($options['baseline_days'] ?? 7)),
+                'correlator' => $correlatorStats,
+                'network' => $networkStats,
                 'backend' => $this->engine->resolveBackend(),
             ],
         ];
+    }
+
+    /**
+     * Run the behaviour correlator over this cycle and fold its incidents in.
+     *
+     * The correlator is the only stage that can answer "do these eleven
+     * separately-defensible events add up to an intrusion". It consumes
+     * findings — including the ones governance held back, because on a
+     * freshly-installed agent those are the entire first half of a chain — and
+     * produces its own, which then go through exactly the same governance as
+     * every other rule. Nothing here bypasses the rollout ladder.
+     *
+     * @param  array<int, array> $events
+     * @param  array<int, array> $findingsByEvent    by reference: incidents are appended
+     * @param  array<int, array> $governanceByEvent
+     * @param  array<int, array> $alerts             by reference
+     * @param  array<int, bool>  $deliverable        by reference
+     * @return array the correlator's per-cycle rollup
+     */
+    private function correlate(
+        array $events,
+        array &$findingsByEvent,
+        array $governanceByEvent,
+        array $options,
+        array &$alerts,
+        array &$deliverable,
+        array &$byRule,
+        int &$suppressed,
+        array &$bySuppression,
+        int $spoolableCount = PHP_INT_MAX
+    ): array {
+        if (empty($options['correlator_enabled']) || $events === []) {
+            return [];
+        }
+
+        $correlator = \App\Services\Correlation\EdrCorrelator::make(
+            $options,
+            // Relocatable so a test — and the replay command — can point it
+            // somewhere other than the live agent's learned state.
+            isset($options['correlator_state_path']) ? (string) $options['correlator_state_path'] : null,
+            $this->spool,
+            app(EdrSecretRedactor::class),
+            $this->rules
+        );
+
+        $incidents = $correlator->correlate($events, $findingsByEvent, $governanceByEvent);
+
+        // A correlated multi-stage score is exactly the kind of finding a human
+        // should read before a process is killed, so EDR-100 and EDR-101 start
+        // at the bottom of the rollout ladder and stay there until somebody
+        // deliberately promotes them. The Hub can override this per rule; the
+        // default is deliberately the cautious one.
+        $governanceOptions = $options;
+        $governanceOptions['rule_stages'] = array_merge(
+            [
+                \App\Services\Correlation\EdrIncident::RULE_ACTOR => \App\Services\Quality\EdrGovernanceStore::STAGE_OBSERVE,
+                \App\Services\Correlation\EdrIncident::RULE_HOST => \App\Services\Quality\EdrGovernanceStore::STAGE_OBSERVE,
+            ],
+            is_array($options['rule_stages'] ?? null) ? $options['rule_stages'] : []
+        );
+
+        foreach ($incidents as $incident) {
+            $index = (int) $incident['event_index'];
+            $event = $incident['event'];
+
+            // An incident anchored on an aggregated network relationship sits
+            // past the range this collector spools, so its finding would be
+            // built and then never stored — the delivery path reads the spool.
+            // Give it a row of its own. One extra row per incident is nothing
+            // against the volume the aggregation removed, and the Hub needs
+            // the anchoring event to render the alert at all.
+            if ($index >= $spoolableCount) {
+                $index = $spoolableCount + count($this->extraSpoolEvents);
+                $this->extraSpoolEvents[$index] = $event;
+            }
+
+            $emitted = [];
+
+            foreach ($incident['findings'] as $finding) {
+                $decision = $this->governor->assess($finding, $event, $governanceOptions);
+                $this->governor->record($decision, $finding, $event, $governanceOptions);
+
+                $byRule[$finding['rule']] = ($byRule[$finding['rule']] ?? 0) + 1;
+
+                // Stored either way — a suppressed incident is still the best
+                // record of what the correlator saw, and a retro-hunt needs it.
+                $findingsByEvent[$index] = array_merge($findingsByEvent[$index] ?? [], [$finding]);
+
+                if (!$decision['emit']) {
+                    $suppressed++;
+                    $bySuppression[$decision['reason'] ?? 'unknown'] =
+                        ($bySuppression[$decision['reason'] ?? 'unknown'] ?? 0) + 1;
+
+                    continue;
+                }
+
+                $finding['stage'] = $decision['stage'];
+                // AND, not OR. An incident assembled from three alert-stage
+                // rules must not acquire the right to kill a process just
+                // because the total looks serious — that would make
+                // correlation a way around the promotion process.
+                $finding['allow_response'] = $decision['allow_response']
+                    && $this->everyMemberAllowsResponse($incident);
+
+                $emitted[] = $finding;
+            }
+
+            if ($emitted === []) {
+                continue;
+            }
+
+            $deliverable[$index] = true;
+
+            // Absorption is off by default, and when it is on the absorbed
+            // findings travel inside the incident rather than being dropped.
+            //
+            // Marking a member undeliverable is what removes the duplicate
+            // alert; without copying the findings across it also removed the
+            // *detection*, because delivery runs off the spool and a
+            // `deliver = 0` row is never uploaded. A rule hit that an analyst
+            // would have seen must not vanish because a correlator decided to
+            // summarise it.
+            $absorbed = [];
+
+            foreach ((array) ($incident['absorbs'] ?? []) as $memberIndex) {
+                $memberIndex = (int) $memberIndex;
+
+                if ($memberIndex === $index || empty($deliverable[$memberIndex])) {
+                    continue;
+                }
+
+                foreach ($findingsByEvent[$memberIndex] ?? [] as $memberFinding) {
+                    $absorbed[] = $memberFinding;
+                }
+
+                $deliverable[$memberIndex] = false;
+            }
+
+            if ($absorbed !== []) {
+                foreach ($emitted as $position => $finding) {
+                    if (isset($finding['incident'])) {
+                        $emitted[$position]['incident']['absorbed_findings'] = $absorbed;
+                        break;
+                    }
+                }
+
+                // And into the spooled copy, which is what actually reaches
+                // the Hub — $alerts is only the dry-run view.
+                foreach ($findingsByEvent[$index] ?? [] as $position => $finding) {
+                    if (isset($finding['incident'])) {
+                        $findingsByEvent[$index][$position]['incident']['absorbed_findings'] = $absorbed;
+                        break;
+                    }
+                }
+            }
+
+            if (count($alerts) < self::MAX_ALERTS_PER_CYCLE) {
+                $alerts[] = ['event' => $event, 'findings' => $emitted];
+            }
+        }
+
+        $stats = $correlator->stats();
+        $correlator->close();
+
+        return $stats;
+    }
+
+    /**
+     * Is this sensor line a network row, and which kind?
+     *
+     * Routed by the scheduled query name rather than by inspecting columns:
+     * the names are set by this agent in `OsqueryEngine::writeConfig()`, so
+     * they are the one part of the sensor's output we control.
+     *
+     * @return array{kind:string, row:array}|null
+     */
+    private function networkRow(string $line): ?array
+    {
+        $row = json_decode($line, true);
+
+        if (!is_array($row) || !is_array($row['columns'] ?? null)) {
+            return null;
+        }
+
+        $name = (string) ($row['name'] ?? '');
+
+        if ($name === 'listeners') {
+            // A listener is a state, not an event: osquery reports both the
+            // arrival and the departure of one, and only arrivals are of
+            // interest here.
+            return ($row['action'] ?? '') === 'added' ? ['kind' => 'listener', 'row' => $row] : null;
+        }
+
+        if (str_contains($name, 'socket')) {
+            return ($row['action'] ?? '') === 'added' ? ['kind' => 'socket', 'row' => $row] : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Where in this cycle's batch a cross-event rule's exemplar event sits.
+     *
+     * Matched on pid and timestamp rather than by value: the rule hands back
+     * one of the events it was given, and those two fields identify it without
+     * depending on every other field surviving unchanged.
+     */
+    private function indexOfEvent(array $events, array $needle): ?int
+    {
+        $pid = (int) ($needle['pid'] ?? -1);
+        $ts = (int) ($needle['ts'] ?? -1);
+
+        foreach ($events as $index => $event) {
+            if ((int) ($event['pid'] ?? -2) === $pid && (int) ($event['ts'] ?? -2) === $ts) {
+                return (int) $index;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * True only when every finding that contributed to an incident had already
+     * earned the right to drive a response on its own.
+     */
+    private function everyMemberAllowsResponse(array $incident): bool
+    {
+        // Computed by the correlator, which is the only thing that knows which
+        // findings actually contributed. Absent or false means at least one
+        // member had not earned response authority — including the pure
+        // structural-novelty case, where no rule vouched for any of it.
+        return !empty($incident['findings'][0]['incident']['member_response_allowed']);
     }
 
     /**
@@ -447,8 +838,30 @@ class EdrEventCollector
 
         $uid = isset($columns['uid']) ? (int) $columns['uid'] : -1;
 
+        $flushedAt = (int) ($row['unixTime'] ?? time());
+        $bootNs = (int) ($columns['ntime'] ?? 0);
+
         $event = [
-            'ts' => (int) ($row['unixTime'] ?? time()),
+            // When the event actually happened, to the second.
+            //
+            // `unixTime` is when osquery *flushed the batch*, not when the
+            // event occurred: one value on this host was measured carrying
+            // 8,820 exec rows, 54,491 execs in an hour shared 252 distinct
+            // values, and the lag runs 3–297 seconds. Every age, ordering and
+            // retention decision downstream reads this field, so it is worth
+            // deriving properly from the kernel's own per-event clock.
+            'ts' => $this->eventTime($bootNs, $flushedAt),
+            // The raw kernel timestamp, named for what it is.
+            //
+            // It is nanoseconds since BOOT, not since the epoch. Reading it as
+            // a unix timestamp puts this host's events in January 1970, off by
+            // exactly its uptime — an error that is invisible on a freshly
+            // booted test machine and three months wide on a server that has
+            // been up three months. Useful unanchored only for differences,
+            // where the constant offset cancels and the sub-second resolution
+            // survives.
+            'ntime_boot_ns' => $bootNs,
+            'flushed_at' => $flushedAt,
             'host' => (string) ($row['hostIdentifier'] ?? gethostname()),
             'action' => $isSocket ? 'connect' : 'exec',
             'sensor' => 'osquery',
@@ -738,6 +1151,64 @@ class EdrEventCollector
         return false;
     }
 
+    /**
+     * Turn the kernel's boot-relative timestamp into wall-clock seconds.
+     *
+     * Anchored on `btime` from /proc/stat, which the kernel keeps as
+     * "now minus uptime" and therefore re-derives if the system clock is
+     * adjusted — so the anchor corrects itself rather than drifting.
+     *
+     * Falls back to the flush time whenever the result cannot be trusted:
+     * no `ntime` column (the audit backend does not provide one), no
+     * readable `btime`, or an anchored value that disagrees with the flush
+     * time by more than the observed flush lag can explain. The fallback
+     * matters more than the optimisation — a wrong event time is worse than a
+     * coarse one, because everything downstream believes it.
+     */
+    private function eventTime(int $bootNs, int $flushedAt): int
+    {
+        if ($bootNs <= 0) {
+            return $flushedAt;
+        }
+
+        // Some platforms report a per-event clock that cannot be converted to
+        // wall time from here — macOS scales its by a ratio that differs
+        // between Intel and Apple Silicon, so the naive conversion is right on
+        // one and silently wrong on the other while differences stay correct
+        // on both. The flush time is coarse; a fiction is worse.
+        if (!$this->platform()->canAnchorEventClock()) {
+            return $flushedAt;
+        }
+
+        $bootTime = $this->bootTime();
+
+        if ($bootTime <= 0) {
+            return $flushedAt;
+        }
+
+        $anchored = $bootTime + intdiv($bootNs, 1_000_000_000);
+
+        // The event must precede its own flush, and by an amount a flush lag
+        // can account for. Measured on this host: 3–297 seconds, median 14.
+        if ($anchored > $flushedAt + 60 || $anchored < $flushedAt - 900) {
+            return $flushedAt;
+        }
+
+        return $anchored;
+    }
+
+    /** Cached for the life of the process; it cannot change underneath us. */
+    private ?int $bootTime = null;
+
+    private function bootTime(): int
+    {
+        if ($this->bootTime !== null) {
+            return $this->bootTime;
+        }
+
+        return $this->bootTime = $this->platform()->bootTime();
+    }
+
     private function resolveUsername(int $uid): string
     {
         if ($uid < 0) {
@@ -751,23 +1222,19 @@ class EdrEventCollector
         return $this->userCache[$uid] ?? (string) $uid;
     }
 
+    /**
+     * Cached for the life of the process, which is thirty seconds.
+     *
+     * Where the names come from is a platform question: /etc/passwd is the
+     * whole answer on Linux and only the system accounts on macOS, where real
+     * users live in Directory Services. Asking the wrong source there does not
+     * fail — it returns a file that parses cleanly and is missing every human
+     * on the machine, so every alert about a person would be labelled with a
+     * bare uid.
+     */
     private function loadUserCache(): void
     {
-        // posix_getpwuid is not always available (php-cli without ext-posix),
-        // so parse passwd directly and cache for the life of the process.
-        $this->userCache = [-1 => ''];
-
-        $passwd = @file('/etc/passwd', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        if ($passwd === false) {
-            return;
-        }
-
-        foreach ($passwd as $line) {
-            $parts = explode(':', $line);
-            if (count($parts) >= 3) {
-                $this->userCache[(int) $parts[2]] = $parts[0];
-            }
-        }
+        $this->userCache = $this->platform()->users();
     }
 
 }
