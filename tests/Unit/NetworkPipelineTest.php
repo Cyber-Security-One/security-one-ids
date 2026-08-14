@@ -145,6 +145,74 @@ class NetworkPipelineTest extends TestCase
     }
 
     /**
+     * The two clocks must never be conflated, and this is the test that would
+     * have caught it.
+     *
+     * `ntime` is monotonic seconds since boot — 301,098 on this host while the
+     * wall clock read 1786717446. Subtracting two of them gives a correct gap,
+     * because the offset cancels. Using one as a timestamp gives January 1970,
+     * wrong by the entire boot instant, with no error raised anywhere.
+     *
+     * The first version of the aggregator did exactly that: it wrote the raw
+     * value into `ts`, `first_seen` and `last_seen`. Every existing test still
+     * passed, because the pipeline tests assert on intervals — where the offset
+     * cancels — and the correlator tests build their own spool rows rather than
+     * running the aggregator. The bug was invisible until the collector
+     * hand-off landed and started storing 1970 timestamps, at which point
+     * Suricata attribution would have matched nothing at all.
+     */
+    public function test_timestamps_use_the_wall_clock_and_gaps_use_the_kernel_clock(): void
+    {
+        $events = [];
+
+        foreach ([0.0, 30.4, 59.8, 90.2] as $offset) {
+            $events[] = $this->normalize(
+                $this->row('connect', '/usr/bin/agent', '198.51.100.9', 443, (int) ($offset * 1e9))
+            );
+        }
+
+        // What the normaliser produced: an anchored wall clock, and a raw
+        // monotonic value under a name that cannot be mistaken for one.
+        $this->assertGreaterThan(1_600_000_000, $events[0]['ts'], 'ts must be a wall clock');
+        $this->assertArrayNotHasKey(
+            'event_time',
+            $events[0]['network'],
+            'the raw monotonic value must not be exposed under a name that reads as a wall clock'
+        );
+        $this->assertLessThan(
+            1_600_000_000,
+            $events[0]['network']['event_time_monotonic'],
+            'the monotonic value is seconds since boot, not since the epoch'
+        );
+
+        $aggregated = $this->aggregator->aggregate($events);
+        $this->assertCount(1, $aggregated);
+
+        $summary = $aggregated[0];
+
+        // Aggregation must not launder the monotonic clock into a timestamp.
+        foreach ([
+            'ts' => $summary['ts'],
+            'first_seen' => $summary['network']['first_seen'],
+            'last_seen' => $summary['network']['last_seen'],
+        ] as $field => $value) {
+            $this->assertGreaterThan(
+                1_600_000_000,
+                $value,
+                "{$field} must stay on the wall clock; the raw kernel clock would land in 1970"
+            );
+        }
+
+        // And the gaps must still come from the kernel clock, at sub-second
+        // resolution the whole-second wall clock cannot provide.
+        $intervals = $summary['network']['intervals'];
+        $this->assertCount(3, $intervals);
+        $this->assertEqualsWithDelta(30.4, $intervals[0], 0.001, 'gaps keep kernel-clock precision');
+        $this->assertEqualsWithDelta(29.4, $intervals[1], 0.001);
+        $this->assertEqualsWithDelta(30.4, $intervals[2], 0.001);
+    }
+
+    /**
      * The regression that made beacon detection possible.
      *
      * `unixTime` is the query flush time: 25,148 real events carried 18

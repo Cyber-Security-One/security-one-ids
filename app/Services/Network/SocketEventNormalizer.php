@@ -88,14 +88,24 @@ class SocketEventNormalizer
                 'first_seen' => $this->eventTime($row, $columns),
                 'last_seen' => $this->eventTime($row, $columns),
                 'intervals' => [],
-                // Sub-second kernel event time, carried separately because the
+                // Sub-second event time on the raw monotonic kernel clock,
+                // seconds since boot. Carried separately from `ts` because the
                 // shared event shape uses whole seconds while a 30-second
                 // beacon period needs finer resolution than that to tell
-                // jitter from rhythm. Null when ntime was absent, in which
-                // case the aggregator falls back to whole seconds and
-                // regularity simply cannot be established — which is the
-                // correct outcome, not a gap to paper over.
-                'event_time' => $this->eventTimeFloat($row, $columns),
+                // jitter from rhythm.
+                //
+                // The name says `monotonic` because this value must never
+                // become a timestamp. It is seconds since boot — 301,098 on
+                // this host — so read as a wall clock it lands in January 1970,
+                // wrong by the boot instant and with nothing to indicate it.
+                // The only legitimate use is subtracting two of them, where
+                // the offset cancels. `ts` above is the anchored equivalent.
+                //
+                // Null when ntime was absent (the audit backend does not supply
+                // it), in which case the aggregator falls back to whole seconds
+                // and regularity simply cannot be established — the correct
+                // outcome, not a gap to paper over.
+                'event_time_monotonic' => $this->eventTimeFloat($row, $columns),
             ],
         ];
     }

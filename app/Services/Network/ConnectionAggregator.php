@@ -52,7 +52,23 @@ class ConnectionAggregator
             if (!isset($groups[$key])) {
                 $groups[$key] = [
                     'event' => $event,
+                    // Two clocks, deliberately kept apart. `times` is the raw
+                    // monotonic kernel clock and exists only to be subtracted:
+                    // inter-arrival gaps need sub-second resolution and a
+                    // constant offset cancels out of a difference. `wall` is
+                    // anchored wall-clock seconds and is the only thing that
+                    // may become a timestamp.
+                    //
+                    // Collapsing them is not a tidiness issue. The first
+                    // version of this class wrote the raw value into `ts`,
+                    // which made every aggregated connection carry a timestamp
+                    // in 1970 — off by the boot instant, 1,786,416,348 seconds
+                    // on this host — with no error anywhere. Nothing caught it
+                    // because the aggregator's output does not reach the spool
+                    // until the collector hand-off lands, so it was a bug
+                    // scheduled to activate on wiring day.
                     'times' => [],
+                    'wall' => [],
                     'count' => 0,
                     'pids' => [],
                 ];
@@ -68,6 +84,11 @@ class ConnectionAggregator
             $time = $this->timeOf($event);
             if ($time !== null) {
                 $groups[$key]['times'][] = $time;
+            }
+
+            $wall = (int) ($event['ts'] ?? 0);
+            if ($wall > 0) {
+                $groups[$key]['wall'][] = $wall;
             }
         }
 
@@ -117,8 +138,13 @@ class ConnectionAggregator
             }
         }
 
-        $first = $times === [] ? (int) ($event['ts'] ?? time()) : (int) floor($times[0]);
-        $last = $times === [] ? $first : (int) ceil($times[count($times) - 1]);
+        // Timestamps come from the anchored clock, never from the one the
+        // intervals were measured with.
+        $wall = $group['wall'];
+        sort($wall);
+
+        $first = $wall === [] ? (int) ($event['ts'] ?? time()) : $wall[0];
+        $last = $wall === [] ? $first : $wall[count($wall) - 1];
 
         $pids = array_keys($group['pids'] ?? []);
         sort($pids);
@@ -204,8 +230,8 @@ class ConnectionAggregator
      */
     private function timeOf(array $event): ?float
     {
-        if (isset($event['network']['event_time']) && is_numeric($event['network']['event_time'])) {
-            return (float) $event['network']['event_time'];
+        if (isset($event['network']['event_time_monotonic']) && is_numeric($event['network']['event_time_monotonic'])) {
+            return (float) $event['network']['event_time_monotonic'];
         }
 
         $ts = $event['ts'] ?? null;
