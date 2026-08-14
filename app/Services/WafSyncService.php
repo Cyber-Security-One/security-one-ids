@@ -483,6 +483,7 @@ class WafSyncService
         $this->applyEdrRuleVerdicts($addons);
 
         $this->collectEdrAlerts($addons);
+        $this->collectIdentityAlerts($addons);
         $this->pruneEdrSpool($addons);
         $this->maybeReportEdrRuleQuality($addons);
     }
@@ -582,7 +583,7 @@ class WafSyncService
             }
 
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('[EDR] ensureEdrSensorRunning failed: ' . $e->getMessage());
 
             return false;
@@ -680,7 +681,7 @@ class WafSyncService
             if ($applied > 0) {
                 Log::info('[EDR quality] Analyst verdicts applied', ['count' => $applied]);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::warning('[EDR quality] Verdict application failed: ' . $e->getMessage());
         }
     }
@@ -719,8 +720,37 @@ class WafSyncService
                 ),
                 $payload
             );
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::warning('[EDR quality] Quality report failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Collect authentication events from the host's auth log.
+     *
+     * Separate from the sensor collection because it has a different source,
+     * a different cursor and a different failure mode: a host with no
+     * readable auth log is normal (containers), and that must not look like a
+     * broken sensor.
+     *
+     * Delivery goes through the spool like everything else — the alerts
+     * returned here are for the dry-run view only.
+     */
+    private function collectIdentityAlerts(array $addons): void
+    {
+        if (empty($addons['edr_identity_events'] ?? true)) {
+            return;
+        }
+
+        try {
+            $collector = app(\App\Services\Identity\IdentityCollector::class);
+            $stats = $collector->collect($this->edrSensorOptions($addons))['stats'];
+
+            if (($stats['events'] ?? 0) > 0) {
+                Log::debug('[EDR identity] Processed authentication events', $stats);
+            }
+        } catch (\Throwable $e) {
+            Log::error('[EDR identity] Collection failed: ' . $e->getMessage());
         }
     }
 
@@ -752,7 +782,7 @@ class WafSyncService
             if (($report['reported'] ?? 0) > 0) {
                 Log::info('[EDR response] Reported outcomes to Hub', $report);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('[EDR response] Safety pass failed: ' . $e->getMessage());
         }
     }
@@ -788,7 +818,7 @@ class WafSyncService
                     'skipped' => $summary['skipped'],
                 ]);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('[EDR response] Command processing failed: ' . $e->getMessage());
         }
     }
@@ -833,7 +863,7 @@ class WafSyncService
             if ($deleted > 0) {
                 Log::info('[EDR] Spool pruned', $result);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::warning('[EDR] Spool prune failed: ' . $e->getMessage());
         }
     }
@@ -857,7 +887,7 @@ class WafSyncService
             if (($stats['events'] ?? 0) > 0) {
                 Log::debug('[EDR] Processed sensor events', $stats);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('[EDR] Alert collection failed: ' . $e->getMessage());
         }
 
@@ -873,7 +903,7 @@ class WafSyncService
                     'remaining' => $upload['remaining'],
                 ]);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('[EDR] Alert upload failed: ' . $e->getMessage());
         }
     }
@@ -3217,7 +3247,7 @@ class WafSyncService
                 // immediately: it explains why a machine went quiet.
                 'response' => $this->getEdrResponseInfo(),
             ];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::debug('[EDR] Status probe failed: ' . $e->getMessage());
 
             return [
@@ -3248,7 +3278,7 @@ class WafSyncService
                 'actions_unreported' => $ledger['unreported'],
                 'actions_total' => $ledger['total'],
             ];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::debug('[EDR response] Status probe failed: ' . $e->getMessage());
 
             return ['network_isolated' => false, 'error' => $e->getMessage()];

@@ -555,6 +555,67 @@ class EdrEventSpool
         }
     }
 
+    /**
+     * Authentication events inside a time window.
+     *
+     * Brute force, password spraying and "succeeded after failing" are all
+     * statements about a window rather than about one line, so the rules need
+     * history that survives the collection cycle. The spool already holds it;
+     * this is the query that makes it reachable.
+     *
+     * @param array $filters actions[], source_ip, username
+     * @return array<int, array>
+     */
+    public function identityEventsSince(int $since, array $filters = [], int $limit = 2000): array
+    {
+        $where = ["sensor = 'authlog'", 'ts >= ?'];
+        $params = [$since];
+
+        if (!empty($filters['actions']) && is_array($filters['actions'])) {
+            $placeholders = implode(',', array_fill(0, count($filters['actions']), '?'));
+            $where[] = "action IN ({$placeholders})";
+            $params = array_merge($params, array_values($filters['actions']));
+        }
+
+        if (!empty($filters['username'])) {
+            $where[] = 'username = ?';
+            $params[] = (string) $filters['username'];
+        }
+
+        // The source address lives in the extra blob rather than a column,
+        // because it only exists for authentication events.
+        if (!empty($filters['source_ip'])) {
+            $where[] = 'extra LIKE ?';
+            $params[] = '%"source_ip":"' . str_replace(['%', '_'], ['\%', '\_'], (string) $filters['source_ip']) . '"%';
+        }
+
+        $sql = 'SELECT * FROM events WHERE ' . implode(' AND ', $where) . ' ORDER BY ts DESC LIMIT ?';
+        $params[] = max(1, min(20000, $limit));
+
+        try {
+            $stmt = $this->pdo()->prepare($sql);
+            $stmt->execute($params);
+
+            $rows = $this->decodeRows($stmt->fetchAll());
+
+            // Lift the authentication fields back out of the extra blob so
+            // callers work with one flat shape.
+            foreach ($rows as &$row) {
+                $extra = json_decode((string) ($row['extra'] ?? ''), true);
+
+                if (is_array($extra)) {
+                    $row += $extra;
+                }
+            }
+
+            return $rows;
+        } catch (PDOException $e) {
+            Log::warning('[EDR spool] Identity query failed: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
     /* ------------------------------------------------------------------ */
     /* Retention                                                           */
     /* ------------------------------------------------------------------ */
