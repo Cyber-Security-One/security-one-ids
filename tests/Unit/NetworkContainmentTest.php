@@ -67,6 +67,54 @@ class NetworkContainmentTest extends TestCase
     }
 
     /**
+     * The feature could not run in the environment the agent runs in.
+     *
+     * The containment code invoked a bare `iptables`, and the root watchdog —
+     * the only path with the privilege to install a rule — runs with
+     * PATH=/usr/local/bin:/usr/bin:/bin while the binary lives at
+     * /usr/sbin/iptables. Measured: every probe from that process returned exit
+     * code 127, "sh: 1: iptables: not found", isSupported() returned false, and
+     * isolate() refused with `iptables_unavailable`.
+     *
+     * So network isolation had never been able to work here. The code was
+     * complete and tested; it could not execute. The same shape as a rule that
+     * appears on the coverage list and never fires, one level up.
+     *
+     * The inverse held on the other path: the www-data heartbeat has /usr/sbin
+     * in PATH and can find the binary but lacks the privilege to use it. One
+     * path could see it and not use it, the other could use it and not see it.
+     */
+    public function test_iptables_is_found_without_relying_on_the_path(): void
+    {
+        $original = getenv('PATH');
+
+        try {
+            // The root watchdog's actual environment.
+            putenv('PATH=/usr/local/bin:/usr/bin:/bin');
+
+            $containment = new NetworkContainment();
+
+            $this->assertStringStartsWith('/', $containment->iptablesCommand(), 'an absolute path, not a bare name');
+            $this->assertTrue(@is_executable($containment->iptablesCommand()));
+
+            // And the probe works rather than reporting the binary missing.
+            $this->assertTrue($containment->isSupported());
+            $this->assertSame('ok', $containment->stateDetail()['reason']);
+        } finally {
+            putenv('PATH=' . ($original === false ? '' : $original));
+        }
+    }
+
+    /**
+     * An explicit command still wins, because the tests in this file depend on
+     * injecting one and a host may keep iptables somewhere unusual.
+     */
+    public function test_an_explicit_command_overrides_resolution(): void
+    {
+        $this->assertSame('true', (new NetworkContainment('true'))->iptablesCommand());
+    }
+
+    /**
      * "Not isolated" and "cannot tell" must never be the same answer.
      *
      * The previous probe returned a bool and collapsed them. Measured on this

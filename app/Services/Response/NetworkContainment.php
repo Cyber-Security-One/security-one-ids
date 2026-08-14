@@ -47,9 +47,64 @@ class NetworkContainment
      *                                     without risking a live machine.
      *                                     Never sourced from Hub input.
      */
+    /**
+     * Absolute locations to look for iptables, in order.
+     *
+     * Resolved rather than trusted to PATH, and the reason is measured. The
+     * containment code invoked a bare `iptables`, and the root watchdog — the
+     * only path with the privilege to actually install a rule — runs with
+     * PATH=/usr/local/bin:/usr/bin:/bin. The binary is at /usr/sbin/iptables.
+     * So every probe from that process returned exit code 127,
+     * "sh: 1: iptables: not found", `isSupported()` returned false, and
+     * `isolate()` refused with `iptables_unavailable`.
+     *
+     * Network isolation had therefore never been able to work in the
+     * environment the agent actually runs in. The code was complete and tested;
+     * it simply could not execute. The inverse held on the other path: the
+     * www-data heartbeat has /usr/sbin in PATH and can find the binary, but
+     * lacks the privilege to use it. One path could see it and not use it, the
+     * other could use it and not see it.
+     *
+     * The Hub session surfaced this by noticing the state reason was
+     * `unreadable` rather than `unprivileged` — a distinction added an hour
+     * earlier for a different purpose, which turned out to be the thing that
+     * separated "cannot ask" from "asked and could not".
+     */
+    private const IPTABLES_PATHS = [
+        '/usr/sbin/iptables',
+        '/sbin/iptables',
+        '/usr/bin/iptables',
+        '/bin/iptables',
+    ];
+
     public function __construct(?string $iptablesCommand = null)
     {
-        $this->iptables = $iptablesCommand ?? 'iptables';
+        $this->iptables = $iptablesCommand ?? self::resolveIptables();
+    }
+
+    /**
+     * The iptables binary, by absolute path.
+     *
+     * Falls back to the bare name when nothing is found, so a host that keeps
+     * it somewhere unusual still works if PATH happens to cover it — and so the
+     * failure, if it comes, is still reported as `iptables_unavailable` rather
+     * than as a crash.
+     */
+    private static function resolveIptables(): string
+    {
+        foreach (self::IPTABLES_PATHS as $candidate) {
+            if (@is_executable($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return 'iptables';
+    }
+
+    /** The resolved command, for diagnostics. */
+    public function iptablesCommand(): string
+    {
+        return $this->iptables;
     }
 
     public function isSupported(): bool
