@@ -151,8 +151,41 @@ class SpoolIdentityHistory implements IdentityHistory
         return $this->knownSources[$key];
     }
 
+    public function loginHoursFor(string $username, int $before): array
+    {
+        $key = "hours:{$username}:{$before}";
+
+        if (!array_key_exists($key, $this->loginHours)) {
+            $rows = $this->spool->identityEventsSince($before - (86400 * 30), [
+                'actions' => ['login_success'],
+                'username' => $username,
+            ], 2000);
+
+            $hours = [];
+            $days = [];
+
+            foreach ($rows as $row) {
+                $ts = (int) ($row['ts'] ?? 0);
+
+                if ($ts <= 0 || $ts >= $before) {
+                    continue;
+                }
+
+                $hours[(int) date('G', $ts)] = true;
+                $days[date('Y-m-d', $ts)] = true;
+            }
+
+            $this->loginHours[$key] = ['hours' => array_keys($hours), 'days' => count($days)];
+        }
+
+        return $this->loginHours[$key];
+    }
+
     /** @var array<string, array<int, string>> */
     private array $knownSources = [];
+
+    /** @var array<string, array{hours: array<int, int>, days: int}> */
+    private array $loginHours = [];
 
     private function remember(string $key, callable $resolve): array
     {

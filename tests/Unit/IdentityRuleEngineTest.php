@@ -54,6 +54,13 @@ class IdentityRuleEngineTest extends TestCase
             {
                 return $this->knownSources;
             }
+
+            public array $profile = ['hours' => [], 'days' => 0];
+
+            public function loginHoursFor(string $username, int $before): array
+            {
+                return $this->profile;
+            }
         };
 
         $this->rules = new IdentityRuleEngine($this->history);
@@ -263,6 +270,70 @@ class IdentityRuleEngineTest extends TestCase
         // are not movement.
         $this->history->sources = ['10.0.0.1', '10.0.0.1', '10.0.0.2'];
         $this->assertNotContains('IAM-008', $this->rulesFired($this->event(['action' => 'login_success'])));
+    }
+
+    /**
+     * Held to the same standard as IAM-003 about basis. "Unusual" below the
+     * profile threshold is just "not seen yet", and a rule that cannot tell
+     * those apart raises an alert for every normal login in its first week.
+     */
+    public function test_anomaly_rules_stay_silent_until_there_is_a_profile(): void
+    {
+        $this->history->knownSources = [];
+        $this->history->profile = ['hours' => [], 'days' => 0];
+        $fired = $this->rulesFired($this->event(['action' => 'login_success']));
+        $this->assertEmpty(array_intersect(['IAM-009', 'IAM-010'], $fired), 'no history, no claim');
+
+        // Four days is a handful of coincidences, not a routine.
+        $this->history->knownSources = ['10.0.0.1'];
+        $this->history->profile = ['hours' => [9, 10, 11], 'days' => 4];
+        $fired = $this->rulesFired($this->event(['action' => 'login_success']));
+        $this->assertEmpty(array_intersect(['IAM-009', 'IAM-010'], $fired), 'below the profile threshold');
+    }
+
+    public function test_a_new_source_and_an_unusual_hour_are_reported_separately(): void
+    {
+        $this->history->knownSources = ['10.0.0.1', '10.0.0.2'];
+        $this->history->profile = ['hours' => [9, 10, 11], 'days' => 20];
+
+        $atTwo = mktime(14, 0, 0, 8, 14, 2026);
+        $fired = $this->rulesFired($this->event(['action' => 'login_success', 'ts' => $atTwo]));
+
+        $this->assertContains('IAM-009', $fired, 'an address never used before');
+        $this->assertContains('IAM-010', $fired, 'an hour never used before');
+
+        // A known address at a usual hour is simply someone working.
+        $this->history->knownSources = ['203.0.113.9'];
+        $atTen = mktime(10, 0, 0, 8, 14, 2026);
+        $fired = $this->rulesFired($this->event(['action' => 'login_success', 'ts' => $atTen]));
+        $this->assertEmpty(array_intersect(['IAM-009', 'IAM-010'], $fired));
+
+        // The hour alone is weak, so it is reported alone and graded low.
+        $fired = $this->rulesFired($this->event(['action' => 'login_success', 'ts' => $atTwo]));
+        $this->assertNotContains('IAM-009', $fired);
+        $this->assertContains('IAM-010', $fired);
+    }
+
+    /**
+     * A new address is a strong signal; an unusual hour is not. People travel
+     * and schedules change, so the hour earns its place as corroboration
+     * rather than as an alert somebody is woken up for.
+     */
+    public function test_anomaly_severities_reflect_how_much_each_signal_is_worth(): void
+    {
+        $this->history->knownSources = ['10.0.0.1'];
+        $this->history->profile = ['hours' => [9], 'days' => 20];
+
+        $severities = [];
+        foreach ($this->rules->evaluate($this->event([
+            'action' => 'login_success',
+            'ts' => mktime(14, 0, 0, 8, 14, 2026),
+        ])) as $finding) {
+            $severities[$finding['rule']] = $finding['severity'];
+        }
+
+        $this->assertSame('high', $severities['IAM-009']);
+        $this->assertSame('low', $severities['IAM-010']);
     }
 
     public function test_events_that_are_not_about_identity_are_ignored(): void

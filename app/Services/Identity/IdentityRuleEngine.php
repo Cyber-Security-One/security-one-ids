@@ -29,6 +29,13 @@ class IdentityRuleEngine
     private const WINDOW_SECONDS = 900;
 
     /**
+     * Distinct calendar days of history before an account's habits count as a
+     * profile. Below this, "unusual" is just "not seen yet" — the same mistake
+     * IAM-003 made before it was graded.
+     */
+    private const MIN_PROFILE_DAYS = 5;
+
+    /**
      * Accounts that exist to run something, not to be logged into. An
      * interactive session as one of these is either a misconfiguration or
      * somebody using a service credential.
@@ -299,6 +306,60 @@ class IdentityRuleEngine
                     "'{$username}' logged in from " . count($distinct)
                     . ' distinct addresses within 15 minutes (' . implode(', ', array_slice($distinct, 0, 4)) . ')'
                 );
+            }
+        }
+
+        /* IAM-009 — a login from a source this account has never used --------
+         * Distinct from IAM-003, which needs a run of failures first. A single
+         * clean login from somewhere new is what a working stolen credential
+         * looks like: no guessing, because the attacker already has the
+         * password.
+         *
+         * Held to the same standard as IAM-003 about basis. We only call an
+         * address new once the account has enough recorded history for "new"
+         * to mean anything, and the threshold is distinct calendar days rather
+         * than login count — one busy afternoon is not a routine. */
+        if ($action === 'login_success' && $username !== '' && $sourceIp !== null) {
+            $known = $this->history->knownSourcesFor($username, $now);
+            $profile = $this->history->loginHoursFor($username, $now);
+
+            if ($known !== []
+                && $profile['days'] >= self::MIN_PROFILE_DAYS
+                && !in_array($sourceIp, $known, true)
+            ) {
+                $findings[] = $this->finding(
+                    'IAM-009',
+                    'Login from a source this account has never used',
+                    'high',
+                    'T1078',
+                    "'{$username}' authenticated from {$sourceIp}, which it has never used across "
+                    . $profile['days'] . ' days of history (previously only '
+                    . implode(', ', array_slice($known, 0, 3)) . ')'
+                );
+            }
+
+            /* IAM-010 — a login at an hour this account never logs in at ------
+             * Weak on its own and deliberately graded low: people travel,
+             * schedules change, and a deploy at 3am is a bad week rather than
+             * an intrusion. It earns its place as corroboration — an unusual
+             * hour alongside an unusual source is a much stronger statement
+             * than either alone. */
+            if ($profile['days'] >= self::MIN_PROFILE_DAYS && $profile['hours'] !== []) {
+                $hour = (int) date('G', $now);
+
+                if (!in_array($hour, $profile['hours'], true)) {
+                    sort($profile['hours']);
+
+                    $findings[] = $this->finding(
+                        'IAM-010',
+                        'Login at an unusual hour for this account',
+                        'low',
+                        'T1078',
+                        "'{$username}' authenticated at {$hour}:00. Across " . $profile['days']
+                        . ' days of history this account has only signed in at hours '
+                        . implode(', ', $profile['hours'])
+                    );
+                }
             }
         }
 

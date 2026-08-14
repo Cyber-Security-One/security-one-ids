@@ -53,4 +53,18 @@ interface IdentityHistory
      * @return array<int, string>
      */
     public function knownSourcesFor(string $username, int $before): array;
+
+    /**
+     * The hours of the day this account has successfully authenticated at,
+     * and how many distinct calendar days of history that is drawn from.
+     *
+     * The day count is what makes the hours usable. An account with two days
+     * of history has been seen at a handful of hours by coincidence, and
+     * calling the third hour unusual would be noise. Counting distinct days
+     * rather than events also stops a single busy afternoon from looking like
+     * a settled routine.
+     *
+     * @return array{hours: array<int, int>, days: int}
+     */
+    public function loginHoursFor(string $username, int $before): array;
 }
