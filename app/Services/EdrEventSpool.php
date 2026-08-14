@@ -894,4 +894,61 @@ class EdrEventSpool
 
         return $stats;
     }
+
+    /**
+     * How far back each class of event actually reaches.
+     *
+     * A single figure over the whole spool is worse than no figure. The
+     * classes have separate ceilings on purpose — authentication events are
+     * a fraction of a percent of the stream and need weeks, process telemetry
+     * is the bulk and gets hours — so one average reports the long tail as if
+     * it were the window an investigation has. Measured here: 67 hours across
+     * the whole file, while the process telemetry anything would actually
+     * query reached back barely one.
+     *
+     * The useful number is per class, because the question is always "can this
+     * rule see far enough back", and each rule reads one class.
+     *
+     * @return array<string, array{events:int, oldest_ts:?int, newest_ts:?int, hours:?float}>
+     */
+    public function retentionWindows(): array
+    {
+        $classes = [
+            'process' => "sensor IS NOT 'authlog' AND action NOT IN ('net_connect', 'net_accept')",
+            'network' => "action IN ('net_connect', 'net_accept')",
+            'identity' => "sensor = 'authlog'",
+        ];
+
+        $out = [];
+
+        foreach ($classes as $label => $predicate) {
+            $out[$label] = ['events' => 0, 'oldest_ts' => null, 'newest_ts' => null, 'hours' => null];
+
+            try {
+                $row = $this->pdo()->query(
+                    "SELECT COUNT(*) AS n, MIN(ts) AS oldest, MAX(ts) AS newest FROM events WHERE {$predicate}"
+                )->fetch();
+            } catch (PDOException $e) {
+                continue;
+            }
+
+            $count = (int) ($row['n'] ?? 0);
+
+            if ($count === 0) {
+                continue;
+            }
+
+            $oldest = (int) $row['oldest'];
+            $newest = (int) $row['newest'];
+
+            $out[$label] = [
+                'events' => $count,
+                'oldest_ts' => $oldest,
+                'newest_ts' => $newest,
+                'hours' => $newest > $oldest ? round(($newest - $oldest) / 3600, 2) : 0.0,
+            ];
+        }
+
+        return $out;
+    }
 }

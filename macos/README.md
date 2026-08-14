@@ -1,0 +1,106 @@
+# Security One — macOS menu bar console
+
+A small status item that shows what the agent on this machine currently knows
+about itself: the endpoint sensor, the behaviour correlator, Suricata, ClamAV,
+and the Hub connection — plus the number nobody can guess from the outside,
+which is how far back the event spool actually reaches.
+
+```
+● Security One Agent
+  gx10-dc8a · Darwin 24.6.0 arm64
+
+  ●  Endpoint sensor  endpointsecurity
+  ●  Correlator       warming 34% · 4.8/14 days
+  ●  Suricata         7.0.10 · 41,203 rules
+  ●  ClamAV           1.4.3
+  ●  Hub              waf.cybersecureone.com
+
+  History held
+    process   494,168 · 1.9h
+    network     5,832 · 1.0h
+    identity      630 · 67.4h
+
+  Updated just now
+  Open full report
+  Refresh now
+```
+
+## Build
+
+Needs the Command Line Tools (`xcode-select --install`) and nothing else — no
+Xcode project, no package manager, one Swift file against AppKit.
+
+```bash
+cd /opt/security-one-ids/macos/SecurityOneMenuBar
+./build.sh install
+```
+
+That compiles it, wraps it in `SecurityOne.app`, copies it to `/Applications`
+and launches it. `./build.sh` on its own builds into `./build/` without
+installing. The bundle is ad-hoc signed, which is what lets it run on Apple
+Silicon at all; it is not a distribution signature, so the first launch may
+still need an approval in **System Settings → Privacy & Security**.
+
+To start it at login: **System Settings → General → Login Items → +**, and pick
+`/Applications/SecurityOne.app`.
+
+## How it gets its numbers
+
+It runs `php artisan ids:status --json` in `/opt/security-one-ids` every 30
+seconds, and again whenever the menu is opened.
+
+It deliberately has no opinion of its own about what "healthy" means. Every
+state, every threshold and every piece of remediation advice comes from that
+one command, because a console that decides for itself is a second
+implementation of the same judgement — and the day the two disagree, nothing
+tells you which one is wrong. The console's whole job is to render.
+
+Three rules it inherits from the snapshot:
+
+- **Unknown is never painted green.** This app runs unprivileged, and the Hub
+  credentials live in a root-only file, so there are things it genuinely cannot
+  determine. Those show yellow with the reason, not green.
+- **Warming is not a fault.** The correlator is silent by design for its first
+  fortnight while it learns what this host normally does. It shows progress, in
+  teal. A red dot for two weeks teaches people to ignore red.
+- **Retention is reported per event class, never averaged.** The classes have
+  separate ceilings, so a single figure across the spool reports the long tail
+  of a small class as though it were the window everything has. On the host
+  above that would read "67 hours" while the process telemetry an investigation
+  would actually query reached back under two.
+
+If the agent cannot be reached, the item goes yellow and the menu says which
+part failed — which PHP it looked for, or which path was missing — rather than
+a bare "unavailable" that sends you looking in the wrong place.
+
+## Requirements
+
+- macOS 11 or later
+- The agent installed at `/opt/security-one-ids`
+- PHP at `/opt/homebrew/bin/php`, `/usr/local/bin/php`, or `/usr/bin/php`
+
+`Open full report` drives Terminal via AppleScript, so the first use asks for
+Automation permission. Declining it costs only that one menu item.
+
+## Sensor note
+
+The full-fidelity backend on macOS is EndpointSecurity, and osquery can only
+use it once it has Full Disk Access:
+
+**System Settings → Privacy & Security → Full Disk Access → +** →
+`/opt/osquery/lib/osquery.app/Contents/MacOS/osqueryd`
+
+Until that is granted the sensor reports no backend, and the menu says so along
+with that instruction. Confirm with:
+
+```bash
+php artisan ids:sync-edr --status   # expect: backend: endpointsecurity
+```
+
+## Status
+
+Written and reviewed on Linux; the PHP side that produces the snapshot is
+tested and running, but **the Swift has not been compiled or run** — there is
+no macOS host here to do it on. Build it on the Mac before trusting it. Every
+macOS defect found on this branch so far turned up on a real machine and none
+of them turned up before.
