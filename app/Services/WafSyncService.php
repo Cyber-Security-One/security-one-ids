@@ -46,6 +46,32 @@ class WafSyncService
     }
 
     /**
+     * Hub connection details for collaborators that talk to the Hub directly.
+     *
+     * The EDR uploader needs these because delivery runs off the spool rather
+     * than through this class — it builds its own request so it can negotiate
+     * compression and honour Retry-After, neither of which the shared
+     * reportAlerts() path knows about.
+     */
+    public function getConnectionConfig(): array
+    {
+        return [
+            'url' => $this->wafUrl,
+            'token' => $this->agentToken,
+            'name' => $this->agentName,
+        ];
+    }
+
+    /**
+     * Public accessor for the configured HTTP client, so collaborators inherit
+     * the same TLS/CA handling instead of hand-rolling their own.
+     */
+    public function httpClient(int $timeout = 30): \Illuminate\Http\Client\PendingRequest
+    {
+        return $this->getHttpClient($timeout);
+    }
+
+    /**
      * Get HTTP client with SSL configuration for Windows
      */
     protected function getHttpClient(int $timeout = 30): \Illuminate\Http\Client\PendingRequest
@@ -549,6 +575,11 @@ class WafSyncService
             'spool_enabled' => (bool) ($addons['edr_spool_enabled'] ?? true),
             'spool_retention_days' => (int) ($addons['edr_spool_retention_days'] ?? 7),
             'spool_max_rows' => (int) ($addons['edr_spool_max_rows'] ?? 500000),
+            'upload_batch_size' => (int) ($addons['edr_upload_batch_size'] ?? 200),
+            // Off until the Hub confirms it can decode a gzipped request body
+            // — PHP does not do it automatically and nginx will not do it for
+            // us, so assuming support would turn every upload into a 400.
+            'upload_compression' => (bool) ($addons['edr_upload_compression'] ?? false),
         ];
     }
 
@@ -578,33 +609,42 @@ class WafSyncService
     }
 
     /**
-     * Read new sensor output, ship rule hits to the Hub.
+     * Read new sensor output into the spool, then drain the spool to the Hub.
+     *
+     * These are two separate steps on purpose. Collection must not depend on
+     * the Hub being reachable, and delivery must not depend on an alert having
+     * been found in this particular cycle — otherwise a Hub outage silently
+     * discards whatever was detected during it.
      */
     private function collectEdrAlerts(array $addons): void
     {
+        $options = $this->edrSensorOptions($addons);
+
         try {
             $collector = app(\App\Services\EdrEventCollector::class);
-            $result = $collector->collect($this->edrSensorOptions($addons));
+            $stats = $collector->collect($options)['stats'];
 
-            $stats = $result['stats'];
             if (($stats['events'] ?? 0) > 0) {
                 Log::debug('[EDR] Processed sensor events', $stats);
             }
-
-            $alerts = $result['alerts'];
-            if ($alerts === []) {
-                return;
-            }
-
-            if ($this->reportAlerts($alerts)) {
-                Log::info('[EDR] Uploaded ' . count($alerts) . ' endpoint alerts to Hub', [
-                    'by_rule' => $stats['by_rule'] ?? [],
-                ]);
-            } else {
-                Log::warning('[EDR] Failed to upload endpoint alerts');
-            }
         } catch (\Exception $e) {
             Log::error('[EDR] Alert collection failed: ' . $e->getMessage());
+        }
+
+        // Always attempt delivery, even when this cycle found nothing: the
+        // queue may still hold alerts from a cycle that ran while the Hub was
+        // down.
+        try {
+            $uploader = app(\App\Services\EdrAlertUploader::class);
+            $upload = $uploader->flush($options);
+
+            if ($upload['remaining'] > 0 && $upload['sent'] === 0 && $upload['skipped'] === null) {
+                Log::warning('[EDR] Alerts queued but not delivered', [
+                    'remaining' => $upload['remaining'],
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('[EDR] Alert upload failed: ' . $e->getMessage());
         }
     }
 

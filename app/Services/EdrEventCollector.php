@@ -35,17 +35,21 @@ class EdrEventCollector
     private OsqueryEngine $engine;
     private EdrRuleEngine $rules;
     private EdrEventSpool $spool;
+    private EdrAlertFactory $factory;
 
     /** @var array<int, string> uid => username */
     private array $userCache = [];
 
-    private ?string $hostIp = null;
-
-    public function __construct(OsqueryEngine $engine, EdrRuleEngine $rules, EdrEventSpool $spool)
-    {
+    public function __construct(
+        OsqueryEngine $engine,
+        EdrRuleEngine $rules,
+        EdrEventSpool $spool,
+        EdrAlertFactory $factory
+    ) {
         $this->engine = $engine;
         $this->rules = $rules;
         $this->spool = $spool;
+        $this->factory = $factory;
     }
 
     /**
@@ -138,8 +142,11 @@ class EdrEventCollector
             ? $this->spool->store($events, $findingsByEvent)
             : 0;
 
+        // Returned for the dry-run view only. Real delivery happens from the
+        // spool, so an alert surviving a Hub outage does not depend on the
+        // caller doing anything with this array.
         $shaped = array_map(
-            fn (array $hit): array => $this->buildAlert($hit['event'], $hit['findings']),
+            fn (array $hit): array => $this->factory->fromEvent($hit['event'], $hit['findings']),
             $alerts
         );
 
@@ -458,81 +465,4 @@ class EdrEventCollector
         }
     }
 
-    /* ------------------------------------------------------------------ */
-    /* Alert shaping                                                       */
-    /* ------------------------------------------------------------------ */
-
-    /**
-     * Build a Hub alert. The flat fields match what the Hub already accepts
-     * from Suricata so EDR findings land in the existing alert pipeline on
-     * day one; the `process` block carries the detail a proper EDR view will
-     * need once the Hub grows a schema for it.
-     */
-    private function buildAlert(array $event, array $findings): array
-    {
-        $severity = EdrRuleEngine::worstSeverity($findings);
-
-        $labels = array_map(
-            static fn (array $f): string => "{$f['rule']} {$f['name']} ({$f['mitre']})",
-            $findings
-        );
-
-        $cmdline = $event['cmdline'] !== '' ? $event['cmdline'] : $event['path'];
-
-        return [
-            // Existing Hub alert contract.
-            'source_ip' => $this->hostIp(),
-            'severity' => $severity,
-            'category' => 'endpoint-behaviour',
-            'source' => 'edr',
-            'detections' => '[EDR] ' . implode(' | ', $labels)
-                . ' — ' . $this->truncate($cmdline, 400),
-            'raw_log' => json_encode($event, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-            'uri' => $this->truncate($event['path'], 255),
-            'method' => strtoupper((string) $event['action']),
-
-            // EDR detail.
-            'process' => [
-                'pid' => $event['pid'],
-                'ppid' => $event['ppid'],
-                'path' => $event['path'],
-                'cmdline' => $this->truncate($cmdline, 2000),
-                'cwd' => $event['cwd'],
-                'user' => $event['username'],
-                'uid' => $event['uid'],
-                'container_id' => $event['container_id'],
-                'observed_at' => date('c', $event['ts']),
-            ],
-            'rules' => $findings,
-            'mitre' => array_values(array_unique(array_column($findings, 'mitre'))),
-        ];
-    }
-
-    private function truncate(string $value, int $limit): string
-    {
-        return strlen($value) > $limit ? substr($value, 0, $limit - 3) . '...' : $value;
-    }
-
-    /**
-     * The alert is about activity on this host, so the host's own address is
-     * the meaningful "source" for the existing Hub schema.
-     */
-    private function hostIp(): string
-    {
-        if ($this->hostIp !== null) {
-            return $this->hostIp;
-        }
-
-        $ip = trim((string) @shell_exec("ip route get 1.1.1.1 2>/dev/null | awk '{print \$7; exit}'"));
-
-        if ($ip === '' || filter_var($ip, FILTER_VALIDATE_IP) === false) {
-            $ip = gethostbyname(gethostname() ?: 'localhost');
-        }
-
-        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
-            $ip = '127.0.0.1';
-        }
-
-        return $this->hostIp = $ip;
-    }
 }

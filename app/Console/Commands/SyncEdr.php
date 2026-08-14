@@ -14,7 +14,8 @@ class SyncEdr extends Command
         {--install : Install the endpoint sensor and exit}
         {--start : Start the endpoint sensor and exit}
         {--stop : Stop the endpoint sensor and exit}
-        {--dry-run : Collect and print alerts without sending them to the Hub}';
+        {--dry-run : Collect and print alerts without sending them to the Hub}
+        {--flush : Drain queued alerts from the spool to the Hub and exit}';
 
     protected $description = 'Run endpoint sensor (EDR) tasks: install, start, collect process behaviour alerts';
 
@@ -47,6 +48,10 @@ class SyncEdr extends Command
 
         if ($this->option('dry-run')) {
             return $this->dryRun();
+        }
+
+        if ($this->option('flush')) {
+            return $this->flush();
         }
 
         Log::debug('[SyncEdr] Starting endpoint sensor tasks...');
@@ -111,6 +116,42 @@ class SyncEdr extends Command
             $this->error('  → No usable backend: needs kernel 5.8+ with BTF, or auditd stopped.');
         } elseif (!$status['running']) {
             $this->warn('  → Installed but not running. Run: php artisan ids:sync-edr --start');
+        }
+
+        return 0;
+    }
+
+    /**
+     * Drain the delivery queue by hand. This is the command to run when a
+     * customer's Hub has been unreachable and you want to confirm the backlog
+     * actually clears rather than waiting for the next sync.
+     */
+    private function flush(): int
+    {
+        $config = json_decode((string) @file_get_contents(storage_path('app/waf_config.json')), true) ?: [];
+        $addons = $config['addons'] ?? [];
+
+        $uploader = app(\App\Services\EdrAlertUploader::class);
+
+        $result = $uploader->flush([
+            'upload_batch_size' => (int) ($addons['edr_upload_batch_size'] ?? 200),
+            'upload_compression' => (bool) ($addons['edr_upload_compression'] ?? false),
+        ]);
+
+        if ($result['skipped'] === 'backoff') {
+            $this->warn('Skipped: still in upload backoff after an earlier failure.');
+            $this->line("  queued: {$result['remaining']}");
+
+            return 0;
+        }
+
+        $this->info("Sent {$result['sent']} alert(s) in {$result['batches']} batch(es).");
+        $this->line("  still queued: {$result['remaining']}");
+
+        if ($result['failed']) {
+            $this->error('  Upload failed — see the log for the Hub response.');
+
+            return 1;
         }
 
         return 0;
