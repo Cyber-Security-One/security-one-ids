@@ -163,25 +163,37 @@ class NetworkRuleEngine
             }
         }
 
-        /* NET-003 — a process started listening on a new port ---------------
+        /* NET-003 — a process is listening on a port it has not used before --
          * A new listener is the shape of a backdoor. Held to the same standard
-         * as everywhere else in this codebase: without a record of what this
-         * process used to listen on, "new" only means "not seen yet", and a
-         * freshly deployed agent would alert on every service on the host. */
-        if (in_array($action, ['net_listen', 'net_bind'], true)) {
+         * as everywhere else here: without a record of what this process used
+         * to listen on, "new" only means "not seen yet", and a freshly
+         * deployed agent would alert on every service on the host.
+         *
+         * Fed from the `listening_ports` snapshot, not from bind/listen socket
+         * events. The first version of this rule read `local_port` off those
+         * events and could never fire: measured on a real host, that field is
+         * 0 on 100% of bpf_socket_events rows across all four syscalls, and
+         * bind/listen also report local_address as 0.0.0.0. A rule that
+         * silently never fires is worse than no rule, because the coverage
+         * appears on the list either way. */
+        if ($action === 'net_listener') {
             $localPort = isset($net['local_port']) ? (int) $net['local_port'] : 0;
 
             if ($localPort > 0
                 && $this->baseline->listenerCount() > 0
                 && !$this->baseline->isKnownListener($path, $localPort)
             ) {
+                $exposure = ($net['local_address'] ?? '') === '0.0.0.0' || ($net['local_address'] ?? '') === '::'
+                    ? 'reachable from any interface'
+                    : 'bound to ' . $net['local_address'];
+
                 $findings[] = $this->finding(
                     'NET-003',
-                    'Process began listening on a port it has not used before',
+                    'Process is listening on a port it has not used before',
                     'high',
                     'T1571',
-                    "{$binary} is listening on port {$localPort}, which is not in this host's "
-                    . 'recorded listener set'
+                    "{$binary} is listening on port {$localPort} ({$exposure}), which is not in "
+                    . "this host's recorded listener set"
                 );
             }
         }
@@ -308,8 +320,16 @@ class NetworkRuleEngine
      *
      * For an outbound connection that is the remote port. For an accepted one
      * the remote port is the client's ephemeral port and changes every time,
-     * so the local port is the only stable identity — getting this wrong
-     * collapses the aggregation ratio from 51:1 to 2:1, measured.
+     * so it must not be used — keying accept events on it collapses the
+     * aggregation ratio from 51:1 to 2:1, measured.
+     *
+     * On this platform the local port is not available either: bpf_socket_events
+     * reports it as 0 on 100% of rows. So accept events legitimately have no
+     * service port, and this returns null for them. The aggregation key falls
+     * back to the process path, which discriminates in practice because
+     * different services are different executables — but it is the path doing
+     * that work, not the port, and pretending otherwise would misrepresent
+     * what the grouping actually means.
      */
     public function servicePort(array $event): ?int
     {
@@ -340,7 +360,7 @@ class NetworkRuleEngine
             return;
         }
 
-        if (in_array($action, ['net_listen', 'net_bind'], true)) {
+        if ($action === 'net_listener') {
             $localPort = isset($net['local_port']) ? (int) $net['local_port'] : 0;
 
             if ($localPort > 0) {

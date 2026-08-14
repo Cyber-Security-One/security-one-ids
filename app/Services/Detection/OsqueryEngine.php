@@ -308,6 +308,30 @@ class OsqueryEngine
         ];
 
         if ($wantSockets) {
+            // Listening sockets come from a point-in-time table rather than
+            // from the socket event stream, because the event stream cannot
+            // answer the question. Measured on this host: `local_port` is 0 on
+            // 100% of bpf_socket_events rows across all four syscalls —
+            // connect, accept, bind and listen — and bind/listen additionally
+            // report `local_address` as 0.0.0.0. There is no port in the
+            // events to detect a new listener with.
+            //
+            // `listening_ports` carries a real port and a pid for every
+            // listener (88 of 88 on this host), and joining `processes` gives
+            // the executable path (88 of 88). Polling and diffing it against
+            // a baseline is the only way this detection works here.
+            $schedule['listeners'] = [
+                'query' => 'SELECT lp.pid, lp.port, lp.protocol, lp.family, lp.address, '
+                    . "p.path, p.name FROM listening_ports lp "
+                    . 'LEFT JOIN processes p ON lp.pid = p.pid '
+                    . 'WHERE lp.port != 0;',
+                // Slower than the event stream: a listener is a state, not an
+                // event, and re-listing 88 rows every 15 seconds buys nothing.
+                'interval' => max(60, $interval * 4),
+                'removed' => false,
+                'description' => 'Listening sockets with owning process (EDR)',
+            ];
+
             $schedule['process_socket'] = [
                 'query' => "SELECT * FROM {$socketTable};",
                 // Socket events are an order of magnitude noisier than exec;

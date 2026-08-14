@@ -151,9 +151,12 @@ class NetworkRuleEngineTest extends TestCase
 
     public function test_a_new_listening_port_is_reported_once_there_is_a_listener_set(): void
     {
+        // Fed from the listening_ports snapshot, not from bind/listen socket
+        // events: measured, those carry local_port = 0 on 100% of rows, so the
+        // first version of this rule could never fire at all.
         $listen = $this->event(
-            ['action' => 'net_listen', 'syscall' => 'listen', 'path' => '/tmp/backdoor'],
-            ['local_port' => 31337, 'remote_address' => null, 'scope' => 'unknown']
+            ['action' => 'net_listener', 'syscall' => 'listen', 'path' => '/tmp/backdoor'],
+            ['local_port' => 31337, 'local_address' => '0.0.0.0', 'remote_address' => null, 'scope' => 'unknown']
         );
 
         // With no recorded listeners at all we cannot call anything new.
@@ -165,8 +168,8 @@ class NetworkRuleEngineTest extends TestCase
 
         // A listener we already know about is the host working normally.
         $known = $this->event(
-            ['action' => 'net_listen', 'syscall' => 'listen', 'path' => '/usr/sbin/nginx'],
-            ['local_port' => 80, 'remote_address' => null, 'scope' => 'unknown']
+            ['action' => 'net_listener', 'syscall' => 'listen', 'path' => '/usr/sbin/nginx'],
+            ['local_port' => 80, 'local_address' => '0.0.0.0', 'remote_address' => null, 'scope' => 'unknown']
         );
         $this->assertNotContains('NET-003', $this->fired($known));
     }
@@ -310,6 +313,32 @@ class NetworkRuleEngineTest extends TestCase
         $this->baseline->recordDestination('/usr/bin/app', '203.0.113.7', 443, 1, $now - (2 * 86400));
 
         $this->assertTrue($this->baseline->isEstablishedDestination('/usr/bin/app', '203.0.113.7', 443));
+    }
+
+    /**
+     * The rule this replaced could never fire. It read `local_port` off
+     * bind/listen socket events, and that field is 0 on 100% of
+     * bpf_socket_events rows on this platform — all four syscalls. A rule that
+     * silently never fires is worse than no rule, because the coverage appears
+     * on the list either way.
+     */
+    public function test_listener_detection_does_not_depend_on_socket_event_ports(): void
+    {
+        $this->baseline->recordListener('/usr/sbin/nginx', 80, time());
+
+        // What the socket event stream actually provides for a bind: no port.
+        $fromSocketEvent = $this->event(
+            ['action' => 'net_bind', 'syscall' => 'bind', 'path' => '/tmp/backdoor'],
+            ['local_port' => 0, 'local_address' => '0.0.0.0', 'remote_address' => null, 'scope' => 'unknown']
+        );
+        $this->assertNotContains('NET-003', $this->fired($fromSocketEvent));
+
+        // What the listening_ports snapshot provides: a real port.
+        $fromSnapshot = $this->event(
+            ['action' => 'net_listener', 'path' => '/tmp/backdoor'],
+            ['local_port' => 31337, 'local_address' => '0.0.0.0', 'remote_address' => null, 'scope' => 'unknown']
+        );
+        $this->assertContains('NET-003', $this->fired($fromSnapshot));
     }
 
     public function test_non_network_events_are_ignored(): void
