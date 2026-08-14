@@ -271,6 +271,9 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var refreshing = false
 
+    /// Print what happened and exit, instead of running.
+    var diagnose = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
@@ -279,6 +282,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
 
         render()
+
+        if diagnose {
+            report(item)
+            exit(0)
+        }
+
         refresh()
 
         // Five minutes, not thirty seconds.
@@ -299,6 +308,61 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Refreshing when the menu opens keeps the number under the cursor honest.
     func menuWillOpen(_ menu: NSMenu) {
         refresh()
+    }
+
+    /// Say out loud what is normally only observable by looking at the screen.
+    ///
+    /// A missing menu bar icon has two causes that are indistinguishable from
+    /// outside the process — it was never created, or it was created and the
+    /// menu bar had no room to show it — and no amount of staring at the
+    /// screen separates them. So the program reports its own side of it.
+    private func report(_ item: NSStatusItem) {
+        var out = "\n"
+        out += "Status item\n"
+        out += "  created      yes\n"
+        out += "  button       \(item.button == nil ? "MISSING — nothing can be drawn" : "present")\n"
+        out += "  visible      \(item.isVisible ? "yes" : "NO — the menu bar is not showing it")\n"
+        out += "  width        \(item.button.map { String(format: "%.1f pt", $0.frame.width) } ?? "n/a")\n"
+        out += "  menu bar     \(String(format: "%.0f pt tall", NSStatusBar.system.thickness))\n"
+
+        if let screen = NSScreen.main {
+            out += "  display      \(Int(screen.frame.width))x\(Int(screen.frame.height))"
+
+            // The notch shows up as a safe area inset at the top. When it is
+            // present, items can be pushed under it and become unreachable
+            // while every API still reports success. Only readable on macOS 12
+            // and later, and this builds against 11.
+            if #available(macOS 12.0, *), screen.safeAreaInsets.top > 0 {
+                out += "  (notched — top inset \(Int(screen.safeAreaInsets.top)) pt)"
+            }
+
+            out += "\n"
+        }
+
+        out += "\nAgent\n"
+        let snap = AgentReader.read()
+
+        if let failure = snap.failure {
+            out += "  UNREACHABLE  \(failure)\n"
+        } else {
+            out += "  host         \(snap.hostName)  \(snap.hostOS)\n"
+            out += "  overall      \(snap.overall.rawValue)\n"
+
+            for row in snap.rows {
+                let name = row.title.padding(toLength: 17, withPad: " ", startingAt: 0)
+                out += "  \(name) \(row.health.rawValue) · \(row.detail)\n"
+            }
+
+            for (name, events, hours) in snap.retention {
+                out += "  \(name) \(events) events · \(hours.map { String(format: "%.1fh", $0) } ?? "unknown")\n"
+            }
+
+            for reason in snap.reasons {
+                out += "  needs        \(reason)\n"
+            }
+        }
+
+        FileHandle.standardError.write(Data(out.utf8))
     }
 
     private func refresh() {
@@ -332,6 +396,11 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // makes it follow the menu bar the way a native icon does; if the
         // symbol is unavailable the dot alone still works.
         if let shield = NSImage(systemSymbolName: "shield.lefthalf.fill", accessibilityDescription: "Security One") {
+            // Sized explicitly. An SF Symbol left at its natural size can come
+            // out far wider than a menu bar item should be, and an item that is
+            // too wide is one the menu bar may simply decline to show — which
+            // looks exactly like the app not running.
+            shield.size = NSSize(width: 15, height: 15)
             shield.isTemplate = true
             button.image = shield
             button.imagePosition = .imageLeading
@@ -513,6 +582,7 @@ app.setActivationPolicy(.accessory)
 // loop pass takes the status item with it — silently, since nothing about a
 // missing menu bar icon says why it is missing.
 let controller = Controller()
+controller.diagnose = CommandLine.arguments.contains("--diagnose")
 app.delegate = controller
 
 app.run()
