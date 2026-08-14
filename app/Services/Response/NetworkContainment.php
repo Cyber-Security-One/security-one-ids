@@ -106,22 +106,72 @@ class NetworkContainment
      */
     public function state(): ?bool
     {
+        return $this->stateDetail()['state'];
+    }
+
+    /**
+     * The containment state together with why it is or is not knowable.
+     *
+     * The plain tri-state was correct and still not enough, and measuring the
+     * live host is what showed it. The heartbeat runs from two places:
+     * `waf:heartbeat-dynamic` every ten seconds from
+     * `php artisan schedule:work` as www-data, and `waf:heartbeat` every sixty
+     * seconds from the root watchdog. Measured, root reads the chain and reports
+     * `inactive`, while www-data gets rc=4 permission denied and reports
+     * `unknown` — so roughly six readings in seven reach the Hub as `unknown`.
+     *
+     * A field that almost always holds the same value carries no information,
+     * and worse, it buries the case it exists for: a genuinely unreadable
+     * firewall would look exactly like the normal ten-second heartbeat. That is
+     * the same defect as a rule that never fires while still appearing on the
+     * coverage list.
+     *
+     * So the reason is reported alongside. `unprivileged` means this reading
+     * tells you nothing about the host and a consumer should keep the last
+     * privileged one; `unreadable` means a process that should have been able to
+     * query the firewall could not, which is worth attention. Both still yield a
+     * null state, because the safety property does not change: nothing may
+     * conclude the host is free from a reading that could not see.
+     *
+     * @return array{state: ?bool, reason: string}
+     */
+    public function stateDetail(): array
+    {
         if (PHP_OS_FAMILY !== 'Linux') {
-            return false;
+            return ['state' => false, 'reason' => 'not_applicable'];
         }
 
         try {
             $result = Process::timeout(10)->run($this->iptables . ' -n -L ' . self::CHAIN_OUT);
 
             if ($result->successful()) {
-                return true;
+                return ['state' => true, 'reason' => 'ok'];
             }
 
             $stderr = $result->errorOutput() . "\n" . $result->output();
 
             // The one message that means the chain genuinely is not installed.
             if (stripos($stderr, 'No chain/target/match by that name') !== false) {
-                return false;
+                return ['state' => false, 'reason' => 'ok'];
+            }
+
+            // Lacking the privilege to ask is not a fault, and it is not
+            // evidence either. Detected from the message and from the effective
+            // uid, because a container or a restricted capability set can
+            // produce one without the other.
+            $unprivileged = stripos($stderr, 'you must be root') !== false
+                || stripos($stderr, 'Permission denied') !== false
+                || (function_exists('posix_geteuid') && posix_geteuid() !== 0);
+
+            if ($unprivileged) {
+                // Debug, not warning: on this host it happens six times a
+                // minute by design, and a warning that fires constantly trains
+                // people to ignore warnings.
+                Log::debug('[EDR response] Containment state read without privilege', [
+                    'exit_code' => $result->exitCode(),
+                ]);
+
+                return ['state' => null, 'reason' => 'unprivileged'];
             }
 
             Log::warning('[EDR response] Containment state could not be determined', [
@@ -129,11 +179,11 @@ class NetworkContainment
                 'stderr' => mb_substr(trim($stderr), 0, 300),
             ]);
 
-            return null;
+            return ['state' => null, 'reason' => 'unreadable'];
         } catch (\Throwable $e) {
             Log::warning('[EDR response] Containment state probe failed: ' . $e->getMessage());
 
-            return null;
+            return ['state' => null, 'reason' => 'unreadable'];
         }
     }
 
@@ -490,7 +540,8 @@ class NetworkContainment
 
     public function getStatus(): array
     {
-        $state = $this->state();
+        $detail = $this->stateDetail();
+        $state = $detail['state'];
 
         return [
             'supported' => $this->isSupported(),
@@ -500,6 +551,9 @@ class NetworkContainment
             // The distinction the bool cannot carry. A consumer that treats
             // `active: false` as "this host is free" needs to see this.
             'state' => $state === null ? 'unknown' : ($state ? 'active' : 'inactive'),
+            // Why it is unknown, which decides whether a consumer should wait
+            // for a better reading or raise the question.
+            'state_reason' => $detail['reason'],
             'chains' => [self::CHAIN_OUT, self::CHAIN_IN],
         ];
     }

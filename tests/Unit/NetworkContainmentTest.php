@@ -157,6 +157,39 @@ class NetworkContainmentTest extends TestCase
 
         $absent = new NetworkContainment('sh -c \'echo "iptables: No chain/target/match by that name." >&2; exit 1\' --');
         $this->assertSame('inactive', $absent->getStatus()['state']);
+        $this->assertSame('ok', $absent->getStatus()['state_reason']);
+    }
+
+    /**
+     * Why the state is unknown decides whether it is worth attention.
+     *
+     * The plain tri-state was correct and still not enough. Measured on this
+     * host, the heartbeat runs from two places — every ten seconds as www-data
+     * from `schedule:work`, and every sixty seconds as root from the watchdog —
+     * and only the root one can read iptables. So roughly six readings in seven
+     * reach the Hub as `unknown`, which makes the field carry no information and
+     * buries the case it exists for: a genuinely unreadable firewall looks
+     * exactly like the normal ten-second heartbeat.
+     *
+     * The state stays null either way, because the safety property does not
+     * change. What changes is that a consumer can tell "this reader could not
+     * ask" from "a reader that should have been able to ask, could not".
+     */
+    public function test_lacking_privilege_is_distinguished_from_being_unreadable(): void
+    {
+        $denied = new NetworkContainment('sh -c \'echo "iptables v1.8.11 (nf_tables): Could not fetch rule set generation id: Permission denied (you must be root)" >&2; exit 4\' --');
+        $detail = $denied->stateDetail();
+
+        $this->assertNull($detail['state'], 'still not evidence the host is free');
+        $this->assertSame('unprivileged', $detail['reason']);
+
+        // A binary that is simply gone is a different problem, and one worth
+        // raising rather than waiting out.
+        $missing = new NetworkContainment('/nonexistent/iptables');
+        $this->assertSame('unreadable', $missing->stateDetail()['reason']);
+
+        $present = new NetworkContainment('true');
+        $this->assertSame(['state' => true, 'reason' => 'ok'], $present->stateDetail());
     }
 
     public function test_allowlist_covers_every_hub_address_and_the_resolvers(): void

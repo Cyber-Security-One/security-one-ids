@@ -3663,11 +3663,19 @@ class WafSyncService
             $ledger = app(\App\Services\Response\EdrActionLedger::class)->stats();
             $network = app(\App\Services\Response\NetworkContainment::class);
 
-            $containment = $network->state();
+            $containmentDetail = $network->stateDetail();
+            $containment = $containmentDetail['state'];
 
             return [
                 // Only true when the chains are known to be installed.
                 'network_isolated' => $containment === true,
+                // Why the state is what it is. Measured on this host, the
+                // ten-second www-data heartbeat cannot read iptables while the
+                // sixty-second root one can, so six readings in seven arrive
+                // unknown. Without this the field would almost always say
+                // unknown and a genuinely unreadable firewall would be
+                // indistinguishable from the normal case.
+                'network_containment_reason' => $containmentDetail['reason'],
                 // The state the bool cannot carry. A console that renders
                 // `network_isolated: false` as "this host is reachable" would
                 // be wrong whenever iptables could not be read — which is every
