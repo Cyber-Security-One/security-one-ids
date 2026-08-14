@@ -90,6 +90,16 @@ enum AgentReader {
         phpCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    /// How long the agent gets to answer.
+    ///
+    /// It shells out to osqueryd, systemctl and friends, each with its own
+    /// timeout, so a slow answer is normal and an infinite one is possible.
+    /// Without a bound here the reader blocks forever on a pipe that will
+    /// never close: the console freezes on stale data, or — worse, and this is
+    /// how it was found — a diagnostic that had already computed its answer
+    /// sits waiting to print it.
+    static let readTimeout: TimeInterval = 20
+
     static func read() -> Snapshot {
         guard let php = resolvePHP() else {
             var s = Snapshot()
@@ -121,11 +131,24 @@ enum AgentReader {
             return s
         }
 
+        // Terminate it if it overruns. Killing the process closes the pipes,
+        // which is what unblocks the reads below — so the timeout is enforced
+        // without a second thread having to share state with this one.
+        let killer = DispatchWorkItem { [weak process] in process?.terminate() }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + readTimeout, execute: killer)
+
         // Read before waiting: a pipe that fills while nobody drains it
         // deadlocks, and the JSON is comfortably larger than the buffer.
         let data = out.fileHandleForReading.readDataToEndOfFile()
         let errorText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         process.waitUntilExit()
+        killer.cancel()
+
+        if process.terminationReason == .uncaughtSignal {
+            var s = Snapshot()
+            s.failure = "The agent did not answer within \(Int(readTimeout))s — `php artisan ids:status` is hanging."
+            return s
+        }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             var s = Snapshot()
@@ -317,6 +340,14 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// menu bar had no room to show it — and no amount of staring at the
     /// screen separates them. So the program reports its own side of it.
     private func report(_ item: NSStatusItem) {
+        // Written in two halves, in this order, on purpose.
+        //
+        // The status item's own state is known the instant this runs; reading
+        // the agent shells out and can take twenty seconds or hang outright.
+        // Building one string and printing it at the end means the answer we
+        // came for is held hostage by the part that fails — which is exactly
+        // what happened the first time this ran: it printed nothing at all,
+        // and "nothing" was indistinguishable from "never got here".
         var out = "\n"
         out += "Status item\n"
         out += "  created      yes\n"
@@ -339,30 +370,37 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             out += "\n"
         }
 
-        out += "\nAgent\n"
+        out += "\nAgent  (reading, up to \(Int(AgentReader.readTimeout))s…)\n"
+        emit(out)
+
+        var tail = ""
         let snap = AgentReader.read()
 
         if let failure = snap.failure {
-            out += "  UNREACHABLE  \(failure)\n"
+            tail += "  UNREACHABLE  \(failure)\n"
         } else {
-            out += "  host         \(snap.hostName)  \(snap.hostOS)\n"
-            out += "  overall      \(snap.overall.rawValue)\n"
+            tail += "  host         \(snap.hostName)  \(snap.hostOS)\n"
+            tail += "  overall      \(snap.overall.rawValue)\n"
 
             for row in snap.rows {
                 let name = row.title.padding(toLength: 17, withPad: " ", startingAt: 0)
-                out += "  \(name) \(row.health.rawValue) · \(row.detail)\n"
+                tail += "  \(name) \(row.health.rawValue) · \(row.detail)\n"
             }
 
             for (name, events, hours) in snap.retention {
-                out += "  \(name) \(events) events · \(hours.map { String(format: "%.1fh", $0) } ?? "unknown")\n"
+                tail += "  \(name) \(events) events · \(hours.map { String(format: "%.1fh", $0) } ?? "unknown")\n"
             }
 
             for reason in snap.reasons {
-                out += "  needs        \(reason)\n"
+                tail += "  needs        \(reason)\n"
             }
         }
 
-        FileHandle.standardError.write(Data(out.utf8))
+        emit(tail)
+    }
+
+    private func emit(_ text: String) {
+        FileHandle.standardError.write(Data(text.utf8))
     }
 
     private func refresh() {
@@ -584,5 +622,13 @@ app.setActivationPolicy(.accessory)
 let controller = Controller()
 controller.diagnose = CommandLine.arguments.contains("--diagnose")
 app.delegate = controller
+
+if controller.diagnose {
+    // Printed before the run loop starts, so that silence afterwards means
+    // something specific: the process got this far and the delegate never
+    // fired. Without it, "no output" covers everything from a bad binary to a
+    // launch that succeeded and then blocked, and those need opposite fixes.
+    FileHandle.standardError.write(Data("\nStarting run loop…\n".utf8))
+}
 
 app.run()
