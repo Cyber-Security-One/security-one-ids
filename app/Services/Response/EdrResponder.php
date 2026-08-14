@@ -61,6 +61,16 @@ class EdrResponder
     /** Types that change or destroy state, and so need an explicit confirm. */
     private const DESTRUCTIVE_TYPES = ['kill_process', 'quarantine_file', 'isolate_network'];
 
+    /**
+     * Actions that undo containment rather than apply it.
+     *
+     * They are treated differently by the provenance gate below. Refusing to
+     * apply an action fails safe; refusing to *release* one strands a host in
+     * whatever state it is already in, so a release is never blocked by a
+     * configuration problem.
+     */
+    private const RELEASING_TYPES = ['release_network', 'restore_file', 'resume_process'];
+
     /** type => capability flag that must be granted for it to run at all. */
     private const CAPABILITY_MAP = [
         'kill_process' => 'allow_process_control',
@@ -78,19 +88,31 @@ class EdrResponder
     private NetworkContainment $network;
     private WafSyncService $sync;
 
+    /**
+     * @param string|null $commandChannel Path of the file Hub commands arrive
+     *        in. A constructor argument rather than a runtime option on
+     *        purpose: the provenance gate below validates this path, and a path
+     *        that could be set from the Hub payload would let an attacker who
+     *        controls that payload point the check at some other root-owned file
+     *        and pass it. It exists as a test seam, nothing more.
+     */
     public function __construct(
         EdrActionLedger $ledger,
         ProcessResponder $processes,
         FileQuarantine $quarantine,
         NetworkContainment $network,
-        WafSyncService $sync
+        WafSyncService $sync,
+        ?string $commandChannel = null
     ) {
         $this->ledger = $ledger;
         $this->processes = $processes;
         $this->quarantine = $quarantine;
         $this->network = $network;
         $this->sync = $sync;
+        $this->commandChannel = $commandChannel;
     }
+
+    private ?string $commandChannel = null;
 
     /* ------------------------------------------------------------------ */
     /* Command intake                                                      */
@@ -138,6 +160,50 @@ class EdrResponder
 
         if (!array_key_exists($type, self::CAPABILITY_MAP)) {
             return $this->outcome($actionId, $type, 'refused', 'unknown_action_type');
+        }
+
+        // Gate zero: where did this order come from?
+        //
+        // Every other gate in this method asks whether the Hub is allowed to do
+        // this. None of them asked whether it was really the Hub asking.
+        //
+        // The commands arrive in `storage/app/waf_config.json`, and on the host
+        // this was written against that file is mode 777 inside a mode 777
+        // directory, both owned by root. `www-data` can write it — verified,
+        // not inferred. Meanwhile `security-one-watchdog.sh` runs as root and
+        // invokes `artisan ids:sync-edr` every thirty seconds, so the file is
+        // read and its commands executed with root privileges: `iptables` for
+        // isolation, and `posix_kill` against any pid on the box.
+        //
+        // That composition is a local privilege escalation through the security
+        // product's own response path. Anything running as `www-data` can write
+        // a kill or isolate command, grant itself the capability in the same
+        // file, set `edr_command_max_age` to whatever suits it, and have root
+        // carry it out within half a minute. And a compromised web account is
+        // precisely the event this product exists to detect, so the response
+        // feature would have converted the attack it detects into root.
+        //
+        // Permissions alone cannot fix it, because the scheduler that writes
+        // this file also runs as `www-data`; a mode that lets it write is a mode
+        // that lets an attacker write. So the endpoint refuses instead: orders
+        // that arrive through a channel any local account can forge are not
+        // executed, whatever they claim.
+        //
+        // Releases are exempt. Refusing to apply containment fails safe;
+        // refusing to lift it leaves a host cut off because of a file mode.
+        if (!in_array($type, self::RELEASING_TYPES, true)) {
+            $provenance = $this->commandChannelProvenance();
+
+            if (!$provenance['trusted']) {
+                Log::error('[EDR response] Command refused, command channel is writable by non-root accounts', [
+                    'type' => $type,
+                    'action_id' => $actionId,
+                    'problem' => $provenance['problem'],
+                    'path' => $provenance['path'],
+                ]);
+
+                return $this->outcome($actionId, $type, 'refused', 'untrusted_command_channel');
+            }
         }
 
         // Gate 1 — capability.
@@ -478,6 +544,57 @@ class EdrResponder
             // and it never carries a deadline.
             default => ['success' => false, 'error' => 'not_reversible', 'result' => null],
         };
+    }
+
+    /**
+     * Whether the file carrying Hub commands can only be written by root.
+     *
+     * Checks the file and its directory, because a writable directory is a
+     * writable file: an attacker replaces rather than edits. Ownership is
+     * checked too — a file owned by a non-root account is writable by that
+     * account regardless of mode.
+     *
+     * Deliberately not cached. The whole point is to notice a mode that changed
+     * after the process started, and this runs at most a few times per cycle.
+     *
+     * @return array{trusted:bool, problem:?string, path:string}
+     */
+    public function commandChannelProvenance(?string $path = null): array
+    {
+        $path ??= $this->commandChannel ?? storage_path('app/waf_config.json');
+
+        clearstatcache(true, $path);
+
+        if (!file_exists($path)) {
+            // No channel is not an untrusted channel: there are no commands to
+            // execute either, so this does not need to block anything.
+            return ['trusted' => true, 'problem' => null, 'path' => $path];
+        }
+
+        foreach ([$path, dirname($path)] as $target) {
+            clearstatcache(true, $target);
+
+            $mode = @fileperms($target);
+            $owner = @fileowner($target);
+
+            if ($mode === false || $owner === false) {
+                return ['trusted' => false, 'problem' => 'unreadable_metadata', 'path' => $target];
+            }
+
+            if ($owner !== 0) {
+                return ['trusted' => false, 'problem' => 'not_owned_by_root', 'path' => $target];
+            }
+
+            if (($mode & 0o002) !== 0) {
+                return ['trusted' => false, 'problem' => 'world_writable', 'path' => $target];
+            }
+
+            if (($mode & 0o020) !== 0) {
+                return ['trusted' => false, 'problem' => 'group_writable', 'path' => $target];
+            }
+        }
+
+        return ['trusted' => true, 'problem' => null, 'path' => $path];
     }
 
     /**

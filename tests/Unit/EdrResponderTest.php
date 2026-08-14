@@ -58,15 +58,42 @@ class EdrResponderTest extends TestCase
      * sync cycle. Containment is pointed at `true` so nothing touches the
      * host firewall — the real rule handling has its own test.
      */
-    private function responder(): EdrResponder
+    /**
+     * @param string|null $channel override the command channel path. Defaults
+     *        to a root-owned mode-0600 file inside the test workspace, because
+     *        the provenance gate is now part of every command path and the real
+     *        config on a developer host is world-writable — without this, every
+     *        test in this file would assert against whatever mode that file
+     *        happens to have.
+     */
+    private function responder(?string $channel = null): EdrResponder
     {
         return new EdrResponder(
             new EdrActionLedger($this->ledgerPath),
             new ProcessResponder(),
             new FileQuarantine($this->work . '/quarantine'),
             new NetworkContainment('true'),
-            new WafSyncService()
+            new WafSyncService(),
+            $channel ?? $this->trustedChannel()
         );
+    }
+
+    /**
+     * A command channel the provenance gate accepts: root-owned, 0600, in a
+     * 0700 directory.
+     */
+    private function trustedChannel(): string
+    {
+        $path = $this->work . '/trusted-channel.json';
+
+        if (!file_exists($path)) {
+            file_put_contents($path, json_encode(['addons' => []]));
+        }
+
+        @chmod($this->work, 0700);
+        @chmod($path, 0600);
+
+        return $path;
     }
 
     private function ledger(): EdrActionLedger
@@ -270,6 +297,93 @@ class EdrResponderTest extends TestCase
             self::ALL_CAPABILITIES
         ));
         $this->assertSame(0, $this->responder()->expireOverdue()['reverted']);
+    }
+
+    /**
+     * Gate zero: is it really the Hub asking?
+     *
+     * The other four gates ask whether the Hub is allowed to do this. None of
+     * them asked whether the order came from the Hub at all. Commands arrive in
+     * storage/app/waf_config.json, and on the host this was written against
+     * that file is mode 777 in a mode 777 directory — `www-data` can write it,
+     * verified rather than inferred. The root watchdog invokes
+     * `artisan ids:sync-edr` every thirty seconds, so those commands execute
+     * with root privileges: iptables for isolation, posix_kill against any pid.
+     *
+     * A compromised web account could therefore write a kill command, grant
+     * itself the capability in the same file, set the freshness bound to suit
+     * itself, and have root carry it out within half a minute — turning the
+     * event this product exists to detect into root. Permissions alone cannot
+     * fix it, because the scheduler that writes the file also runs as www-data.
+     * So the endpoint refuses the orders instead.
+     */
+    public function test_commands_from_a_world_writable_channel_are_refused(): void
+    {
+        $dir = sys_get_temp_dir() . '/edr-provenance-' . uniqid();
+        mkdir($dir, 0700, true);
+        $channel = $dir . '/waf_config.json';
+        file_put_contents($channel, json_encode(['addons' => []]));
+
+        $responder = $this->responder();
+
+        chmod($channel, 0600);
+        $tight = $responder->commandChannelProvenance($channel);
+        $this->assertTrue($tight['trusted'], 'a root-only file is a trusted channel');
+
+        chmod($channel, 0666);
+        $loose = $responder->commandChannelProvenance($channel);
+        $this->assertFalse($loose['trusted']);
+        $this->assertSame('world_writable', $loose['problem']);
+
+        // A writable directory is a writable file: an attacker replaces rather
+        // than edits, so the mode on the file alone proves nothing.
+        chmod($channel, 0600);
+        chmod($dir, 0777);
+        $looseDir = $responder->commandChannelProvenance($channel);
+        $this->assertFalse($looseDir['trusted'], 'a writable directory defeats a tight file');
+        $this->assertSame($dir, $looseDir['path']);
+
+        chmod($dir, 0700);
+        @unlink($channel);
+        @rmdir($dir);
+    }
+
+    /**
+     * A release is never blocked by a configuration problem.
+     *
+     * Refusing to apply containment fails safe. Refusing to lift it leaves a
+     * host cut off from the network because of a file mode, which is the one
+     * outcome worse than executing the command.
+     */
+    public function test_a_release_is_not_blocked_by_an_untrusted_channel(): void
+    {
+        // A deliberately loose channel, so the gate is closed for this test
+        // regardless of how the host is configured.
+        $loose = $this->work . '/loose-channel.json';
+        file_put_contents($loose, json_encode(['addons' => []]));
+        chmod($loose, 0666);
+
+        $this->assertFalse($this->responder($loose)->commandChannelProvenance()['trusted']);
+
+        $applying = $this->responder($loose)->processCommands([
+            $this->command(['id' => 'iso-untrusted', 'type' => 'isolate_network', 'target' => []]),
+        ], self::ALL_CAPABILITIES);
+
+        $this->assertSame(0, $applying['executed'], 'containment must not be applied');
+        $this->assertSame('untrusted_command_channel', $applying['outcomes'][0]['reason']);
+
+        // The release path reaches the responder rather than being refused at
+        // the gate. It has nothing to release here, so it does not execute —
+        // what matters is the reason it gives.
+        $releasing = $this->responder($loose)->processCommands([
+            $this->command(['id' => 'rel-untrusted', 'type' => 'release_network', 'target' => []]),
+        ], self::ALL_CAPABILITIES);
+
+        $this->assertNotSame(
+            'untrusted_command_channel',
+            $releasing['outcomes'][0]['reason'],
+            'a release must never be refused for a file mode'
+        );
     }
 
     /**
