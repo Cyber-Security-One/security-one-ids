@@ -178,6 +178,74 @@ class EdrEventSpoolTest extends TestCase
         $this->assertSame(1, $stats['total']);
     }
 
+    /**
+     * Authentication events are 0.084% of the stream on a real host, but the
+     * identity rules ask what an account has done over weeks. Under one
+     * shared ceiling the process telemetry evicts that history within hours
+     * on a busy machine — measured at roughly nineteen — and the rules that
+     * depend on it then never fire. No error, no exception, just a detection
+     * that silently does nothing, which is the worst way for this to fail.
+     */
+    public function test_identity_events_are_not_evicted_by_the_telemetry_ceiling(): void
+    {
+        $identity = [];
+        for ($i = 1; $i <= 50; $i++) {
+            $identity[] = array_merge($this->event(), [
+                'action' => 'login_success',
+                'sensor' => 'authlog',
+                'username' => 'john',
+                'source_ip' => '10.0.0.' . $i,
+            ]);
+        }
+        $this->spool->store($identity);
+
+        // Enough process telemetry to blow well past the ceiling.
+        for ($batch = 0; $batch < 6; $batch++) {
+            $events = [];
+            for ($i = 0; $i < 3000; $i++) {
+                $events[] = $this->event(['pid' => $batch * 3000 + $i]);
+            }
+            $this->spool->store($events);
+        }
+
+        $this->spool->prune(30, 10000, 30, 10000);
+
+        $pdo = new \PDO('sqlite:' . $this->path);
+        $auth = (int) $pdo->query("SELECT COUNT(*) FROM events WHERE sensor = 'authlog'")->fetchColumn();
+        $telemetry = (int) $pdo->query("SELECT COUNT(*) FROM events WHERE sensor != 'authlog'")->fetchColumn();
+        $pdo = null;
+
+        $this->assertSame(10000, $telemetry, 'process telemetry is trimmed to its ceiling');
+        $this->assertSame(50, $auth, 'not one authentication event may be lost to telemetry volume');
+    }
+
+    /**
+     * An account profile built from a window shorter than the question it
+     * answers can never be complete.
+     */
+    public function test_identity_events_get_a_longer_retention_window(): void
+    {
+        $this->spool->store([
+            array_merge($this->event(), ['action' => 'login_success', 'sensor' => 'authlog']),
+        ]);
+        $this->spool->store([$this->event()]);
+
+        $pdo = new \PDO('sqlite:' . $this->path);
+        $pdo->exec('UPDATE events SET captured_at = ' . (time() - 15 * 86400));
+        $pdo = null;
+
+        // Fifteen days old: past the telemetry window, inside the identity one.
+        $this->spool->prune(7, 1000000, 30, 1000000);
+
+        $pdo = new \PDO('sqlite:' . $this->path);
+        $auth = (int) $pdo->query("SELECT COUNT(*) FROM events WHERE sensor = 'authlog'")->fetchColumn();
+        $telemetry = (int) $pdo->query("SELECT COUNT(*) FROM events WHERE sensor != 'authlog'")->fetchColumn();
+        $pdo = null;
+
+        $this->assertSame(0, $telemetry);
+        $this->assertSame(1, $auth);
+    }
+
     public function test_retention_days_are_clamped(): void
     {
         $this->spool->store([$this->event()]);

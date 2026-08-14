@@ -634,10 +634,16 @@ class EdrEventSpool
      *
      * @return array{deleted_by_age:int, deleted_by_count:int, remaining:int}
      */
-    public function prune(int $retentionDays = 7, int $maxRows = 2000000): array
-    {
+    public function prune(
+        int $retentionDays = 7,
+        int $maxRows = 2000000,
+        int $identityRetentionDays = 30,
+        int $identityMaxRows = 200000
+    ): array {
         $retentionDays = max(self::MIN_RETENTION_DAYS, min(self::MAX_RETENTION_DAYS, $retentionDays));
         $maxRows = max(10000, $maxRows);
+        $identityRetentionDays = max($retentionDays, min(self::MAX_RETENTION_DAYS, $identityRetentionDays));
+        $identityMaxRows = max(10000, $identityMaxRows);
 
         $result = ['deleted_by_age' => 0, 'deleted_by_count' => 0, 'remaining' => 0];
 
@@ -647,32 +653,37 @@ class EdrEventSpool
             // Age-based pruning spares only rows still queued for the Hub.
             // Locally-retained rows are the bulk and are exactly what the
             // retention window is meant to expire.
+            //
+            // Authentication events get their own, longer window. The identity
+            // rules ask what addresses and hours an account has used over
+            // weeks, and an account profile built from a window shorter than
+            // the question is a profile that can never be complete.
             $cutoff = time() - ($retentionDays * 86400);
+            $identityCutoff = time() - ($identityRetentionDays * 86400);
+
             $stmt = $pdo->prepare(
-                'DELETE FROM events WHERE captured_at < ? AND NOT (deliver = 1 AND sent_at IS NULL)'
+                "DELETE FROM events
+                 WHERE NOT (deliver = 1 AND sent_at IS NULL)
+                   AND ((sensor = 'authlog' AND captured_at < ?)
+                     OR (sensor IS NOT 'authlog' AND captured_at < ?))"
             );
-            $stmt->execute([$cutoff]);
+            $stmt->execute([$identityCutoff, $cutoff]);
             $result['deleted_by_age'] = $stmt->rowCount();
 
-            $total = (int) $pdo->query('SELECT COUNT(*) FROM events')->fetchColumn();
-
-            if ($total > $maxRows) {
-                // Drop the oldest surplus regardless of send state: at this
-                // point the disk ceiling is the binding constraint and the
-                // alternative is filling the customer's filesystem.
-                $surplus = $total - $maxRows;
-                $stmt = $pdo->prepare(
-                    'DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id ASC LIMIT ?)'
-                );
-                $stmt->bindValue(1, $surplus, PDO::PARAM_INT);
-                $stmt->execute();
-                $result['deleted_by_count'] = $stmt->rowCount();
-
-                Log::warning('[EDR spool] Row ceiling hit, dropped oldest events', [
-                    'dropped' => $result['deleted_by_count'],
-                    'max_rows' => $maxRows,
-                ]);
-            }
+            // The row ceiling exists to bound disk against process telemetry,
+            // which outnumbers everything else by three orders of magnitude —
+            // measured at 0.084% of the stream for authentication events on a
+            // real host. Applying one ceiling to both means the identity
+            // baselines are evicted within hours on a busy machine, and the
+            // rules that depend on weeks of history then never fire: no error,
+            // no exception, just a detection that silently does nothing.
+            //
+            // So they are counted and capped separately. Not exempted
+            // outright: a host under sustained brute force can produce a very
+            // large number of failed logins, and an unbounded exemption would
+            // turn an attack into a disk-space incident.
+            $result['deleted_by_count'] = $this->enforceCeiling($pdo, "sensor IS NOT 'authlog'", $maxRows, 'telemetry')
+                + $this->enforceCeiling($pdo, "sensor = 'authlog'", $identityMaxRows, 'identity');
 
             $result['remaining'] = (int) $pdo->query('SELECT COUNT(*) FROM events')->fetchColumn();
 
@@ -686,6 +697,41 @@ class EdrEventSpool
         }
 
         return $result;
+    }
+
+    /**
+     * Trim one class of event down to its own ceiling, oldest first.
+     *
+     * @param string $predicate SQL restricting which rows this ceiling covers
+     * @return int rows removed
+     */
+    private function enforceCeiling(PDO $pdo, string $predicate, int $maxRows, string $label): int
+    {
+        $total = (int) $pdo->query("SELECT COUNT(*) FROM events WHERE {$predicate}")->fetchColumn();
+
+        if ($total <= $maxRows) {
+            return 0;
+        }
+
+        $surplus = $total - $maxRows;
+
+        $stmt = $pdo->prepare(
+            "DELETE FROM events WHERE id IN (
+                SELECT id FROM events WHERE {$predicate} ORDER BY id ASC LIMIT ?
+             )"
+        );
+        $stmt->bindValue(1, $surplus, PDO::PARAM_INT);
+        $stmt->execute();
+
+        $removed = $stmt->rowCount();
+
+        Log::warning('[EDR spool] Row ceiling hit, dropped oldest events', [
+            'class' => $label,
+            'dropped' => $removed,
+            'max_rows' => $maxRows,
+        ]);
+
+        return $removed;
     }
 
     /**

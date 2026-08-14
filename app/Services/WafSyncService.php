@@ -597,7 +597,11 @@ class WafSyncService
     private function edrSensorOptions(array $addons): array
     {
         return [
-            'socket_events' => (bool) ($addons['edr_socket_events'] ?? false),
+            // Follows the correlator unless the Hub says otherwise: without
+            // connect events nothing in the pipeline ever looks at where a
+            // process reached, so the egress stage of a chain is invisible and
+            // every intrusion is scored one stage short.
+            'socket_events' => (bool) ($addons['edr_socket_events'] ?? ($addons['edr_correlator_enabled'] ?? false)),
             'interval' => (int) ($addons['edr_interval'] ?? 15),
             'cpu_limit' => (int) ($addons['edr_cpu_limit'] ?? 20),
             'memory_limit_mb' => (int) ($addons['edr_memory_limit_mb'] ?? 200),
@@ -608,6 +612,13 @@ class WafSyncService
             'spool_enabled' => (bool) ($addons['edr_spool_enabled'] ?? true),
             'spool_retention_days' => (int) ($addons['edr_spool_retention_days'] ?? 7),
             'spool_max_rows' => (int) ($addons['edr_spool_max_rows'] ?? 500000),
+            // Authentication events need their own budget. They are 0.084% of
+            // the stream on a real host, but the identity rules ask what an
+            // account has done over weeks — and under one shared ceiling the
+            // process telemetry evicts that history within hours on a busy
+            // machine, leaving those rules permanently unable to fire.
+            'identity_retention_days' => (int) ($addons['edr_identity_retention_days'] ?? 30),
+            'identity_max_rows' => (int) ($addons['edr_identity_max_rows'] ?? 200000),
             // Credential redaction is always on and is the control that
             // actually removes the exposure. This flag adds field encryption
             // on top for deployments that need it — it defends a stolen disk,
@@ -637,7 +648,92 @@ class WafSyncService
             // detection lives.
             'file_paths' => is_array($addons['edr_file_paths'] ?? null) ? $addons['edr_file_paths'] : [],
             'file_excludes' => is_array($addons['edr_file_excludes'] ?? null) ? $addons['edr_file_excludes'] : [],
+
+            // Behaviour correlation (EDR-100/101). Off by default and silent
+            // for its first fortnight even when switched on: it has to learn
+            // what this host looks like before it is entitled to an opinion,
+            // and every value below is clamped endpoint-side so a Hub typo
+            // degrades the detection rather than disabling it unnoticed.
+            'correlator_enabled' => (bool) ($addons['edr_correlator_enabled'] ?? false),
+            'correlator_absorb' => (bool) ($addons['edr_correlator_absorb'] ?? false),
+            'correlator_half_life_h' => (int) ($addons['edr_correlator_half_life_h'] ?? 72),
+            'correlator_k' => (float) ($addons['edr_correlator_k'] ?? 4.0),
+            'correlator_t_floor' => (float) ($addons['edr_correlator_t_floor'] ?? 18.0),
+            'correlator_t_ceiling' => (float) ($addons['edr_correlator_t_ceiling'] ?? 45.0),
+            'correlator_t_floor_host' => (float) ($addons['edr_correlator_t_floor_host'] ?? 27.0),
+            'correlator_min_classes' => (int) ($addons['edr_correlator_min_classes'] ?? 3),
+            'correlator_min_events' => (int) ($addons['edr_correlator_min_events'] ?? 3),
+            'correlator_solo' => (float) ($addons['edr_correlator_solo'] ?? 14.0),
+            'correlator_weights' => is_array($addons['edr_correlator_weights'] ?? null)
+                ? $addons['edr_correlator_weights']
+                : [],
+            'correlator_class_caps' => is_array($addons['edr_correlator_class_caps'] ?? null)
+                ? $addons['edr_correlator_class_caps']
+                : [],
+            'correlator_exposure' => is_array($addons['edr_correlator_exposure'] ?? null)
+                ? $addons['edr_correlator_exposure']
+                : [],
+            'correlator_profile_scale' => is_array($addons['edr_correlator_profile_scale'] ?? null)
+                ? $addons['edr_correlator_profile_scale']
+                : [],
+            'correlator_pkg_scale' => (float) ($addons['edr_correlator_pkg_scale'] ?? 0.3),
+            'correlator_learn_gate' => (float) ($addons['edr_correlator_learn_gate'] ?? 5.0),
+            'correlator_support_days' => (int) ($addons['edr_correlator_support_days'] ?? 5),
+            'correlator_maturity_days' => (int) ($addons['edr_correlator_maturity_days'] ?? 10),
+            'correlator_teach_cap' => (int) ($addons['edr_correlator_teach_cap'] ?? 12),
+            'correlator_warm_events' => (int) ($addons['edr_correlator_warm_events'] ?? 50000),
+            'correlator_warm_days' => (int) ($addons['edr_correlator_warm_days'] ?? 14),
+            'correlator_sig_ttl_days' => (int) ($addons['edr_correlator_sig_ttl_days'] ?? 30),
+            'correlator_cooldown_s' => (int) ($addons['edr_correlator_cooldown_s'] ?? 3600),
+            'correlator_escalation_mult' => (float) ($addons['edr_correlator_escalation_mult'] ?? 1.6),
+            'correlator_daily_cap' => (int) ($addons['edr_correlator_daily_cap'] ?? 20),
+            'correlator_bucket_capacity' => (int) ($addons['edr_correlator_bucket_capacity'] ?? 6),
+            'correlator_bucket_per_day' => (int) ($addons['edr_correlator_bucket_per_day'] ?? 4),
+            'correlator_incident_baseline_min' => (int) ($addons['edr_correlator_incident_baseline_min'] ?? 5),
+            'correlator_facet_cap' => (int) ($addons['edr_correlator_facet_cap'] ?? 200000),
+            // An operator-declared window during which structural novelty is
+            // free. A planned rollout produces hundreds of never-before-seen
+            // binaries in an hour; charging nothing for it beats explaining
+            // the alerts away afterwards.
+            'correlator_maintenance_until' => (int) ($addons['edr_correlator_maintenance_until'] ?? 0),
+            'correlator_anchor_extra' => is_array($addons['edr_correlator_anchor_extra'] ?? null)
+                ? $addons['edr_correlator_anchor_extra']
+                : [],
+            'correlator_collect_binaries' => is_array($addons['edr_correlator_collect_binaries'] ?? null)
+                ? $addons['edr_correlator_collect_binaries']
+                : [],
+            // Where a binary executing from inside the document root becomes
+            // meaningful. Falls back to the FIM watch list, which is the one
+            // place the Hub already tells us where the site lives.
+            'correlator_web_roots' => $this->edrWebRoots($addons),
+            'host_id' => gethostname() ?: 'unknown',
         ];
+    }
+
+    /**
+     * Document roots for the correlator's directory classification.
+     *
+     * @param array $addons
+     * @return array<int, string>
+     */
+    private function edrWebRoots(array $addons): array
+    {
+        if (is_array($addons['edr_correlator_web_roots'] ?? null)) {
+            return array_slice(array_map('strval', $addons['edr_correlator_web_roots']), 0, 32);
+        }
+
+        $roots = [];
+
+        foreach ((array) ($addons['edr_file_paths'] ?? []) as $entry) {
+            $path = is_array($entry) ? ($entry['path'] ?? null) : $entry;
+            $category = is_array($entry) ? (string) ($entry['category'] ?? '') : '';
+
+            if (is_string($path) && $path !== '' && ($category === '' || str_contains($category, 'web'))) {
+                $roots[] = $path;
+            }
+        }
+
+        return array_slice(array_values(array_unique($roots)), 0, 32);
     }
 
     /**
@@ -857,7 +953,12 @@ class WafSyncService
             }
 
             $spool = app(\App\Services\EdrEventSpool::class);
-            $result = $spool->prune($options['spool_retention_days'], $options['spool_max_rows']);
+            $result = $spool->prune(
+                $options['spool_retention_days'],
+                $options['spool_max_rows'],
+                $options['identity_retention_days'],
+                $options['identity_max_rows']
+            );
 
             $deleted = ($result['deleted_by_age'] ?? 0) + ($result['deleted_by_count'] ?? 0);
             if ($deleted > 0) {

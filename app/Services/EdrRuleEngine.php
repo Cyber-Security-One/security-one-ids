@@ -645,7 +645,14 @@ class EdrRuleEngine
             && preg_match('/\b(docker|containerd|kubepods|lxc)\b/', $cgroup) === 1;
     }
 
-    private function isExcluded(array $event): bool
+    /**
+     * Public because the correlator has to honour the same exclusions.
+     *
+     * A pattern the customer told us to ignore must not reach them by another
+     * route, and — just as importantly — an excluded event must not be allowed
+     * to teach the behaviour model what "normal" looks like here.
+     */
+    public function isExcluded(array $event): bool
     {
         if ($this->exclusions === []) {
             return false;
