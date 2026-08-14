@@ -47,6 +47,26 @@ use Illuminate\Support\Facades\Log;
  * ephemeral port is unique per connection, which makes it a genuinely strong
  * key rather than a heuristic.
  *
+ * One caveat on that table, because the number is load-bearing and the
+ * measurement behind it is not as clean as it looks. Those socket events were
+ * timestamped with the osquery result row's flush time, and the flush lands
+ * measurably later than the event it describes: across 14,787 real rows,
+ * `(btime + ntime) - unixTime` ran from -3s to -297s with a median of -13.9s
+ * (-19.3s for socket events specifically). So a good part of what the
+ * fifteen-second window buys is absorbing that lag rather than bounding
+ * causality, and the real optimum against the kernel event clock is almost
+ * certainly tighter — which would attribute *better*, since 2s and 5s already
+ * measured 82.5% and 83.6% unique against the looser clock.
+ *
+ * It is not recalibrated yet, and deliberately so rather than quietly. The
+ * spool does not carry `ntime` today, and re-running the sweep needs a window
+ * where kernel-clocked socket telemetry and Suricata alerts overlap: the raw
+ * osquery log rotates at 16MB x 2 and held only the last ten minutes when this
+ * was checked, against a last alert five hours earlier. Fitting a curve to
+ * non-overlapping data would have produced a number rather than an answer.
+ * Fifteen seconds is therefore the conservative setting, and the recalibration
+ * is owed once `ntime` reaches the spool.
+ *
  * Everything here is reported with the confidence it actually has. An alert
  * matching two processes says so and names both; it does not pick one. And
  * "nothing matched" is split into two outcomes that mean opposite things — no
