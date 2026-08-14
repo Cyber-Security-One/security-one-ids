@@ -22,6 +22,39 @@ namespace App\Services\Network;
  */
 class SocketEventNormalizer
 {
+    /**
+     * Local sockets that are a path to root.
+     *
+     * Holding a writable handle to any of these is equivalent to controlling
+     * the host: the Docker socket will start a privileged container with the
+     * root filesystem mounted, and containerd and CRI-O are the same capability
+     * one layer down. On this host `/var/run/docker.sock` is mode 666, so every
+     * account on the box — `www-data` included — already has that capability;
+     * the only thing standing between a web shell and root is that nobody has
+     * asked.
+     *
+     * Both the literal and the resolved path are compared, because /var/run is
+     * a symlink to /run on a usr-merged system and matching one spelling misses
+     * the other. That exact mistake broke the quarantine deny-list earlier in
+     * this work, where /bin/sh resolved to /usr/bin/dash and never matched.
+     */
+    private const PRIVILEGED_SOCKETS = [
+        '/var/run/docker.sock',
+        '/run/docker.sock',
+        '/var/run/containerd/containerd.sock',
+        '/run/containerd/containerd.sock',
+        '/run/k3s/containerd/containerd.sock',
+        '/var/run/crio/crio.sock',
+        '/run/crio/crio.sock',
+        '/var/run/kubelet.sock',
+        '/run/kubelet.sock',
+        '/var/run/libvirt/libvirt-sock',
+        '/run/libvirt/libvirt-sock',
+        '/run/systemd/private',
+        '/var/run/podman/podman.sock',
+        '/run/podman/podman.sock',
+    ];
+
     /** Binaries belonging to this product; their sockets are our own noise. */
     private const AGENT_BINARIES = [
         'osqueryd', 'osqueryi', 'suricata', 'snort', 'clamscan', 'freshclam', 'clamd',
@@ -252,15 +285,21 @@ class SocketEventNormalizer
     public function classifyScope(?string $address): string
     {
         if ($address === null || $address === '') {
-            return 'unknown';
+            // No peer at all. bind and listen report this by nature, and so
+            // does an accept whose peer the probe did not capture. Distinct
+            // from `unknown`, which means "there is an address and it is not
+            // one we can classify".
+            return 'none';
         }
 
         $address = $this->unmapIpv4($address);
 
         if (filter_var($address, FILTER_VALIDATE_IP) === false) {
-            // AF_UNIX sockets put a filesystem path here — 2,424 events on the
-            // measured host. Not an address, and not an error.
-            return 'unknown';
+            // AF_UNIX sockets put a filesystem path here — 1,302 events in a
+            // ten-minute window on the measured host. Not an address, and not
+            // an error, but not a network destination either: it is local IPC,
+            // and it gets its own scope so the two can be filtered apart.
+            return $address[0] === '/' ? 'ipc' : 'unknown';
         }
 
         if ($this->isLoopback($address)) {
@@ -323,12 +362,35 @@ class SocketEventNormalizer
      * it is container bridge chatter between php-fpm, redis and mysql, and
      * carrying it would put the aggregate near a million rows a day. The Hub
      * can turn it on per agent for hosts where lateral movement is the concern.
+     *
+     * Peerless events go too. bind and listen have no remote end by nature, and
+     * nothing reads their local port because it is 0 on every row — new
+     * listeners are detected from the `listening_ports` snapshot instead.
+     *
+     * Local IPC is where this got interesting, and it corrects a claim that was
+     * in this file until it was measured. The previous version kept everything
+     * it could not classify, justified by "an accept event often reports family
+     * -1 while the address is perfectly usable". That case is real but it does
+     * not produce an unclassified event: measured over 14,620 rows, family -1
+     * events resolved to 2,797 private, 2,397 loopback and 1,605 external,
+     * because classification reads the address and not the family. Of every
+     * unclassifiable event, exactly zero carried a usable IP address. The
+     * justification described something that cannot happen.
+     *
+     * What it was actually retaining was 2,572 peerless events, 689 netlink
+     * sockets and 1,302 AF_UNIX paths — 44.1% of all aggregated output, none of
+     * it reachable by any rule. That is the same waste this module was built to
+     * remove from the spool, so it goes.
+     *
+     * Except for the part that is a genuine signal. A process connecting to the
+     * Docker socket holds a path to root, and no rule covered it before. Those
+     * are kept, and NET-006 now reads them.
      */
     public function shouldDrop(array $event, array $options = []): bool
     {
         $scope = (string) ($event['network']['scope'] ?? 'unknown');
 
-        if ($scope === 'loopback') {
+        if ($scope === 'loopback' || $scope === 'none') {
             return true;
         }
 
@@ -336,9 +398,53 @@ class SocketEventNormalizer
             return true;
         }
 
-        // `unknown` is kept: an accept event often reports family -1 while the
-        // address is perfectly usable, and dropping it would lose inbound
-        // connection visibility entirely.
+        if ($scope === 'ipc') {
+            // Only the sockets that are a capability, not every unix socket on
+            // the host. The rest is service plumbing and, on a developer
+            // machine, one aggregation group per agent IPC socket.
+            return !$this->isPrivilegedSocket((string) ($event['network']['remote_address'] ?? ''));
+        }
+
+        // `unknown` is an address we could not classify at all, which should not
+        // happen and is kept so that it is visible if it starts happening.
+        return false;
+    }
+
+    /**
+     * Whether this path is one of the local sockets that confers root.
+     *
+     * Compared literally and after resolution, because /var/run is a symlink to
+     * /run on any usr-merged system and a single spelling misses half the
+     * real-world paths.
+     */
+    public function isPrivilegedSocket(string $path): bool
+    {
+        if ($path === '' || $path[0] !== '/') {
+            return false;
+        }
+
+        if (in_array($path, self::PRIVILEGED_SOCKETS, true)) {
+            return true;
+        }
+
+        $resolved = @realpath($path);
+
+        if ($resolved === false) {
+            return false;
+        }
+
+        foreach (self::PRIVILEGED_SOCKETS as $candidate) {
+            if ($resolved === $candidate) {
+                return true;
+            }
+
+            $candidateResolved = @realpath($candidate);
+
+            if ($candidateResolved !== false && $resolved === $candidateResolved) {
+                return true;
+            }
+        }
+
         return false;
     }
 

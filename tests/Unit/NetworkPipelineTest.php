@@ -114,10 +114,19 @@ class NetworkPipelineTest extends TestCase
         $this->assertSame('loopback', $this->normalizer->classifyScope('127.0.0.1'));
         $this->assertSame('external', $this->normalizer->classifyScope('8.8.8.8'));
 
-        // AF_UNIX sockets put a filesystem path here — 2,424 real events.
-        $this->assertSame('unknown', $this->normalizer->classifyScope('/var/run/nscd/socket'));
-        $this->assertSame('unknown', $this->normalizer->classifyScope(''));
-        $this->assertSame('unknown', $this->normalizer->classifyScope(null));
+        // AF_UNIX sockets put a filesystem path here — 1,302 real events in a
+        // ten-minute window. Local IPC, not a network destination, and given
+        // its own scope so the two can be filtered apart.
+        $this->assertSame('ipc', $this->normalizer->classifyScope('/var/run/nscd/socket'));
+
+        // No peer at all: bind and listen by nature, and an accept whose peer
+        // the probe did not capture. 2,572 real events.
+        $this->assertSame('none', $this->normalizer->classifyScope(''));
+        $this->assertSame('none', $this->normalizer->classifyScope(null));
+
+        // Reserved for an address that exists and cannot be classified, which
+        // should not happen — kept distinct so it is visible if it starts to.
+        $this->assertSame('unknown', $this->normalizer->classifyScope('not-an-address'));
     }
 
     /**
@@ -138,10 +147,29 @@ class NetworkPipelineTest extends TestCase
         $external = $this->normalize($this->row('connect', '/usr/bin/curl', '8.8.8.8', 53, 1_000_000_000));
         $this->assertFalse($this->normalizer->shouldDrop($external));
 
-        // An accept event often reports family -1 with a usable address;
-        // dropping unknown scope would lose inbound visibility entirely.
-        $unknown = $this->normalize($this->row('accept', '/usr/sbin/nginx', '/var/run/x.sock', null, 1_000_000_000));
-        $this->assertFalse($this->normalizer->shouldDrop($unknown));
+        // Peerless events go: bind and listen have no remote end, and nothing
+        // reads their local port because it is 0 on every row.
+        $peerless = $this->normalize($this->row('bind', '/usr/sbin/nginx', '', null, 1_000_000_000));
+        $this->assertTrue($this->normalizer->shouldDrop($peerless));
+
+        // Ordinary local IPC goes too. This corrects an earlier claim in the
+        // normaliser, which kept every unclassifiable event because "an accept
+        // often reports family -1 with a usable address". Measured over 14,620
+        // rows, family -1 events resolved to 2,797 private, 2,397 loopback and
+        // 1,605 external — classification reads the address, not the family —
+        // and of every unclassifiable event, exactly zero carried a usable IP.
+        // The justification described a case that cannot occur, while retaining
+        // 44.1% of all aggregated output that no rule could reach.
+        $plumbing = $this->normalize($this->row('connect', '/usr/sbin/mysqld', '/var/run/nscd/socket', null, 1_000_000_000));
+        $this->assertTrue($this->normalizer->shouldDrop($plumbing));
+
+        // But not the sockets that are a path to root. This was the part of
+        // that traffic worth keeping, and dropping all of it would have removed
+        // a detection before it was built.
+        $docker = $this->normalize($this->row('connect', '/usr/bin/php', '/var/run/docker.sock', null, 1_000_000_000));
+        $this->assertFalse($this->normalizer->shouldDrop($docker), 'the container escape primitive stays');
+        $this->assertTrue($this->normalizer->isPrivilegedSocket('/var/run/docker.sock'));
+        $this->assertFalse($this->normalizer->isPrivilegedSocket('/var/run/nscd/socket'));
     }
 
     /**

@@ -290,6 +290,92 @@ class NetworkCollectorTest extends TestCase
     }
 
     /**
+     * The container escape primitive, and the rule that justifies keeping the
+     * data it lives in.
+     *
+     * A writable handle on the Docker socket starts a privileged container with
+     * the host root filesystem mounted, which is root by another name. On the
+     * host this was written against that socket is mode 666, so every account
+     * including www-data already holds the capability and only needs to use it.
+     *
+     * Novelty is the signal rather than access, because Docker's own CLI uses
+     * that socket constantly and legitimately — and novelty needs a basis, so
+     * with no recorded history the rule stays silent rather than reporting every
+     * process on a freshly deployed host.
+     */
+    public function test_a_new_process_reaching_the_docker_socket_is_reported(): void
+    {
+        $sock = '/var/run/docker.sock';
+
+        // No history: silent, because "not seen yet" is not "new".
+        $first = $this->collector->collect(
+            [$this->row('connect', '/usr/bin/php', $sock, null, 1.0, 7001)],
+            [],
+            $this->opts()
+        );
+
+        $this->assertSame(1, $first['stats']['kept'], 'the event is carried, unlike ordinary IPC');
+        $this->assertSame(0, $first['stats']['alerts'], 'but nothing can be concluded without history');
+
+        // Give the legitimate client three distinct days of history.
+        $day = 86400;
+        $base = 1786700000;
+
+        for ($i = 0; $i < 4; $i++) {
+            $this->collector->collect(
+                [$this->row('connect', '/usr/bin/docker', $sock, null, 1.0, 7100 + $i)],
+                [],
+                $this->opts()
+            );
+
+            $this->baseline->recordDestination('/usr/bin/docker', $sock, null, 1, $base - $i * $day);
+        }
+
+        // The established client stays quiet.
+        $known = $this->collector->collect(
+            [$this->row('connect', '/usr/bin/docker', $sock, null, 2.0, 7200)],
+            [],
+            $this->opts()
+        );
+        $this->assertSame(0, $known['stats']['alerts'], 'the docker CLI using the docker socket is not news');
+
+        // A different binary with its own history reaching it for the first
+        // time. Deliberately not the one used in the no-history probe above:
+        // that call learned the socket on its way out, so reusing it would be
+        // testing a process that genuinely does have history now. The rule
+        // being right is what made this test wrong.
+        for ($i = 0; $i < 4; $i++) {
+            $this->baseline->recordDestination('/usr/sbin/nginx', '203.0.113.90', 443, 1, $base - $i * $day);
+        }
+
+        $novel = $this->collector->collect(
+            [$this->row('connect', '/usr/sbin/nginx', $sock, null, 3.0, 7300)],
+            [],
+            $this->opts()
+        );
+
+        $this->assertSame(1, $novel['stats']['alerts']);
+        $this->assertSame(1, $novel['stats']['by_rule']['NET-006'] ?? 0);
+        $this->assertStringContainsString('docker.sock', $novel['alerts'][0]['rules'][0]['reason']);
+        $this->assertSame('high', $novel['alerts'][0]['rules'][0]['severity']);
+    }
+
+    /**
+     * Ordinary local IPC does not reach the rules at all. It was 44.1% of
+     * aggregated output and no rule could ever match it.
+     */
+    public function test_ordinary_unix_sockets_are_dropped(): void
+    {
+        $result = $this->collector->collect([
+            $this->row('connect', '/usr/sbin/mysqld', '/var/run/nscd/socket', null, 1.0, 7400),
+            $this->row('connect', '/usr/bin/agent', '/tmp/some-app.sock', null, 2.0, 7401),
+        ], [], $this->opts());
+
+        $this->assertSame(2, $result['stats']['dropped_scope']);
+        $this->assertSame(0, $result['stats']['kept']);
+    }
+
+    /**
      * A cycle with nothing in it must touch nothing. This runs every 30 seconds
      * on every host, and most of the time there is no external traffic at all.
      */

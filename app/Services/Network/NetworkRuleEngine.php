@@ -255,6 +255,43 @@ class NetworkRuleEngine
             }
         }
 
+        /* NET-006 — a new process reached a local socket that confers root -----
+         * The container-escape primitive, and until now nothing in this product
+         * looked at it. A writable handle on the Docker socket will start a
+         * privileged container with the host root filesystem mounted, which is
+         * root by another name; containerd, CRI-O and the libvirt socket are the
+         * same capability at different layers.
+         *
+         * It is not theoretical on the host this was written against, where
+         * /var/run/docker.sock is mode 666. Every account on the box already
+         * holds that capability, `www-data` included, so the distance between a
+         * web shell and root is one connect() call. That is also why the rule
+         * matters more than the volume it costs: this was the one part of the
+         * unclassifiable socket traffic worth keeping, and dropping all of it
+         * would have removed a real detection before it was ever built.
+         *
+         * Held to the same standard as the rest of this file. Docker's own CLI
+         * talks to that socket constantly and legitimately, so novelty is the
+         * signal, not access. And novelty needs a basis: without recorded
+         * history for this executable, "has not used it before" only means "not
+         * seen yet", which on a freshly deployed agent is every process on the
+         * host. */
+        if ($action === 'net_connect' && $scope === 'ipc' && $address !== null) {
+            $history = $this->baseline->destinationHistory($path, (string) $address, null);
+            $historyDays = $this->baseline->historyDaysFor($path);
+
+            if ($historyDays >= self::MIN_HISTORY_DAYS && $history['days'] === 0) {
+                $findings[] = $this->finding(
+                    'NET-006',
+                    'Process reached a privileged local socket for the first time',
+                    'high',
+                    'T1610',
+                    "{$binary} connected to {$address}, which grants control of the container "
+                    . "runtime, and has not done so in {$historyDays} days of recorded history"
+                );
+            }
+        }
+
         return $findings;
     }
 
