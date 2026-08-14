@@ -281,9 +281,17 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         render()
         refresh()
 
-        // Half a minute matches the agent's own cycle, so the console is never
-        // showing something the agent has already superseded for long.
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        // Five minutes, not thirty seconds.
+        //
+        // Each poll is a whole Laravel boot: measured at 1.1s of CPU and 149MB
+        // resident for a single snapshot. Every thirty seconds that is a few
+        // percent of a core burned continuously by a program whose entire
+        // output is one dot — and the detail behind the dot is only ever read
+        // while the menu is open, which triggers its own refresh anyway.
+        //
+        // So the timer exists only to keep the dot's colour roughly honest
+        // between openings, and that does not need to be fast.
+        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.refresh()
         }
     }

@@ -63,8 +63,14 @@ To start it at login: **System Settings → General → Login Items → +**, and
 
 ## How it gets its numbers
 
-It runs `php artisan ids:status --json` in `/opt/security-one-ids` every 30
-seconds, and again whenever the menu is opened.
+It runs `php artisan ids:status --json` in `/opt/security-one-ids` whenever the
+menu is opened, and on a slow background tick every five minutes.
+
+The tick is deliberately slow. One snapshot costs a full Laravel boot —
+measured at 1.1s of CPU and 149MB resident on a host with 500k spooled events —
+and the only thing it buys between openings is the colour of the dot. The
+detail behind the dot is read exactly when the menu is open, and opening it
+refreshes it.
 
 It deliberately has no opinion of its own about what "healthy" means. Every
 state, every threshold and every piece of remediation advice comes from that
