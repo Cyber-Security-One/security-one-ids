@@ -10,6 +10,7 @@ PID_FILE="$INSTALL_DIR/storage/ids.pid"
 CRASH_COUNT_FILE="$INSTALL_DIR/storage/crash_count"
 MAX_CRASHES_BEFORE_RESET=5
 SCAN_INTERVAL=300  # Security scan interval (5 min)
+EDR_INTERVAL=30    # Endpoint sensor collection interval (30s)
 DEFAULT_HEARTBEAT_INTERVAL=60
 CONFIG_FILE="$INSTALL_DIR/storage/app/waf_config.json"
 
@@ -295,9 +296,25 @@ pf_enforce_loop() {
 }
 
 # ============================================================
-# Launch all 3 threads as background processes
+# Thread 5: EDR (endpoint sensor lifecycle + behaviour alerts)
+# Runs on its own short interval rather than riding the sync loop:
+# sync backs off to 600s, and a 10-minute gap between a reverse shell
+# executing and the Hub hearing about it is not endpoint detection.
+# No-ops cheaply when addons.edr_enabled is off at the Hub.
 # ============================================================
-log_message "INFO" "Launching 3 independent threads..."
+edr_loop() {
+    log_message "INFO" "[Thread:EDR] Started (interval: ${EDR_INTERVAL}s)"
+
+    while true; do
+        run_artisan "ids:sync-edr" 120
+        sleep $EDR_INTERVAL
+    done
+}
+
+# ============================================================
+# Launch all threads as background processes
+# ============================================================
+log_message "INFO" "Launching 5 independent threads..."
 
 heartbeat_loop &
 CHILD_PIDS+=($!)
@@ -315,24 +332,29 @@ pf_enforce_loop &
 CHILD_PIDS+=($!)
 log_message "INFO" "  → PfEnforce thread: PID $!"
 
+edr_loop &
+CHILD_PIDS+=($!)
+log_message "INFO" "  → EDR thread: PID $!"
+
 log_message "INFO" "All threads launched. Monitoring..."
 
 # Main watchdog: monitor child processes, restart if they die
 while true; do
     for i in "${!CHILD_PIDS[@]}"; do
         pid=${CHILD_PIDS[$i]}
-        labels=("Heartbeat" "Sync" "Scan" "PfEnforce")
+        labels=("Heartbeat" "Sync" "Scan" "PfEnforce" "EDR")
 
         label=${labels[$i]:-"Unknown"}
-        
+
         if ! kill -0 "$pid" 2>/dev/null; then
             log_message "CRITICAL" "[Thread:$label] Process $pid died! Restarting..."
-            
+
             case $i in
                 0) heartbeat_loop & ;;
                 1) sync_loop & ;;
                 2) scan_loop & ;;
                 3) pf_enforce_loop & ;;
+                4) edr_loop & ;;
             esac
             CHILD_PIDS[$i]=$!
             log_message "INFO" "[Thread:$label] Restarted as PID ${CHILD_PIDS[$i]}"

@@ -68,11 +68,16 @@ class SyncToWaf extends Command
                 $pool->path($basePath)
                     ->timeout(600)
                     ->command([$phpBinary, 'artisan', 'ids:sync-maintenance']);
+
+                // Group 5: Endpoint sensor (EDR process telemetry)
+                $pool->path($basePath)
+                    ->timeout(600)
+                    ->command([$phpBinary, 'artisan', 'ids:sync-edr']);
             })->start()->wait();
 
             $elapsed = round(microtime(true) - $startTime, 1);
-            
-            $labels = ['Heartbeat', 'Quick', 'Suricata', 'Maintenance'];
+
+            $labels = ['Heartbeat', 'Quick', 'Suricata', 'Maintenance', 'EDR'];
             foreach ($pool as $i => $result) {
                 $label = $labels[$i] ?? "Group {$i}";
                 if ($result->successful()) {
@@ -97,6 +102,7 @@ class SyncToWaf extends Command
             $wafSync->runQuickSync();
             $wafSync->runSuricataSync();
             $wafSync->runMaintenanceSync();
+            $wafSync->runEdrSync();
         }
 
         $this->info('Sync completed!');

@@ -408,6 +408,178 @@ class WafSyncService
     }
 
     /**
+     * Run endpoint sensor (EDR) tasks: install if missing, start if enabled,
+     * collect behaviour alerts. Called by ids:sync-edr and by quick sync.
+     *
+     * Gated on `addons.edr_enabled` from the Hub and off by default: the
+     * sensor is a kernel-level component and must be an explicit opt-in per
+     * agent, not something a config merge can switch on by accident.
+     */
+    public function runEdrSync(): void
+    {
+        $config = $this->getWafConfig();
+        $addons = $config['addons'] ?? [];
+
+        $engine = app(\App\Services\Detection\OsqueryEngine::class);
+
+        if (empty($addons['edr_enabled'])) {
+            // Disabled at the Hub — make sure we are not leaving a sensor
+            // running on a host that is no longer supposed to have one.
+            if ($engine->isRunning()) {
+                Log::info('[EDR] Disabled at Hub, stopping sensor');
+                $engine->stop();
+                $this->reportAgentEvent('edr_stopped', '端點感測器已依 Hub 設定停止');
+            }
+
+            return;
+        }
+
+        if (!$engine->isSupportedPlatform()) {
+            Log::debug('[EDR] Platform not supported yet (Linux only)');
+
+            return;
+        }
+
+        if (!$this->ensureEdrSensorRunning($engine, $addons)) {
+            return;
+        }
+
+        $this->collectEdrAlerts($addons);
+    }
+
+    /**
+     * Bring the endpoint sensor to the desired state. Returns true when the
+     * sensor is running and ready to be read.
+     */
+    private function ensureEdrSensorRunning(\App\Services\Detection\OsqueryEngine $engine, array $addons): bool
+    {
+        try {
+            if (!$engine->isInstalled()) {
+                Log::info('[EDR] Enabled but sensor not installed, installing...');
+                $result = $engine->install();
+
+                if (empty($result['success'])) {
+                    Log::error('[EDR] Sensor install failed', $result);
+                    $this->reportAgentEvent('error', '端點感測器安裝失敗: ' . ($result['error'] ?? 'unknown'));
+
+                    return false;
+                }
+
+                $this->reportAgentEvent('edr_installed', '端點感測器已安裝（osquery ' . ($result['version'] ?? '?') . '）');
+            }
+
+            $backend = $engine->resolveBackend();
+            if ($backend === '') {
+                Log::warning('[EDR] No usable telemetry backend on this host');
+                $this->reportAgentEvent(
+                    'error',
+                    '端點感測器無法啟動：核心不支援 eBPF（需 5.8+ 並含 BTF），且 auditd 已佔用 audit socket'
+                );
+
+                return false;
+            }
+
+            $options = $this->edrSensorOptions($addons);
+
+            if (!$engine->isRunning()) {
+                Log::info("[EDR] Starting sensor (backend={$backend})");
+                $result = $engine->start($options);
+
+                if (empty($result['success'])) {
+                    Log::error('[EDR] Sensor start failed', $result);
+                    $this->reportAgentEvent('error', '端點感測器啟動失敗: ' . ($result['error'] ?? 'unknown'));
+
+                    return false;
+                }
+
+                $this->reportAgentEvent('edr_started', "端點感測器已啟動（{$backend} 模式）");
+                file_put_contents(storage_path('app/edr_config_hash.txt'), $engine->getConfigHash());
+
+                return true;
+            }
+
+            // Already running — restart if the Hub changed sensor settings,
+            // otherwise the new options silently never take effect.
+            $hashPath = storage_path('app/edr_config_hash.txt');
+            $runningHash = file_exists($hashPath) ? trim((string) file_get_contents($hashPath)) : '';
+
+            if ($engine->writeConfig($options)) {
+                $desiredHash = $engine->getConfigHash();
+
+                if ($runningHash !== '' && $desiredHash !== $runningHash) {
+                    Log::info('[EDR] Sensor config changed, restarting');
+                    $result = $engine->restart($options);
+
+                    if (empty($result['success'])) {
+                        Log::error('[EDR] Sensor restart failed', $result);
+
+                        return false;
+                    }
+
+                    $this->reportAgentEvent('edr_started', '端點感測器已依新設定重啟');
+                }
+
+                file_put_contents($hashPath, $desiredHash);
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('[EDR] ensureEdrSensorRunning failed: ' . $e->getMessage());
+
+            return false;
+        }
+    }
+
+    /**
+     * Sensor tuning pushed from the Hub, with conservative defaults so an
+     * agent that has never been tuned still behaves on a production host.
+     */
+    private function edrSensorOptions(array $addons): array
+    {
+        return [
+            'socket_events' => (bool) ($addons['edr_socket_events'] ?? false),
+            'interval' => (int) ($addons['edr_interval'] ?? 15),
+            'cpu_limit' => (int) ($addons['edr_cpu_limit'] ?? 20),
+            'memory_limit_mb' => (int) ($addons['edr_memory_limit_mb'] ?? 200),
+            'exclusions' => is_array($addons['edr_exclusions'] ?? null) ? $addons['edr_exclusions'] : [],
+            'web_account_allowlist' => is_array($addons['edr_web_account_allowlist'] ?? null)
+                ? $addons['edr_web_account_allowlist']
+                : [],
+        ];
+    }
+
+    /**
+     * Read new sensor output, ship rule hits to the Hub.
+     */
+    private function collectEdrAlerts(array $addons): void
+    {
+        try {
+            $collector = app(\App\Services\EdrEventCollector::class);
+            $result = $collector->collect($this->edrSensorOptions($addons));
+
+            $stats = $result['stats'];
+            if (($stats['events'] ?? 0) > 0) {
+                Log::debug('[EDR] Processed sensor events', $stats);
+            }
+
+            $alerts = $result['alerts'];
+            if ($alerts === []) {
+                return;
+            }
+
+            if ($this->reportAlerts($alerts)) {
+                Log::info('[EDR] Uploaded ' . count($alerts) . ' endpoint alerts to Hub', [
+                    'by_rule' => $stats['by_rule'] ?? [],
+                ]);
+            } else {
+                Log::warning('[EDR] Failed to upload endpoint alerts');
+            }
+        } catch (\Exception $e) {
+            Log::error('[EDR] Alert collection failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Run Snort management tasks (deprecated — redirects to Suricata)
      */
     public function runSnortSync(): void
@@ -2703,7 +2875,40 @@ class WafSyncService
             'snort' => $snortInfo,
             // Suricata IDS/IPS status
             'suricata' => $suricataInfo,
+            // Endpoint sensor (EDR) status
+            'edr' => $this->getEdrInfo(),
         ];
+    }
+
+    /**
+     * Endpoint sensor status for the heartbeat, so the Hub can show why a
+     * host has no process telemetry (unsupported OS, no BTF, auditd conflict)
+     * instead of just showing an agent that never alerts.
+     */
+    private function getEdrInfo(): array
+    {
+        try {
+            $engine = app(\App\Services\Detection\OsqueryEngine::class);
+
+            return [
+                'supported' => $engine->isSupportedPlatform(),
+                'installed' => $engine->isInstalled(),
+                'running' => $engine->isRunning(),
+                'version' => $engine->getVersion(),
+                'backend' => $engine->resolveBackend(),
+                'bpf_supported' => $engine->supportsBpf(),
+                'auditd_active' => $engine->auditdIsActive(),
+            ];
+        } catch (\Exception $e) {
+            Log::debug('[EDR] Status probe failed: ' . $e->getMessage());
+
+            return [
+                'supported' => false,
+                'installed' => false,
+                'running' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
     }
 
     /**
