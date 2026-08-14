@@ -110,15 +110,23 @@ class EdrEventCollector
         $bySuppression = [];
         $suppressed = 0;
 
+        // Pass one: normalise everything. Attribution has to see the whole
+        // batch before any rule runs, because a file event only becomes
+        // meaningful once we have guessed which process caused it — and the
+        // rule that matters most, a web account dropping a script into a web
+        // root, is unreachable without that guess.
         foreach ($lines as $line) {
             $event = $this->normalize($line);
-            if ($event === null || $this->isAgentNoise($event)) {
-                continue;
+
+            if ($event !== null && !$this->isAgentNoise($event)) {
+                $events[] = $event;
             }
+        }
 
-            $events[] = $event;
-            $eventIndex = count($events) - 1;
+        $this->attributeFileEvents($events);
 
+        // Pass two: evaluate.
+        foreach ($events as $eventIndex => $event) {
             $findings = $this->rules->evaluate($event);
             if ($findings === []) {
                 continue;
@@ -162,6 +170,7 @@ class EdrEventCollector
         }
 
         $alerts = $this->collapseWrappers($alerts);
+        $alerts = $this->collapseFileRepeats($alerts);
 
         // Cross-event rules run over the whole batch, and go through the same
         // governance as single-event ones — a burst rule is no more entitled
@@ -309,6 +318,58 @@ class EdrEventCollector
             );
 
             if ($remaining !== []) {
+                $hit['findings'] = array_values($remaining);
+                $kept[] = $hit;
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * One write, one alert.
+     *
+     * A single `echo > file` produces a CREATED and one or more UPDATED
+     * events, so the same finding on the same path arrives several times in a
+     * cycle. Three identical criticals for one dropped webshell is noise
+     * dressed as urgency, and the analyst still only has one file to look at.
+     *
+     * @param  array<int, array{event:array,findings:array}> $hits
+     * @return array<int, array{event:array,findings:array}>
+     */
+    private function collapseFileRepeats(array $hits): array
+    {
+        $seen = [];
+        $kept = [];
+
+        foreach ($hits as $hit) {
+            $action = (string) ($hit['event']['action'] ?? '');
+
+            if (!str_starts_with($action, 'file_')) {
+                $kept[] = $hit;
+                continue;
+            }
+
+            $path = (string) ($hit['event']['path'] ?? '');
+
+            $remaining = array_filter(
+                $hit['findings'],
+                static function (array $finding) use (&$seen, $path): bool {
+                    $key = ($finding['rule'] ?? '') . '|' . $path;
+
+                    if (isset($seen[$key])) {
+                        return false;
+                    }
+
+                    $seen[$key] = true;
+
+                    return true;
+                }
+            );
+
+            if ($remaining !== []) {
+                // Keep the richest copy: a later event in the sequence may
+                // have picked up an attribution the first one lacked.
                 $hit['findings'] = array_values($remaining);
                 $kept[] = $hit;
             }
@@ -583,6 +644,11 @@ class EdrEventCollector
         }
 
         $name = (string) ($row['name'] ?? '');
+
+        if ($name === 'file_changes') {
+            return $this->normalizeFileEvent($row, $columns);
+        }
+
         $isSocket = str_contains($name, 'socket');
 
         $uid = isset($columns['uid']) ? (int) $columns['uid'] : -1;
@@ -620,6 +686,188 @@ class EdrEventCollector
         }
 
         return $event;
+    }
+
+    /**
+     * Map an inotify file event into the shared event shape.
+     *
+     * The important absence here is a pid. inotify reports what changed and
+     * can hash it, but not who did it — so the process fields stay empty and
+     * are filled in later by inference, clearly marked as inference. Claiming
+     * an attribution we do not have would be worse than admitting the gap:
+     * an analyst acts on the name of the process they are shown.
+     */
+    private function normalizeFileEvent(array $row, array $columns): ?array
+    {
+        $path = (string) ($columns['target_path'] ?? '');
+
+        if ($path === '') {
+            return null;
+        }
+
+        $action = match (strtoupper((string) ($columns['action'] ?? ''))) {
+            'CREATED' => 'file_create',
+            'UPDATED', 'ATTRIBUTES_MODIFIED', 'MOVED_TO' => 'file_write',
+            'DELETED', 'MOVED_FROM' => 'file_delete',
+            default => null,
+        };
+
+        // osquery emits directory-level and bookkeeping actions too; only
+        // changes to file content or existence are worth carrying.
+        if ($action === null) {
+            return null;
+        }
+
+        $uid = isset($columns['uid']) && $columns['uid'] !== '' ? (int) $columns['uid'] : -1;
+
+        return [
+            'ts' => (int) ($row['unixTime'] ?? time()),
+            'host' => (string) ($row['hostIdentifier'] ?? gethostname()),
+            'action' => $action,
+            'sensor' => 'osquery-fim',
+            // Left unset on purpose — see the note above.
+            'pid' => 0,
+            'ppid' => 0,
+            'uid' => $uid,
+            'username' => $uid >= 0 ? $this->resolveUsername($uid) : '',
+            'path' => $path,
+            'cmdline' => '',
+            'cwd' => dirname($path),
+            'container_id' => '',
+            'syscall' => strtolower((string) ($columns['action'] ?? '')),
+            'file' => [
+                'category' => (string) ($columns['category'] ?? ''),
+                'size' => isset($columns['size']) && $columns['size'] !== '' ? (int) $columns['size'] : null,
+                'mode' => (string) ($columns['mode'] ?? ''),
+                'sha256' => (string) ($columns['sha256'] ?? ''),
+                'inode' => (string) ($columns['inode'] ?? ''),
+                'mtime' => isset($columns['mtime']) && $columns['mtime'] !== '' ? (int) $columns['mtime'] : null,
+            ],
+            'attribution' => null,
+        ];
+    }
+
+    /**
+     * Guess which process was responsible for each file change.
+     *
+     * inotify does not tell us, so this looks for a process that executed
+     * close in time and whose command line or working directory points at the
+     * path. It is inference: the confidence is recorded alongside it, and
+     * nothing downstream is allowed to treat a `low` attribution as identity.
+     *
+     * @param array<int, array> $events the whole batch, in arrival order
+     */
+    private function attributeFileEvents(array &$events, int $windowSeconds = 5): void
+    {
+        $fileEvents = array_filter(
+            $events,
+            static fn (array $e): bool => str_starts_with((string) ($e['action'] ?? ''), 'file_')
+        );
+
+        if ($fileEvents === []) {
+            return;
+        }
+
+        $inBatch = array_values(array_filter(
+            $events,
+            static fn (array $e): bool => ($e['action'] ?? '') === 'exec'
+        ));
+
+        // Candidates come from the spool as well as the current batch. File
+        // events and process events are separate scheduled queries with
+        // independent flush timing, so the process that did the writing has
+        // usually been committed in an earlier cycle — looking only at the
+        // batch in hand finds it almost never.
+        $spooled = [];
+
+        foreach ($fileEvents as $fileEvent) {
+            foreach ($this->spool->execsAround((int) $fileEvent['ts'], $windowSeconds) as $row) {
+                $spooled[(int) $row['id']] = [
+                    'ts' => (int) $row['ts'],
+                    'pid' => (int) $row['pid'],
+                    'ppid' => (int) $row['ppid'],
+                    'uid' => (int) $row['uid'],
+                    'username' => (string) ($row['username'] ?? ''),
+                    'path' => (string) ($row['path'] ?? ''),
+                    'cmdline' => (string) ($row['cmdline'] ?? ''),
+                ];
+            }
+        }
+
+        $processes = array_merge($inBatch, array_values($spooled));
+
+        if ($processes === []) {
+            return;
+        }
+
+        foreach ($events as &$event) {
+            if (!str_starts_with((string) ($event['action'] ?? ''), 'file_')) {
+                continue;
+            }
+
+            $path = (string) $event['path'];
+            $basename = basename($path);
+            $best = null;
+
+            foreach ($processes as $process) {
+                $delta = abs((int) $process['ts'] - (int) $event['ts']);
+
+                if ($delta > $windowSeconds) {
+                    continue;
+                }
+
+                $cmdline = (string) $process['cmdline'];
+
+                // Naming the full path is the strongest thing we can see
+                // without kernel-side attribution.
+                if ($path !== '' && str_contains($cmdline, $path)) {
+                    $best = ['process' => $process, 'confidence' => 'high', 'basis' => 'cmdline_contains_path'];
+                    break;
+                }
+
+                if ($basename !== '' && strlen($basename) > 3 && str_contains($cmdline, $basename)) {
+                    $candidate = ['process' => $process, 'confidence' => 'medium', 'basis' => 'cmdline_contains_name'];
+                } elseif ((int) $process['uid'] === (int) $event['uid'] && (int) $event['uid'] >= 0) {
+                    $candidate = ['process' => $process, 'confidence' => 'low', 'basis' => 'same_user_same_window'];
+                } else {
+                    continue;
+                }
+
+                if ($best === null || $this->confidenceRank($candidate['confidence']) > $this->confidenceRank($best['confidence'])) {
+                    $best = $candidate;
+                }
+            }
+
+            if ($best === null) {
+                continue;
+            }
+
+            $event['attribution'] = [
+                'confidence' => $best['confidence'],
+                'basis' => $best['basis'],
+                'pid' => (int) $best['process']['pid'],
+                'ppid' => (int) $best['process']['ppid'],
+                'process_path' => (string) $best['process']['path'],
+                'cmdline' => (string) $best['process']['cmdline'],
+                'username' => (string) $best['process']['username'],
+            ];
+
+            // Carry the inferred user forward when inotify gave us nothing,
+            // but never overwrite a uid the kernel actually reported.
+            if (($event['username'] ?? '') === '' && $best['confidence'] !== 'low') {
+                $event['username'] = (string) $best['process']['username'];
+            }
+        }
+        unset($event);
+    }
+
+    private function confidenceRank(string $confidence): int
+    {
+        return match ($confidence) {
+            'high' => 3,
+            'medium' => 2,
+            default => 1,
+        };
     }
 
     /**

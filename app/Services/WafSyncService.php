@@ -625,6 +625,17 @@ class WafSyncService
             'baseline_min_occurrences' => (int) ($addons['edr_baseline_min_occurrences'] ?? 5),
             'default_stage' => (string) ($addons['edr_default_rule_stage'] ?? 'alert'),
             'rule_stages' => is_array($addons['edr_rule_stages'] ?? null) ? $addons['edr_rule_stages'] : [],
+
+            // File integrity monitoring. Off by default: inotify places a
+            // watch per directory, so switching it on without a considered
+            // path list is a way to spend kernel memory and drown the alert
+            // stream at the same time.
+            'file_events' => (bool) ($addons['edr_file_events'] ?? false),
+            // Site-specific watch categories, above all the web roots — the
+            // one place we cannot guess, and the place the highest-value file
+            // detection lives.
+            'file_paths' => is_array($addons['edr_file_paths'] ?? null) ? $addons['edr_file_paths'] : [],
+            'file_excludes' => is_array($addons['edr_file_excludes'] ?? null) ? $addons['edr_file_excludes'] : [],
         ];
     }
 

@@ -103,10 +103,38 @@ class EdrRuleEngine
      *
      * @return array<int, array{rule:string,name:string,severity:string,mitre:string,reason:string}>
      */
+    /** Extensions a web server will execute if they land in a served directory. */
+    private const SERVER_EXECUTABLE_EXTENSIONS = [
+        'php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'phar',
+        'jsp', 'jspx', 'asp', 'aspx', 'ashx', 'cfm', 'cgi', 'pl', 'py', 'rb',
+    ];
+
+    /**
+     * Files whose modification changes who can get in or what runs at boot.
+     * A legitimate change here is rare and always worth seeing.
+     */
+    private const CRITICAL_FILES = [
+        '/etc/passwd', '/etc/shadow', '/etc/group', '/etc/sudoers',
+        '/etc/ld.so.preload', '/etc/rc.local', '/etc/crontab',
+    ];
+
+    private const CRITICAL_PREFIXES = [
+        '/etc/sudoers.d/', '/etc/ssh/', '/root/.ssh/', '/etc/cron.d/',
+        '/etc/cron.hourly/', '/etc/cron.daily/', '/var/spool/cron/',
+        '/etc/systemd/system/', '/etc/profile.d/',
+    ];
+
     public function evaluate(array $event): array
     {
         if ($this->isExcluded($event)) {
             return [];
+        }
+
+        // File events carry a different shape and a different set of
+        // questions, so they get their own pass rather than being forced
+        // through rules written against command lines.
+        if (str_starts_with((string) ($event['action'] ?? ''), 'file_')) {
+            return $this->evaluateFileEvent($event);
         }
 
         $findings = [];
@@ -273,6 +301,144 @@ class EdrRuleEngine
     }
 
     /**
+     * Rules for file integrity events.
+     *
+     * These carry no command line, so nothing here may assume one. What they
+     * do have is a path, an action, sometimes a uid, and — where inference
+     * managed it — an attributed process with a stated confidence.
+     *
+     * @return array<int, array>
+     */
+    private function evaluateFileEvent(array $event): array
+    {
+        $findings = [];
+
+        $path = (string) ($event['path'] ?? '');
+        $action = (string) ($event['action'] ?? '');
+        $extension = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
+        $attribution = is_array($event['attribution'] ?? null) ? $event['attribution'] : null;
+        $actorUser = (string) ($attribution['username'] ?? $event['username'] ?? '');
+
+        /* FIM-001 — a server-executable file appears in a served directory ---
+         * The single most valuable file signal for a WAF product: it is what
+         * a request that got past the WAF looks like once it has landed. The
+         * category comes from the Hub's watch list, so this only fires on
+         * directories the customer told us are web roots. */
+        if (in_array($action, ['file_create', 'file_write'], true)
+            && in_array($extension, self::SERVER_EXECUTABLE_EXTENSIONS, true)
+            && $this->isWebCategory($event)
+        ) {
+            $byWeb = in_array($actorUser, self::WEB_ACCOUNTS, true);
+
+            $findings[] = $this->finding(
+                'FIM-001',
+                $byWeb ? 'Web account wrote an executable script into a web root' : 'Executable script written into a web root',
+                $byWeb ? 'critical' : 'high',
+                'T1505.003',
+                $byWeb
+                    ? "Web account '{$actorUser}' created {$path} — this is what a webshell landing looks like"
+                    : "Executable script {$path} appeared in a served directory"
+            );
+        }
+
+        /* FIM-002 — account, privilege or boot state changed ---------------- */
+        if (in_array($action, ['file_create', 'file_write', 'file_delete'], true) && $this->isCriticalPath($path)) {
+            $findings[] = $this->finding(
+                'FIM-002',
+                'Critical system file modified',
+                'high',
+                'T1098',
+                "{$path} was modified — this file governs who can log in or what runs at boot"
+            );
+        }
+
+        /* FIM-003 — a script or binary was dropped somewhere world-writable
+         * A file appearing in /tmp is unremarkable; a file appearing there
+         * that a web account wrote is not. */
+        if ($action === 'file_create'
+            && preg_match('#^/(tmp|var/tmp|dev/shm|run/shm)/#', $path)
+            && in_array($actorUser, self::WEB_ACCOUNTS, true)
+        ) {
+            $findings[] = $this->finding(
+                'FIM-003',
+                'Web account staged a file in a world-writable directory',
+                'high',
+                'T1105',
+                "Web account '{$actorUser}' created {$path}"
+            );
+        }
+
+        /* FIM-004 — an SSH authorised key was added --------------------------
+         * Separate from FIM-002 because this one is durable remote access
+         * rather than a configuration change, and it survives a password
+         * reset. */
+        if (in_array($action, ['file_create', 'file_write'], true)
+            && str_contains($path, '.ssh/authorized_keys')
+        ) {
+            $findings[] = $this->finding(
+                'FIM-004',
+                'SSH authorised keys modified',
+                'critical',
+                'T1098.004',
+                "{$path} changed — this grants durable remote access that survives a password reset"
+            );
+        }
+
+        /* FIM-005 — a monitored file was deleted ----------------------------
+         * Deleting a watched file is how you remove evidence or disable a
+         * control, and it is not something routine maintenance does to the
+         * paths on this list. */
+        if ($action === 'file_delete' && $this->isCriticalPath($path)) {
+            $findings[] = $this->finding(
+                'FIM-005',
+                'Monitored system file deleted',
+                'high',
+                'T1070.004',
+                "{$path} was deleted"
+            );
+        }
+
+        return $findings;
+    }
+
+    /**
+     * Whether this event came from a watch category the Hub designated as a
+     * web root. Keyed on the category rather than guessing at path shapes:
+     * web roots live wherever the customer put them.
+     */
+    private function isWebCategory(array $event): bool
+    {
+        $category = strtolower((string) ($event['file']['category'] ?? ''));
+
+        if ($category === '') {
+            return false;
+        }
+
+        foreach (['web', 'www', 'htdocs', 'public', 'site'] as $marker) {
+            if (str_contains($category, $marker)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isCriticalPath(string $path): bool
+    {
+        if (in_array($path, self::CRITICAL_FILES, true)) {
+            return true;
+        }
+
+        foreach (self::CRITICAL_PREFIXES as $prefix) {
+            if (str_starts_with($path, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Batch post-pass for rules that need cross-event context.
      *
      * EDR-012: a burst of discovery commands under one parent is the shape of
@@ -323,7 +489,87 @@ class EdrRuleEngine
             ];
         }
 
+        foreach ($this->evaluateMassFileChange($events) as $result) {
+            $results[] = $result;
+        }
+
         return $results;
+    }
+
+    /**
+     * FIM-006 — mass file modification, the shape of ransomware.
+     *
+     * No single file write looks like encryption. What distinguishes it is
+     * volume and spread: many files, across several directories, rewritten
+     * inside a short window. This is the one detection that has to fire while
+     * there is still something left to save, which is why it is a rate rule
+     * rather than a content rule — waiting to recognise a ransom note means
+     * waiting until it is over.
+     *
+     * @param  array<int, array> $events
+     * @return array<int, array>
+     */
+    private function evaluateMassFileChange(
+        array $events,
+        int $fileThreshold = 40,
+        int $directoryThreshold = 3,
+        int $windowSeconds = 60
+    ): array {
+        $writes = [];
+
+        foreach ($events as $event) {
+            if (!in_array($event['action'] ?? '', ['file_write', 'file_create'], true)) {
+                continue;
+            }
+
+            $path = (string) ($event['path'] ?? '');
+            if ($path === '') {
+                continue;
+            }
+
+            $writes[] = [
+                'ts' => (int) ($event['ts'] ?? 0),
+                'dir' => dirname($path),
+                'path' => $path,
+                'event' => $event,
+            ];
+        }
+
+        if (count($writes) < $fileThreshold) {
+            return [];
+        }
+
+        usort($writes, static fn (array $a, array $b): int => $a['ts'] <=> $b['ts']);
+
+        $first = $writes[0]['ts'];
+        $last = $writes[count($writes) - 1]['ts'];
+
+        if (($last - $first) > $windowSeconds) {
+            return [];
+        }
+
+        $directories = array_unique(array_column($writes, 'dir'));
+
+        // Spread is what separates encryption from an ordinary bulk job: a
+        // build or a package install rewrites many files inside one tree.
+        if (count($directories) < $directoryThreshold) {
+            return [];
+        }
+
+        $count = count($writes);
+        $dirCount = count($directories);
+
+        return [[
+            'event' => $writes[0]['event'],
+            'findings' => [$this->finding(
+                'FIM-006',
+                'Mass file modification',
+                'critical',
+                'T1486',
+                "{$count} files rewritten across {$dirCount} directories within {$windowSeconds}s — "
+                . 'consistent with ransomware encryption in progress'
+            )],
+        ]];
     }
 
     /**

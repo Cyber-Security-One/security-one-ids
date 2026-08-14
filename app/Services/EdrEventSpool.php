@@ -523,6 +523,38 @@ class EdrEventSpool
         }
     }
 
+    /**
+     * Process executions around a moment in time.
+     *
+     * File attribution needs this because inotify carries no pid and the
+     * process that did the writing has almost always been flushed in an
+     * earlier batch — file events and process events are separate scheduled
+     * queries with independent timing, so looking only at the current batch
+     * finds the culprit roughly never.
+     *
+     * @return array<int, array>
+     */
+    public function execsAround(int $timestamp, int $windowSeconds = 5, int $limit = 200): array
+    {
+        try {
+            $stmt = $this->pdo()->prepare(
+                "SELECT * FROM events
+                 WHERE action = 'exec' AND ts BETWEEN :from AND :to
+                 ORDER BY ts DESC LIMIT :limit"
+            );
+            $stmt->bindValue(':from', $timestamp - $windowSeconds, PDO::PARAM_INT);
+            $stmt->bindValue(':to', $timestamp + $windowSeconds, PDO::PARAM_INT);
+            $stmt->bindValue(':limit', max(1, $limit), PDO::PARAM_INT);
+            $stmt->execute();
+
+            return $this->decodeRows($stmt->fetchAll());
+        } catch (PDOException $e) {
+            Log::debug('[EDR spool] execsAround failed: ' . $e->getMessage());
+
+            return [];
+        }
+    }
+
     /* ------------------------------------------------------------------ */
     /* Retention                                                           */
     /* ------------------------------------------------------------------ */

@@ -130,9 +130,14 @@ class ProcessResponderTest extends TestCase
         // has collected it yet is not something the response layer controls.
         $this->assertFalse($this->responder->isAlive($pid), 'the process must no longer be running');
 
+        // A second attempt must refuse. Which refusal depends on how busy the
+        // host is: the number may already have been handed to something else,
+        // in which case the reuse check fires first. Both mean the target is
+        // gone, and both are the safe answer — asserting one of them makes
+        // the test fail on a loaded machine for no reason.
         $again = $this->responder->kill($pid, $info['start_time']);
         $this->assertFalse($again['success']);
-        $this->assertSame('process_gone', $again['error']);
+        $this->assertContains($again['error'], ['process_gone', 'pid_reused']);
     }
 
     public function test_never_acts_on_critical_system_processes(): void

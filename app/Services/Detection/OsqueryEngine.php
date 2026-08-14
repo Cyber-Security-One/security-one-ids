@@ -31,6 +31,56 @@ class OsqueryEngine
     /** Minimum kernel version for the eBPF publisher. */
     private const MIN_BPF_KERNEL = '5.8';
 
+    /**
+     * Default file-integrity watch list.
+     *
+     * Deliberately narrow. inotify places a watch per directory, and a
+     * recursive watch on somewhere like /tmp or /var on a busy host costs
+     * both kernel memory and a flood of events that buries anything real.
+     * These are the paths where a change is nearly always worth a look:
+     * account and privilege state, the ways a machine starts things, and the
+     * places persistence is installed.
+     *
+     * Web roots are absent on purpose — they are site-specific and come from
+     * the Hub, because guessing wrong means either no coverage or watching a
+     * directory with a hundred thousand files in it.
+     */
+    private const DEFAULT_FILE_PATHS = [
+        'accounts' => [
+            '/etc/passwd',
+            '/etc/shadow',
+            '/etc/group',
+            '/etc/sudoers',
+            '/etc/sudoers.d/%%',
+        ],
+        'ssh' => [
+            '/etc/ssh/%%',
+            '/root/.ssh/%%',
+        ],
+        'scheduling' => [
+            '/etc/crontab',
+            '/etc/cron.d/%%',
+            '/etc/cron.hourly/%%',
+            '/etc/cron.daily/%%',
+            '/var/spool/cron/%%',
+        ],
+        'startup' => [
+            '/etc/systemd/system/%%',
+            '/etc/rc.local',
+            '/etc/profile.d/%%',
+            '/etc/ld.so.preload',
+        ],
+    ];
+
+    /**
+     * Noise that would otherwise dominate the stream. Each of these is a file
+     * the system rewrites constantly for reasons that are never an intrusion.
+     */
+    private const DEFAULT_FILE_EXCLUDES = [
+        '/etc/ssh/ssh_host_%%',
+        '/var/spool/cron/atjobs/%%',
+    ];
+
     private string $binaryPath;
     private string $baseDir;
     private string $configPath;
@@ -269,6 +319,49 @@ class OsqueryEngine
             ];
         }
 
+        // File integrity monitoring rides the same daemon. The inotify
+        // publisher is independent of the process backend, so it works
+        // alongside eBPF and — unlike the audit-based file table — never
+        // contends with a customer's own auditd.
+        //
+        // The trade is that inotify carries no pid: it can say what changed
+        // and produce a hash, but not who did it. Attribution is inferred
+        // downstream by correlating with process events, and is marked as
+        // inferred rather than presented as fact.
+        $wantFiles = (bool) ($options['file_events'] ?? false);
+        $filePaths = [];
+        $fileExcludes = [];
+
+        if ($wantFiles) {
+            $filePaths = self::DEFAULT_FILE_PATHS;
+
+            // Hub-supplied categories, typically the site's web roots.
+            foreach ((array) ($options['file_paths'] ?? []) as $category => $paths) {
+                if (!is_string($category) || !is_array($paths)) {
+                    continue;
+                }
+
+                $filePaths[preg_replace('/[^a-z0-9_]/i', '_', $category)] = array_values(
+                    array_filter($paths, static fn ($p): bool => is_string($p) && $p !== '')
+                );
+            }
+
+            $fileExcludes = array_merge(
+                self::DEFAULT_FILE_EXCLUDES,
+                array_values(array_filter(
+                    (array) ($options['file_excludes'] ?? []),
+                    static fn ($p): bool => is_string($p) && $p !== ''
+                ))
+            );
+
+            $schedule['file_changes'] = [
+                'query' => 'SELECT * FROM file_events;',
+                'interval' => $interval,
+                'removed' => false,
+                'description' => 'File integrity events (EDR)',
+            ];
+        }
+
         $config = [
             'options' => [
                 'disable_events' => false,
@@ -303,9 +396,22 @@ class OsqueryEngine
                 // itself rather than degrading the customer's host.
                 'watchdog_memory_limit' => max(64, (int) ($options['memory_limit_mb'] ?? 200)),
                 'watchdog_utilization_limit' => max(5, (int) ($options['cpu_limit'] ?? 20)),
+                'enable_file_events' => $wantFiles,
+                // Hashing is what lets a change be compared against a known
+                // baseline rather than merely noticed. It costs a read of
+                // every changed file, which is why the watch list is narrow.
+                'enable_hashing' => $wantFiles,
             ],
             'schedule' => $schedule,
         ];
+
+        if ($wantFiles) {
+            $config['file_paths'] = $filePaths;
+
+            if ($fileExcludes !== []) {
+                $config['exclude_paths'] = ['exclusions' => $fileExcludes];
+            }
+        }
 
         $json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         if ($json === false) {
