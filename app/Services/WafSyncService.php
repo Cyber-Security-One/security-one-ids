@@ -445,6 +445,7 @@ class WafSyncService
         }
 
         $this->collectEdrAlerts($addons);
+        $this->pruneEdrSpool($addons);
     }
 
     /**
@@ -545,7 +546,35 @@ class WafSyncService
             'web_account_allowlist' => is_array($addons['edr_web_account_allowlist'] ?? null)
                 ? $addons['edr_web_account_allowlist']
                 : [],
+            'spool_enabled' => (bool) ($addons['edr_spool_enabled'] ?? true),
+            'spool_retention_days' => (int) ($addons['edr_spool_retention_days'] ?? 7),
+            'spool_max_rows' => (int) ($addons['edr_spool_max_rows'] ?? 500000),
         ];
+    }
+
+    /**
+     * Trim the local event spool. Runs on the sync cadence rather than the
+     * 30-second collection cadence: pruning takes a write lock and there is
+     * no reason to fight the collector for it every half minute.
+     */
+    private function pruneEdrSpool(array $addons): void
+    {
+        try {
+            $options = $this->edrSensorOptions($addons);
+            if (!$options['spool_enabled']) {
+                return;
+            }
+
+            $spool = app(\App\Services\EdrEventSpool::class);
+            $result = $spool->prune($options['spool_retention_days'], $options['spool_max_rows']);
+
+            $deleted = ($result['deleted_by_age'] ?? 0) + ($result['deleted_by_count'] ?? 0);
+            if ($deleted > 0) {
+                Log::info('[EDR] Spool pruned', $result);
+            }
+        } catch (\Exception $e) {
+            Log::warning('[EDR] Spool prune failed: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -2889,6 +2918,7 @@ class WafSyncService
     {
         try {
             $engine = app(\App\Services\Detection\OsqueryEngine::class);
+            $spool = app(\App\Services\EdrEventSpool::class)->stats();
 
             return [
                 'supported' => $engine->isSupportedPlatform(),
@@ -2898,6 +2928,20 @@ class WafSyncService
                 'backend' => $engine->resolveBackend(),
                 'bpf_supported' => $engine->supportsBpf(),
                 'auditd_active' => $engine->auditdIsActive(),
+                // Spool depth is the early warning for delivery problems: a
+                // growing unsent count means the Hub is not accepting events.
+                'spool' => [
+                    'available' => $spool['available'],
+                    'total' => $spool['total'],
+                    // Only `pending` is a backlog. `local_only` is the
+                    // retro-hunt corpus and is supposed to be large.
+                    'pending' => $spool['pending'],
+                    'sent' => $spool['sent'],
+                    'local_only' => $spool['local_only'],
+                    'alerts' => $spool['alerts'],
+                    'size_bytes' => $spool['size_bytes'],
+                    'oldest_ts' => $spool['oldest_ts'],
+                ],
             ];
         } catch (\Exception $e) {
             Log::debug('[EDR] Status probe failed: ' . $e->getMessage());

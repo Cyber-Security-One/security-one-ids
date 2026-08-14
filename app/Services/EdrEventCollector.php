@@ -34,16 +34,18 @@ class EdrEventCollector
 
     private OsqueryEngine $engine;
     private EdrRuleEngine $rules;
+    private EdrEventSpool $spool;
 
     /** @var array<int, string> uid => username */
     private array $userCache = [];
 
     private ?string $hostIp = null;
 
-    public function __construct(OsqueryEngine $engine, EdrRuleEngine $rules)
+    public function __construct(OsqueryEngine $engine, EdrRuleEngine $rules, EdrEventSpool $spool)
     {
         $this->engine = $engine;
         $this->rules = $rules;
+        $this->spool = $spool;
     }
 
     /**
@@ -58,6 +60,7 @@ class EdrEventCollector
             'stats' => [
                 'events' => 0,
                 'alerts' => 0,
+                'spooled' => 0,
                 'by_rule' => [],
                 'backend' => $this->engine->resolveBackend(),
             ],
@@ -85,6 +88,7 @@ class EdrEventCollector
         $events = [];
         $alerts = [];
         $byRule = [];
+        $findingsByEvent = [];
 
         foreach ($lines as $line) {
             $event = $this->normalize($line);
@@ -93,11 +97,14 @@ class EdrEventCollector
             }
 
             $events[] = $event;
+            $eventIndex = count($events) - 1;
 
             $findings = $this->rules->evaluate($event);
             if ($findings === []) {
                 continue;
             }
+
+            $findingsByEvent[$eventIndex] = $findings;
 
             foreach ($findings as $finding) {
                 $byRule[$finding['rule']] = ($byRule[$finding['rule']] ?? 0) + 1;
@@ -123,6 +130,14 @@ class EdrEventCollector
 
         arsort($byRule);
 
+        // Persist the whole batch, not just the alerting slice. Retro-hunting
+        // only over past alerts is pointless — you already have those. The
+        // value is being able to answer "did this binary ever run here" when
+        // the intel arrives a week later.
+        $spooled = $options['spool_enabled'] ?? true
+            ? $this->spool->store($events, $findingsByEvent)
+            : 0;
+
         $shaped = array_map(
             fn (array $hit): array => $this->buildAlert($hit['event'], $hit['findings']),
             $alerts
@@ -133,6 +148,7 @@ class EdrEventCollector
             'stats' => [
                 'events' => count($events),
                 'alerts' => count($alerts),
+                'spooled' => $spooled,
                 'by_rule' => $byRule,
                 'backend' => $this->engine->resolveBackend(),
             ],

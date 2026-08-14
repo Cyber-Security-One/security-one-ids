@@ -79,6 +79,30 @@ class SyncEdr extends Command
             $this->line(sprintf('  %-20s %s', $key, $rendered));
         }
 
+        $spool = app(\App\Services\EdrEventSpool::class)->stats();
+
+        $this->newLine();
+        $this->info('Event Spool');
+        $this->line(str_repeat('=', 46));
+        $this->line(sprintf('  %-20s %s', 'available', $spool['available'] ? 'yes' : 'no'));
+        $this->line(sprintf('  %-20s %s', 'path', $spool['path']));
+        $this->line(sprintf('  %-20s %d', 'schema_version', $spool['schema_version']));
+        $this->line(sprintf('  %-20s %d', 'total_events', $spool['total']));
+        $this->line(sprintf('  %-20s %d', 'pending_upload', $spool['pending']));
+        $this->line(sprintf('  %-20s %d', 'sent', $spool['sent']));
+        $this->line(sprintf('  %-20s %d  (retro-hunt only)', 'local_only', $spool['local_only']));
+        $this->line(sprintf('  %-20s %d', 'with_alerts', $spool['alerts']));
+        $this->line(sprintf('  %-20s %s', 'size', $this->humanBytes($spool['size_bytes'])));
+        $this->line(sprintf(
+            '  %-20s %s',
+            'oldest_event',
+            $spool['oldest_ts'] ? date('Y-m-d H:i:s', $spool['oldest_ts']) : '-'
+        ));
+
+        if ($spool['pending'] > 1000) {
+            $this->warn('  → Large upload backlog: the Hub is probably rejecting or unreachable.');
+        }
+
         if (!$status['supported']) {
             $this->warn('  → This platform is not supported yet (Linux only).');
         } elseif (!$status['installed']) {
@@ -90,6 +114,19 @@ class SyncEdr extends Command
         }
 
         return 0;
+    }
+
+    private function humanBytes(int $bytes): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB'];
+        $i = 0;
+
+        while ($bytes >= 1024 && $i < count($units) - 1) {
+            $bytes /= 1024;
+            $i++;
+        }
+
+        return round($bytes, 1) . ' ' . $units[$i];
     }
 
     /**
