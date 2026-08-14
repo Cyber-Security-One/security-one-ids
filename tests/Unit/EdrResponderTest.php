@@ -439,6 +439,78 @@ class EdrResponderTest extends TestCase
     }
 
     /**
+     * No refusal path may be silent.
+     *
+     * Five of the seven reasons had no log line, no ledger row and nothing sent
+     * to the Hub: malformed_command, unknown_action_type, missing_issued_at,
+     * command_from_the_future and confirmation_required. Only capability and
+     * staleness announced themselves.
+     *
+     * The damage is at the console rather than here. An absence of refusal
+     * records reads as "nothing was refused", when it may equally mean the
+     * command never arrived or the agent is not running — two very different
+     * situations that were indistinguishable from the Hub.
+     *
+     * Asserted over every reason at once, because the fix was to move the
+     * logging into `outcome()` rather than add it at five call sites. Five
+     * places each having to remember is the failure mode this subsystem keeps
+     * producing; this test fails if a future refusal path is added without one.
+     */
+    public function test_every_refusal_reason_leaves_a_trace(): void
+    {
+        $target = ['pid' => 999999, 'start_time' => 1];
+
+        $cases = [
+            'malformed_command' => ['id' => '', 'type' => ''],
+            'unknown_action_type' => ['id' => 'r1', 'type' => 'nonsense'],
+            'missing_issued_at' => ['id' => 'r2', 'type' => 'suspend_process', 'target' => $target],
+            'command_from_the_future' => [
+                'id' => 'r3', 'type' => 'suspend_process', 'target' => $target,
+                'issued_at' => time() + 99999,
+            ],
+            'confirmation_required' => [
+                'id' => 'r4', 'type' => 'kill_process', 'target' => $target,
+                'issued_at' => time(),
+            ],
+            'command_stale' => [
+                'id' => 'r5', 'type' => 'suspend_process', 'target' => $target,
+                'issued_at' => time() - 99999,
+            ],
+        ];
+
+        foreach ($cases as $expected => $command) {
+            $logged = [];
+
+            \Illuminate\Support\Facades\Log::listen(function ($event) use (&$logged): void {
+                if (str_contains($event->message, 'Command refused')) {
+                    $logged[] = $event->context['reason'] ?? null;
+                }
+            });
+
+            $summary = $this->responder()->processCommands([$command], self::ALL_CAPABILITIES);
+
+            $this->assertSame($expected, $summary['outcomes'][0]['reason']);
+            $this->assertContains($expected, $logged, "{$expected} must not refuse silently");
+        }
+
+        // And the capability refusal, which needs the grant withheld.
+        $logged = [];
+
+        \Illuminate\Support\Facades\Log::listen(function ($event) use (&$logged): void {
+            if (str_contains($event->message, 'Command refused')) {
+                $logged[] = $event->context['reason'] ?? null;
+            }
+        });
+
+        $summary = $this->responder()->processCommands([
+            $this->command(['id' => 'r6', 'type' => 'suspend_process', 'target' => $target]),
+        ], ['max_command_age' => 900]);
+
+        $this->assertSame('capability_not_granted', $summary['outcomes'][0]['reason']);
+        $this->assertContains('capability_not_granted', $logged);
+    }
+
+    /**
      * Gate zero: is it really the Hub asking?
      *
      * The other four gates ask whether the Hub is allowed to do this. None of

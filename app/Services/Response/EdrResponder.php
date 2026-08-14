@@ -212,26 +212,19 @@ class EdrResponder
             $provenance = $this->commandChannelProvenance();
 
             if (!$provenance['trusted']) {
-                Log::error('[EDR response] Command refused, command channel is writable by non-root accounts', [
-                    'type' => $type,
-                    'action_id' => $actionId,
+                return $this->outcome($actionId, $type, 'refused', 'untrusted_command_channel', [
                     'problem' => $provenance['problem'],
                     'path' => $provenance['path'],
                 ]);
-
-                return $this->outcome($actionId, $type, 'refused', 'untrusted_command_channel');
             }
         }
 
         // Gate 1 — capability.
         $capability = self::CAPABILITY_MAP[$type];
         if (empty($options[$capability])) {
-            Log::warning('[EDR response] Command refused, capability not granted', [
-                'type' => $type,
+            return $this->outcome($actionId, $type, 'refused', 'capability_not_granted', [
                 'capability' => $capability,
             ]);
-
-            return $this->outcome($actionId, $type, 'refused', 'capability_not_granted');
         }
 
         // Gate 2 — freshness. An old config blob replayed by a rollback, a
@@ -250,13 +243,10 @@ class EdrResponder
         $age = time() - $issuedAt;
 
         if ($age > $maxAge) {
-            Log::warning('[EDR response] Command refused as stale', [
-                'type' => $type,
+            return $this->outcome($actionId, $type, 'refused', 'command_stale', [
                 'age_seconds' => $age,
                 'max_age' => $maxAge,
             ]);
-
-            return $this->outcome($actionId, $type, 'refused', 'command_stale');
         }
 
         // A command from the future is a clock problem, not an instruction.
@@ -1020,8 +1010,43 @@ class EdrResponder
         ];
     }
 
-    private function outcome(?string $actionId, ?string $type, string $status, ?string $reason): array
-    {
+    /**
+     * Build an outcome, and make sure a refusal leaves a trace.
+     *
+     * The logging lives here rather than at each `return` because five of the
+     * seven refusal reasons had none: `malformed_command`,
+     * `unknown_action_type`, `missing_issued_at`, `command_from_the_future` and
+     * `confirmation_required` all returned in silence, with no log line, no
+     * ledger row, and nothing sent to the Hub. Only capability and staleness
+     * announced themselves.
+     *
+     * The consequence is at the Hub, not here: an absence of refusal records
+     * reads as "nothing was refused" when it may equally mean the agent never
+     * received the command, or is not running at all. Two very different
+     * situations, indistinguishable from the console.
+     *
+     * Doing it per call site would have meant five places each having to
+     * remember, which is the failure mode this whole subsystem keeps producing.
+     * Here it is structural: any future refusal path is logged whether its
+     * author thought about it or not.
+     *
+     * @param array<string, mixed> $context extra detail for the log line
+     */
+    private function outcome(
+        ?string $actionId,
+        ?string $type,
+        string $status,
+        ?string $reason,
+        array $context = []
+    ): array {
+        if ($status === 'refused') {
+            Log::warning('[EDR response] Command refused', array_merge([
+                'action_id' => $actionId,
+                'type' => $type,
+                'reason' => $reason,
+            ], $context));
+        }
+
         return ['action_id' => $actionId, 'type' => $type, 'status' => $status, 'reason' => $reason];
     }
 }
