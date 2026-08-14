@@ -30,16 +30,33 @@ which is how far back the event spool actually reaches.
 Needs the Command Line Tools (`xcode-select --install`) and nothing else — no
 Xcode project, no package manager, one Swift file against AppKit.
 
+First make sure the checkout has this directory in it. The installer leaves the
+agent on a shallow, non-tracking branch, so plain `git pull` reports divergent
+branches and fetches nothing:
+
+```bash
+cd /opt/security-one-ids
+sudo git fetch --depth 1 origin feat/edr-endpoint-sensor
+sudo git checkout -B feat/edr-endpoint-sensor FETCH_HEAD
+```
+
+Then build **as yourself, not with sudo**:
+
 ```bash
 cd /opt/security-one-ids/macos/SecurityOneMenuBar
 ./build.sh install
 ```
 
-That compiles it, wraps it in `SecurityOne.app`, copies it to `/Applications`
-and launches it. `./build.sh` on its own builds into `./build/` without
-installing. The bundle is ad-hoc signed, which is what lets it run on Apple
-Silicon at all; it is not a distribution signature, so the first launch may
-still need an approval in **System Settings → Privacy & Security**.
+The agent directory is root-owned, so sudo is the natural reflex here and it is
+the wrong one: a menu bar app launched by root belongs to root's GUI session,
+so it would build, install, report success, and never appear. The script
+refuses to run as root, builds into `~/Library/Caches/`, and asks for a
+password only if `/Applications` actually needs one.
+
+`./build.sh` without `install` builds the bundle without installing it. The
+bundle is ad-hoc signed, which is what lets it run on Apple Silicon at all; it
+is not a distribution signature, so the first launch may still need an approval
+in **System Settings → Privacy & Security**.
 
 To start it at login: **System Settings → General → Login Items → +**, and pick
 `/Applications/SecurityOne.app`.
