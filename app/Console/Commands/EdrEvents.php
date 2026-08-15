@@ -85,12 +85,24 @@ class EdrEvents extends Command
             ];
         }
 
+        // What the spool holds, against what this call returned. A console
+        // that draws 240 points out of 400,000 and says nothing about the
+        // difference is lying by omission about the size of the haystack.
+        $held = null;
+
+        try {
+            $held = (int) ($spool->stats()['total'] ?? 0);
+        } catch (\Throwable $e) {
+            // Reported by the status snapshot; not worth failing this for.
+        }
+
         $timestamps = array_column($events, 'ts');
 
         $payload = [
             'available' => true,
             'generated_at' => date('c'),
             'returned' => count($events),
+            'held' => $held,
             'limit' => $limit,
             'window' => [
                 'from' => $timestamps === [] ? null : date('c', min($timestamps)),
