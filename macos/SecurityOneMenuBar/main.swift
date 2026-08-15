@@ -64,6 +64,15 @@ struct Snapshot {
     /// Set when the snapshot could not be produced at all.
     var failure: String?
 
+    /// The snapshot exactly as the agent sent it.
+    ///
+    /// The menu needs five lines, and the parsed fields above are those five
+    /// lines. The detail window needs everything else — spool counters,
+    /// warm-up arithmetic, definition dates, the fields that are null on
+    /// purpose — and modelling each one a second time would be a second place
+    /// to forget to update. It renders from this.
+    var raw: [String: Any] = [:]
+
     struct Row {
         let title: String
         let detail: String
@@ -245,6 +254,7 @@ enum AgentReader {
 
     static func parse(_ json: [String: Any]) -> Snapshot {
         var s = Snapshot()
+        s.raw = json
 
         if let host = json["host"] as? [String: Any] {
             s.hostName = host["name"] as? String ?? "—"
@@ -354,6 +364,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var snapshot = Snapshot()
     private var timer: Timer?
     private var refreshing = false
+    private var details: DetailWindow?
 
     /// Print what happened and exit, instead of running.
     var diagnose = false
@@ -475,6 +486,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.refreshing = false
                 self?.snapshot = next
                 self?.render()
+                self?.details?.update(next)
             }
         }
     }
@@ -576,6 +588,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(dim(age < 60 ? "Updated just now" : "Updated \(age / 60) min ago"))
         }
 
+        menu.addItem(action("Agent details…", #selector(showDetails)))
         menu.addItem(action("Open full report", #selector(openReport)))
         menu.addItem(action("Refresh now", #selector(refreshNow)))
         menu.addItem(.separator())
@@ -643,6 +656,21 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: actions
 
+    @objc private func showDetails() {
+        if details == nil {
+            details = DetailWindow(
+                onRefresh: { [weak self] in self?.refresh() },
+                onOpenReport: { [weak self] in self?.openReport() }
+            )
+        }
+
+        details?.present(snapshot)
+
+        // What is on screen may be five minutes old, which is fine for a dot
+        // and not fine for a window somebody opened in order to read numbers.
+        refresh()
+    }
+
     @objc private func refreshNow() {
         refresh()
     }
@@ -665,6 +693,781 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
+    }
+}
+
+
+// MARK: - Detail window
+
+/// A clip view that starts at the top.
+///
+/// AppKit's origin is bottom-left, so an unflipped scroll view lays a short
+/// document against the bottom edge and grows it upward. For a column of cards
+/// that reads as a rendering bug.
+private final class TopAnchoredClipView: NSClipView {
+    override var isFlipped: Bool { true }
+}
+
+/// A rounded panel that takes its height from what is inside it.
+///
+/// NSBox looks like the obvious choice and is not: its content view does not
+/// drive the box's own height, so a column of them collapses to nothing and
+/// every card draws on top of the last. Pinning the content to all four edges
+/// makes the size follow the content, which is the only arrangement that
+/// survives a card whose contents change with the snapshot.
+private final class CardView: NSView {
+    var fill: NSColor = .controlBackgroundColor
+    var stroke: NSColor = .separatorColor
+    var radius: CGFloat = 10
+
+    init(content: NSView, inset: CGFloat = 14) {
+        super.init(frame: .zero)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: topAnchor, constant: inset),
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    // Drawn rather than layer-backed so the colours follow light and dark
+    // without a separate appearance observer.
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+            xRadius: radius,
+            yRadius: radius
+        )
+        fill.setFill()
+        path.fill()
+        stroke.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
+/// A ring, for a number that is a fraction of something.
+///
+/// The correlator's warm-up is the one figure here that is a proportion rather
+/// than a count, and it is also the one most often misread as a fault. Drawing
+/// it as a ring that fills says "partway through" in a way that "0%" beside a
+/// red dot does not.
+private final class RingView: NSView {
+    var fraction: Double = 0 { didSet { needsDisplay = true } }
+    var color: NSColor = .systemTeal { didSet { needsDisplay = true } }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 76, height: 76) }
+    override var wantsUpdateLayer: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 6, dy: 6)
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+
+        let track = NSBezierPath()
+        track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
+        track.lineWidth = 7
+        NSColor.separatorColor.setStroke()
+        track.stroke()
+
+        guard fraction > 0 else { return }
+
+        let swept = 360 * CGFloat(max(0, min(1, fraction)))
+        let arc = NSBezierPath()
+        arc.appendArc(
+            withCenter: center,
+            radius: radius,
+            startAngle: 90,
+            endAngle: 90 - swept,
+            clockwise: true
+        )
+        arc.lineWidth = 7
+        arc.lineCapStyle = .round
+        color.setStroke()
+        arc.stroke()
+    }
+}
+
+/// The snapshot in full, laid out.
+///
+/// The menu answers "is anything wrong". This answers "what exactly does this
+/// agent know about itself", which is a different question and a poor fit for
+/// a menu: a menu cannot hold a table, it closes when the pointer leaves it,
+/// and most of what `ids:status` returns has nowhere to go in it.
+///
+/// It decides nothing on its own. Every state, threshold and remedy is the
+/// agent's, for the reason given at the top of this file — and a field the
+/// agent could not measure renders as a dash rather than as zero, because
+/// "unknown" and "none" are different claims and only one of them is reason
+/// to relax.
+final class DetailWindow: NSObject, NSWindowDelegate {
+    private var window: NSWindow?
+    private let column = NSStackView()
+    private let footnote = NSTextField(labelWithString: "")
+    private let onRefresh: () -> Void
+    private let onOpenReport: () -> Void
+    private var snapshot = Snapshot()
+
+    init(onRefresh: @escaping () -> Void, onOpenReport: @escaping () -> Void) {
+        self.onRefresh = onRefresh
+        self.onOpenReport = onOpenReport
+        super.init()
+    }
+
+    var isOpen: Bool { window?.isVisible ?? false }
+
+    func present(_ snapshot: Snapshot) {
+        self.snapshot = snapshot
+
+        if window == nil {
+            build()
+            window?.center()
+        }
+
+        rebuild()
+
+        // An accessory app is not in the activation order, so a window it
+        // merely orders front arrives behind whatever the operator was using.
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func update(_ snapshot: Snapshot) {
+        self.snapshot = snapshot
+        guard isOpen else { return }
+        rebuild()
+    }
+
+    // MARK: window
+
+    private func build() {
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 760),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        w.title = "Security One Agent"
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.delegate = self
+        w.isReleasedWhenClosed = false
+        w.minSize = NSSize(width: 560, height: 420)
+        w.isMovableByWindowBackground = true
+
+        // Vibrancy rather than a flat fill: this window sits over whatever the
+        // operator was already looking at, and a console that reads as part of
+        // the system is less likely to be dismissed as a nag.
+        let backdrop = NSVisualEffectView()
+        backdrop.material = .underPageBackground
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .active
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+
+        column.orientation = .vertical
+        column.alignment = .width
+        column.spacing = 12
+        // Top inset clears the traffic lights, which now float over content.
+        column.edgeInsets = NSEdgeInsets(top: 38, left: 18, bottom: 18, right: 18)
+        column.translatesAutoresizingMaskIntoConstraints = false
+
+        let scroll = NSScrollView()
+        scroll.contentView = TopAnchoredClipView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.documentView = column
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        footnote.font = .systemFont(ofSize: 11)
+        footnote.textColor = .secondaryLabelColor
+
+        let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshTapped))
+        let report = NSButton(title: "Open full report", target: self, action: #selector(reportTapped))
+        for button in [refresh, report] { button.bezelStyle = .rounded }
+        refresh.keyEquivalent = "r"
+
+        let bar = NSStackView(views: [footnote, NSView(), report, refresh])
+        bar.orientation = .horizontal
+        bar.spacing = 8
+        bar.edgeInsets = NSEdgeInsets(top: 10, left: 18, bottom: 14, right: 18)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+
+        let rule = NSBox()
+        rule.boxType = .separator
+        rule.translatesAutoresizingMaskIntoConstraints = false
+
+        backdrop.addSubview(scroll)
+        backdrop.addSubview(rule)
+        backdrop.addSubview(bar)
+
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: backdrop.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: rule.topAnchor),
+
+            rule.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
+            rule.bottomAnchor.constraint(equalTo: bar.topAnchor),
+
+            bar.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
+            bar.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor),
+
+            column.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            column.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            column.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
+
+        w.contentView = backdrop
+        window = w
+    }
+
+    @objc private func refreshTapped() { onRefresh() }
+    @objc private func reportTapped() { onOpenReport() }
+
+    // MARK: content
+
+    private func rebuild() {
+        for view in column.arrangedSubviews { view.removeFromSuperview() }
+
+        guard snapshot.failure == nil else {
+            add(hero())
+            add(card(
+                title: "Agent unreachable",
+                health: .unknown,
+                state: nil,
+                body: paragraph(snapshot.failure ?? "")
+            ))
+            footnote.stringValue = "No snapshot"
+            return
+        }
+
+        add(hero())
+
+        if !snapshot.reasons.isEmpty {
+            add(card(
+                title: "Needs attention",
+                health: snapshot.overall,
+                state: nil,
+                body: stack(snapshot.reasons.map { reasonRow($0) })
+            ))
+        }
+
+        add(edrCard())
+        add(correlatorCard())
+        add(section("Suricata", "suricata", [
+            ("Installed", "installed", .flag),
+            ("Running", "running", .flag),
+            ("Version", "version", .text),
+            ("Mode", "mode", .text),
+            ("Rules loaded", "rules", .count),
+            ("Remedy", "action", .text),
+        ]))
+        add(section("ClamAV", "clamav", [
+            ("Installed", "installed", .flag),
+            ("Version", "version", .text),
+            ("Definitions", "definitions_date", .text),
+            ("Last scan", "last_scan", .text),
+            ("Remedy", "action", .text),
+        ]))
+        add(section("Hub", "hub", [
+            ("Configured", "configured", .flag),
+            ("URL", "url", .text),
+            ("Queued alerts", "queued_alerts", .count),
+            ("Consecutive failures", "consecutive_failures", .count),
+            ("Backoff until", "backoff_until", .text),
+            ("Detail", "detail", .text),
+        ]))
+
+        if let at = snapshot.generatedAt {
+            let age = Int(Date().timeIntervalSince(at))
+            footnote.stringValue = age < 60
+                ? "Snapshot taken just now"
+                : "Snapshot taken \(age / 60) min ago"
+        } else {
+            footnote.stringValue = ""
+        }
+    }
+
+    /// Added at the column's full width.
+    ///
+    /// Stack view alignment alone did not hold it: a card narrower than the
+    /// column kept its intrinsic width and was set against the trailing edge,
+    /// so the hero and the attention card floated right with a dead strip down
+    /// the left of the window. An explicit width leaves nothing to infer.
+    private func add(_ view: NSView) {
+        column.addArrangedSubview(view)
+        view.widthAnchor.constraint(
+            equalTo: column.widthAnchor,
+            constant: -(column.edgeInsets.left + column.edgeInsets.right)
+        ).isActive = true
+    }
+
+    /// The answer to "is this host all right", before any of the detail.
+    private func hero() -> NSView {
+        let state = NSTextField(labelWithString: snapshot.overall.rawValue.uppercased())
+        state.font = .systemFont(ofSize: 30, weight: .bold)
+        state.textColor = snapshot.overall.color
+
+        let name = NSTextField(labelWithString: snapshot.hostName)
+        name.font = .systemFont(ofSize: 15, weight: .semibold)
+
+        let system = NSTextField(labelWithString: [snapshot.hostOS, agentPath()]
+            .filter { !$0.isEmpty }
+            .joined(separator: "  ·  "))
+        system.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        system.textColor = .secondaryLabelColor
+        system.lineBreakMode = .byTruncatingMiddle
+
+        let text = NSStackView(views: [state, name, system])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+
+        let body = NSStackView(views: [text, NSView()])
+        body.orientation = .horizontal
+        body.alignment = .centerY
+
+        let whole = NSStackView(views: [body, chipRow(), privilegeNote()])
+        whole.orientation = .vertical
+        whole.alignment = .leading
+        whole.spacing = 12
+
+        let card = CardView(content: whole, inset: 16)
+        card.fill = snapshot.overall.color.withAlphaComponent(0.10)
+        card.stroke = snapshot.overall.color.withAlphaComponent(0.35)
+        card.radius = 12
+        return card
+    }
+
+    private func agentPath() -> String {
+        guard let host = snapshot.raw["host"] as? [String: Any] else { return "" }
+        return host["agent_path"] as? String ?? ""
+    }
+
+    /// Every subsystem at a glance, in the order the menu lists them.
+    private func chipRow() -> NSView {
+        let row = NSStackView(views: snapshot.rows.map { chip($0.title, $0.health) } + [NSView()])
+        row.orientation = .horizontal
+        row.spacing = 6
+        row.alignment = .centerY
+        return row
+    }
+
+    private func chip(_ title: String, _ health: Health) -> NSView {
+        let dot = NSTextField(labelWithString: health.symbol)
+        dot.font = .systemFont(ofSize: 9)
+        dot.textColor = health.color
+
+        let name = NSTextField(labelWithString: title)
+        name.font = .systemFont(ofSize: 11, weight: .medium)
+        name.textColor = .labelColor
+        name.lineBreakMode = .byTruncatingTail
+
+        let content = NSStackView(views: [dot, name])
+        content.orientation = .horizontal
+        content.spacing = 5
+
+        let card = CardView(content: content, inset: 7)
+        card.fill = health.color.withAlphaComponent(0.12)
+        card.stroke = health.color.withAlphaComponent(0.30)
+        card.radius = 7
+        return card
+    }
+
+    /// Unprivileged is not a fault, but it is why several fields below read
+    /// "unknown" — so it is stated rather than left to be inferred.
+    private func privilegeNote() -> NSView {
+        guard let host = snapshot.raw["host"] as? [String: Any],
+              let privileged = host["privileged"] as? Bool,
+              !privileged
+        else { return NSView() }
+
+        let note = NSTextField(labelWithString:
+            "Reading unprivileged — fields the agent could not determine show as “—”, not as zero.")
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        note.lineBreakMode = .byTruncatingTail
+        return note
+    }
+
+    private func edrCard() -> NSView {
+        let edr = snapshot.raw["edr"] as? [String: Any]
+        let body = NSStackView()
+        body.orientation = .vertical
+        body.alignment = .width
+        body.spacing = 10
+
+        body.addArrangedSubview(fields([
+            ("Backend", value(edr, "backend", .text)),
+            ("Installed", value(edr, "installed", .flag)),
+            ("Running", value(edr, "running", .flag)),
+            ("Version", value(edr, "version", .text)),
+            ("PID", value(edr, "pid", .count)),
+            ("Container visibility", value(edr, "container_visibility", .text)),
+            ("Event clock anchorable", value(edr, "event_clock_anchorable", .flag)),
+            ("Remedy", value(edr, "action", .text)),
+        ]))
+
+        if let spool = edr?["spool"] as? [String: Any] {
+            body.addArrangedSubview(divider())
+            body.addArrangedSubview(subheading("Event spool"))
+            body.addArrangedSubview(fields([
+                ("Total events", value(spool, "total_events", .count)),
+                ("Pending upload", value(spool, "pending_upload", .count)),
+                ("Sent", value(spool, "sent", .count)),
+                ("With alerts", value(spool, "with_alerts", .count)),
+                ("On disk", value(spool, "size_bytes", .bytes)),
+            ]))
+
+            body.addArrangedSubview(divider())
+            body.addArrangedSubview(subheading("History held"))
+            body.addArrangedSubview(retentionTable(spool["retention"] as? [String: Any]))
+        }
+
+        return card(
+            title: "Endpoint sensor",
+            health: Health(edr?["state"] as? String),
+            state: edr?["state"] as? String,
+            body: body
+        )
+    }
+
+    /// Per class, never averaged.
+    ///
+    /// The classes have separate ceilings, so a single figure across the spool
+    /// reports the long tail of a small class as though it were the window
+    /// everything has — reading as 67 hours of history on a host whose process
+    /// telemetry reaches back under two.
+    private func retentionTable(_ retention: [String: Any]?) -> NSView {
+        let grid = NSGridView(numberOfColumns: 3, rows: 0)
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 5
+        grid.columnSpacing = 18
+
+        grid.addRow(with: [
+            columnHeading("Class"), columnHeading("Events"), columnHeading("Reaches back"),
+        ])
+
+        for key in ["process", "network", "identity"] {
+            let window = retention?[key] as? [String: Any]
+            let events = AgentReader.int(window?["events"])
+            let hours = AgentReader.num(window?["hours"])
+
+            let span: Cell
+            if let hours = hours {
+                span = Cell(text: String(format: "%.1f h", hours), kind: .plain)
+            } else if events == 0 {
+                span = Cell(text: "no events yet", kind: .muted)
+            } else {
+                span = Cell(text: "unknown", kind: .absent)
+            }
+
+            grid.addRow(with: [
+                label(key, color: .labelColor),
+                cellView(events.map { Cell(text: AgentReader.format($0), kind: .plain) }
+                    ?? Cell(text: "—", kind: .absent)),
+                cellView(span),
+            ])
+        }
+
+        grid.column(at: 1).xPlacement = .trailing
+        return grid
+    }
+
+    private func correlatorCard() -> NSView {
+        let c = snapshot.raw["correlator"] as? [String: Any]
+        let health = Health(c?["state"] as? String)
+        let body = NSStackView()
+        body.orientation = .vertical
+        body.alignment = .width
+        body.spacing = 10
+
+        body.addArrangedSubview(fields([
+            ("Enabled", value(c, "enabled", .flag)),
+            ("Mature", value(c, "mature", .flag)),
+            ("Clock anomalies", value(c, "clock_anomalies", .count)),
+        ]))
+
+        // Warming is not a fault. The correlator is silent by design for its
+        // first fortnight while it learns what this host normally does, and a
+        // red dot for two weeks teaches people to ignore red.
+        if let warmup = c?["warmup"] as? [String: Any] {
+            let observed = AgentReader.num(warmup["days_observed"]) ?? 0
+            let required = AgentReader.int(warmup["days_required"]) ?? 14
+            let events = AgentReader.int(warmup["events"]) ?? 0
+            let needed = AgentReader.int(warmup["events_required"]) ?? 0
+            let progress = AgentReader.int(warmup["progress"]) ?? 0
+
+            let ring = RingView()
+            ring.fraction = Double(progress) / 100
+            ring.color = health == .disabled ? .tertiaryLabelColor : Health.warming.color
+            ring.translatesAutoresizingMaskIntoConstraints = false
+
+            let percent = NSTextField(labelWithString: "\(progress)%")
+            percent.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
+            percent.alignment = .center
+            percent.translatesAutoresizingMaskIntoConstraints = false
+
+            let dial = NSView()
+            dial.translatesAutoresizingMaskIntoConstraints = false
+            dial.addSubview(ring)
+            dial.addSubview(percent)
+
+            NSLayoutConstraint.activate([
+                ring.topAnchor.constraint(equalTo: dial.topAnchor),
+                ring.bottomAnchor.constraint(equalTo: dial.bottomAnchor),
+                ring.leadingAnchor.constraint(equalTo: dial.leadingAnchor),
+                ring.trailingAnchor.constraint(equalTo: dial.trailingAnchor),
+                ring.widthAnchor.constraint(equalToConstant: 76),
+                ring.heightAnchor.constraint(equalToConstant: 76),
+                percent.centerXAnchor.constraint(equalTo: ring.centerXAnchor),
+                percent.centerYAnchor.constraint(equalTo: ring.centerYAnchor),
+            ])
+
+            let numbers = fields([
+                ("Days observed", Cell(text: String(format: "%.1f of %d", observed, required), kind: .plain)),
+                ("Events seen", Cell(
+                    text: "\(AgentReader.format(events)) of \(AgentReader.format(needed))",
+                    kind: .plain
+                )),
+            ])
+
+            let side = NSStackView(views: [subheading("Warm-up"), numbers])
+            side.orientation = .vertical
+            side.alignment = .leading
+            side.spacing = 6
+
+            let pair = NSStackView(views: [dial, side])
+            pair.orientation = .horizontal
+            pair.alignment = .centerY
+            pair.spacing = 16
+
+            body.addArrangedSubview(divider())
+            body.addArrangedSubview(pair)
+        }
+
+        if let learned = c?["learned"] as? [String: Any] {
+            body.addArrangedSubview(divider())
+            body.addArrangedSubview(subheading("Learned"))
+            body.addArrangedSubview(fields([
+                ("Facets", value(learned, "facets", .count)),
+                ("Actors", value(learned, "actors", .count)),
+                ("Lineage rows", value(learned, "lineage_rows", .count)),
+                ("Incidents seen", value(learned, "incidents_seen", .count)),
+            ]))
+        }
+
+        return card(
+            title: "Correlator",
+            health: health,
+            state: c?["state"] as? String,
+            body: body
+        )
+    }
+
+    private func section(_ title: String, _ key: String, _ spec: [(String, String, Kind)]) -> NSView {
+        let source = snapshot.raw[key] as? [String: Any]
+        return card(
+            title: title,
+            health: Health(source?["state"] as? String),
+            state: source?["state"] as? String,
+            body: fields(spec.map { ($0.0, value(source, $0.1, $0.2)) })
+        )
+    }
+
+    // MARK: cells
+
+    enum Kind { case text, flag, count, bytes }
+
+    /// How a value should read, kept apart from what it says, so a caller that
+    /// passes only a string cannot accidentally present "could not measure" as
+    /// though it were a measurement.
+    struct Cell {
+        enum Style { case plain, muted, absent }
+        let text: String
+        let kind: Style
+    }
+
+    private func value(_ source: Any?, _ key: String, _ kind: Kind) -> Cell {
+        guard let dict = source as? [String: Any] else { return Cell(text: "—", kind: .absent) }
+        let raw = dict[key]
+
+        if raw == nil || raw is NSNull { return Cell(text: "—", kind: .absent) }
+
+        switch kind {
+        case .flag:
+            let on = (raw as? Bool) ?? false
+            return Cell(text: on ? "yes" : "no", kind: .plain)
+        case .count:
+            guard let n = AgentReader.int(raw) else { return Cell(text: "—", kind: .absent) }
+            return Cell(text: AgentReader.format(n), kind: .plain)
+        case .bytes:
+            guard let n = AgentReader.num(raw) else { return Cell(text: "—", kind: .absent) }
+            return Cell(text: humanBytes(n), kind: .plain)
+        case .text:
+            let text = String(describing: raw!)
+            return Cell(text: text.isEmpty ? "—" : text, kind: text.isEmpty ? .absent : .plain)
+        }
+    }
+
+    private func humanBytes(_ n: Double) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = n
+        var unit = 0
+        while value >= 1024, unit < units.count - 1 {
+            value /= 1024
+            unit += 1
+        }
+        return unit == 0 ? "\(Int(value)) B" : String(format: "%.1f %@", value, units[unit])
+    }
+
+    // MARK: chrome
+
+    private func card(title: String, health: Health?, state: String?, body: NSView) -> NSView {
+        let heading = NSStackView(views: [])
+        heading.orientation = .horizontal
+        heading.spacing = 8
+        heading.alignment = .centerY
+
+        if let health = health {
+            let dot = NSTextField(labelWithString: health.symbol)
+            dot.font = .systemFont(ofSize: 12)
+            dot.textColor = health.color
+            heading.addArrangedSubview(dot)
+        }
+
+        let name = NSTextField(labelWithString: title)
+        name.font = .systemFont(ofSize: 13, weight: .semibold)
+        heading.addArrangedSubview(name)
+        heading.addArrangedSubview(NSView())
+
+        if let state = state, let health = health {
+            let badge = NSTextField(labelWithString: state.uppercased())
+            badge.font = .systemFont(ofSize: 10, weight: .semibold)
+            badge.textColor = health.color
+            heading.addArrangedSubview(badge)
+        }
+
+        let content = NSStackView(views: [heading, body])
+        content.orientation = .vertical
+        content.alignment = .width
+        content.spacing = 10
+
+        let card = CardView(content: content, inset: 15)
+        card.fill = .controlBackgroundColor.withAlphaComponent(0.55)
+        card.stroke = .separatorColor
+        return card
+    }
+
+    private func fields(_ rows: [(String, Cell)]) -> NSView {
+        let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 5
+        grid.columnSpacing = 14
+
+        for (name, cell) in rows {
+            grid.addRow(with: [label(name, color: .secondaryLabelColor), cellView(cell)])
+        }
+
+        grid.column(at: 0).width = 176
+        return grid
+    }
+
+    private func cellView(_ cell: Cell) -> NSView {
+        let field = NSTextField(labelWithString: cell.text)
+        field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        field.lineBreakMode = .byTruncatingTail
+        field.isSelectable = true
+
+        // A remedy line is long enough to demand more width than the window
+        // has. Left at the default, that demand wins, the column grows wider
+        // than the scroll view, and every card is dragged out of alignment by
+        // one string. It truncates instead.
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        switch cell.kind {
+        case .plain:  field.textColor = .labelColor
+        case .muted:  field.textColor = .secondaryLabelColor
+        case .absent: field.textColor = .tertiaryLabelColor
+        }
+
+        return field
+    }
+
+    private func label(_ text: String, color: NSColor) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: 12)
+        field.textColor = color
+        return field
+    }
+
+    private func columnHeading(_ text: String) -> NSTextField {
+        let field = NSTextField(labelWithString: text.uppercased())
+        field.font = .systemFont(ofSize: 10, weight: .semibold)
+        field.textColor = .tertiaryLabelColor
+        return field
+    }
+
+    /// Wrapped with a trailing spacer rather than returned bare.
+    ///
+    /// The card stacks its rows to equal width, which stretches a lone label
+    /// to the full card and leaves where the text sits inside it up to the
+    /// cell — and it sat on the right, so every sub-heading floated away from
+    /// the rows it was labelling. The spacer takes the slack instead.
+    private func subheading(_ text: String) -> NSView {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: 12, weight: .semibold)
+        field.textColor = .labelColor
+
+        let row = NSStackView(views: [field, NSView()])
+        row.orientation = .horizontal
+        row.spacing = 0
+        return row
+    }
+
+    private func paragraph(_ text: String) -> NSView {
+        let field = NSTextField(wrappingLabelWithString: text)
+        field.font = .systemFont(ofSize: 12)
+        field.textColor = .labelColor
+        field.isSelectable = true
+        return field
+    }
+
+    private func reasonRow(_ text: String) -> NSView {
+        let field = NSTextField(wrappingLabelWithString: text)
+        field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        field.textColor = .systemYellow
+        field.isSelectable = true
+
+        // Same reason as subheading(): stretched to the card's width, the cell
+        // put the text on the right, and a remedy that drifts away from the
+        // fault it belongs to reads as though it belonged to something else.
+        let row = NSStackView(views: [field, NSView()])
+        row.orientation = .horizontal
+        row.spacing = 0
+        return row
+    }
+
+    private func stack(_ views: [NSView]) -> NSView {
+        let s = NSStackView(views: views)
+        s.orientation = .vertical
+        s.alignment = .leading
+        s.spacing = 6
+        return s
+    }
+
+    private func divider() -> NSView {
+        let line = NSBox()
+        line.boxType = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        return line
     }
 }
 
