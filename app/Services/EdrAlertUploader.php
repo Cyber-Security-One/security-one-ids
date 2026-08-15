@@ -31,6 +31,24 @@ class EdrAlertUploader
     private const MIN_COMPRESS_BYTES = 2048;
 
     private const BACKOFF_CACHE_KEY = 'edr_upload_backoff_until';
+
+    /**
+     * A record of how this link has actually behaved, kept apart from the
+     * failure counter.
+     *
+     * The counter answers "should I back off now" and is cleared the moment a
+     * flush succeeds, which is correct for backoff and useless for judging a
+     * link: a Hub that fails half the time and recovers reports zero
+     * consecutive failures forever, and the console reports it healthy. The
+     * host this was written on logged 242 transport errors in a day while
+     * showing consecutive_failures 0.
+     *
+     * So successes and failures are also counted over a rolling day, and the
+     * last error is kept. None of it drives backoff. It exists to be read.
+     */
+    private const TRANSMISSION_KEY = 'edr_upload_transmission';
+
+    private const TRANSMISSION_WINDOW = 86400;
     private const COMPRESSION_DISABLED_KEY = 'edr_upload_compression_disabled_until';
 
     private EdrEventSpool $spool;
@@ -136,6 +154,7 @@ class EdrAlertUploader
 
             if (!$outcome['ok']) {
                 $this->applyBackoff($outcome);
+                $this->recordTransmission(false, (string) $outcome['reason'], 0);
                 $result['failed'] = true;
                 break;
             }
@@ -202,6 +221,7 @@ class EdrAlertUploader
         if (!$result['failed']) {
             cache()->forget(self::BACKOFF_CACHE_KEY);
             $this->resetFailureCounter();
+            $this->recordTransmission(true, null, (int) $result['sent']);
         }
 
         $result['remaining'] = $this->spool->stats()['pending'];
@@ -446,6 +466,90 @@ class EdrAlertUploader
     private function compressionSuspended(): bool
     {
         return (int) cache()->get(self::COMPRESSION_DISABLED_KEY, 0) > time();
+    }
+
+    /**
+     * Note one delivery attempt.
+     *
+     * The window rolls after a day, but "when did this last work" and "what
+     * did it say when it broke" survive the roll: they are facts about the
+     * link, not counts within a window, and a fresh window that claims the
+     * Hub has never succeeded would be a worse answer than a stale one.
+     */
+    private function recordTransmission(bool $ok, ?string $reason, int $delivered): void
+    {
+        $now = time();
+        $stored = cache()->get(self::TRANSMISSION_KEY);
+        $record = is_array($stored) ? $stored : [];
+
+        $started = (int) ($record['window_started_at'] ?? 0);
+
+        if ($started === 0 || ($now - $started) > self::TRANSMISSION_WINDOW) {
+            $record = [
+                'window_started_at' => $now,
+                'attempts' => 0,
+                'successes' => 0,
+                'failures' => 0,
+                'delivered' => 0,
+                'last_success_at' => $record['last_success_at'] ?? null,
+                'last_failure_at' => $record['last_failure_at'] ?? null,
+                'last_error' => $record['last_error'] ?? null,
+            ];
+        }
+
+        $record['attempts'] = (int) ($record['attempts'] ?? 0) + 1;
+
+        if ($ok) {
+            $record['successes'] = (int) ($record['successes'] ?? 0) + 1;
+            $record['delivered'] = (int) ($record['delivered'] ?? 0) + $delivered;
+            $record['last_success_at'] = $now;
+        } else {
+            $record['failures'] = (int) ($record['failures'] ?? 0) + 1;
+            $record['last_failure_at'] = $now;
+            // Trimmed: a cURL error carries a URL and a certificate chain, and
+            // this is read by an unprivileged console.
+            $record['last_error'] = $reason === null ? null : substr($reason, 0, 120);
+        }
+
+        cache()->put(self::TRANSMISSION_KEY, $record, now()->addDays(3));
+    }
+
+    /**
+     * The transmission record, for anything that reports on this link.
+     *
+     * Static because the callers that want it — the status snapshot, the
+     * console — have no reason to build an uploader, and building one to read
+     * a counter would drag its dependencies along with it.
+     */
+    public static function transmissionRecord(): array
+    {
+        $stored = cache()->get(self::TRANSMISSION_KEY);
+        $record = is_array($stored) ? $stored : [];
+
+        $attempts = (int) ($record['attempts'] ?? 0);
+        $failures = (int) ($record['failures'] ?? 0);
+
+        return [
+            'observed' => $attempts > 0,
+            'window_started_at' => isset($record['window_started_at'])
+                ? date('c', (int) $record['window_started_at'])
+                : null,
+            'attempts' => $attempts,
+            'successes' => (int) ($record['successes'] ?? 0),
+            'failures' => $failures,
+            'delivered' => (int) ($record['delivered'] ?? 0),
+            // Null rather than 0 when nothing has been attempted: a link that
+            // has not been used and a link that never fails are different
+            // things, and only one of them is evidence.
+            'failure_rate' => $attempts > 0 ? round($failures / $attempts, 3) : null,
+            'last_success_at' => isset($record['last_success_at'])
+                ? date('c', (int) $record['last_success_at'])
+                : null,
+            'last_failure_at' => isset($record['last_failure_at'])
+                ? date('c', (int) $record['last_failure_at'])
+                : null,
+            'last_error' => $record['last_error'] ?? null,
+        ];
     }
 
     /**

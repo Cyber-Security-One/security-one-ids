@@ -297,6 +297,9 @@ class AgentStatus extends Command
             'backoff_until' => $backoffUntil > time() ? date('c', $backoffUntil) : null,
             'consecutive_failures' => $failures,
             'queued_alerts' => $pending,
+            // How the link has actually behaved, as opposed to how it is
+            // behaving this second. See EdrAlertUploader::TRANSMISSION_KEY.
+            'transmission' => \App\Services\EdrAlertUploader::transmissionRecord(),
             'detail' => !$configured && !$privileged
                 ? 'Hub credentials are root-only; run with sudo to read them.'
                 : null,
