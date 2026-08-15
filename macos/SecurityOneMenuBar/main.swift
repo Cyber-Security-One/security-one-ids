@@ -23,6 +23,7 @@
 
 import AppKit
 import Foundation
+import SceneKit
 
 // MARK: - Model
 
@@ -80,6 +81,28 @@ struct Snapshot {
     }
 }
 
+/// One row from the endpoint sensor's spool.
+///
+/// Deliberately thin. The console draws events; it does not investigate them,
+/// and the fields it does not draw are fields it has no business holding —
+/// command lines above all, which are where a secret that slipped past
+/// redaction would be.
+struct AgentEvent {
+    let at: Date
+    let action: String
+    let severity: String?
+    let path: String
+    let pid: Int?
+    let user: String
+    /// Bound for the Hub. Most rows are not: shipping every event would be
+    /// hundreds of megabytes a day per host, which is the whole reason
+    /// detection runs on the endpoint.
+    let deliver: Bool
+    let sent: Bool
+
+    var isAlert: Bool { severity != nil }
+}
+
 // MARK: - Reading the agent
 
 enum AgentReader {
@@ -114,6 +137,101 @@ enum AgentReader {
     /// next slow host into a reported hang. The bound is here to stop waiting
     /// forever, not to police the agent's response time.
     static let readTimeout: TimeInterval = 45
+
+    /// Run one agent command and hand back what it wrote.
+    ///
+    /// Shared by the status snapshot and the event feed so that the pipe rule,
+    /// the deadline and the escalation to SIGKILL are decided once. They were
+    /// worth getting right once and are not worth getting right twice.
+    static func invoke(_ arguments: [String]) -> (data: Data, error: String, timedOut: Bool)? {
+        guard let php = resolvePHP(),
+              FileManager.default.fileExists(atPath: installPath)
+        else { return nil }
+
+        let scratch = FileManager.default.temporaryDirectory
+        let stamp = "\(ProcessInfo.processInfo.processIdentifier)-\(UInt64.random(in: 0 ..< .max))"
+        let outURL = scratch.appendingPathComponent("securityone-\(stamp).out")
+        let errURL = scratch.appendingPathComponent("securityone-\(stamp).err")
+
+        defer {
+            try? FileManager.default.removeItem(at: outURL)
+            try? FileManager.default.removeItem(at: errURL)
+        }
+
+        let files = FileManager.default
+        guard files.createFile(atPath: outURL.path, contents: nil),
+              files.createFile(atPath: errURL.path, contents: nil),
+              let outHandle = try? FileHandle(forWritingTo: outURL),
+              let errHandle = try? FileHandle(forWritingTo: errURL)
+        else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: php)
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: installPath)
+        process.standardOutput = outHandle
+        process.standardError = errHandle
+
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+
+        do {
+            try process.run()
+        } catch {
+            try? outHandle.close()
+            try? errHandle.close()
+            return nil
+        }
+
+        var timedOut = false
+        if finished.wait(timeout: .now() + readTimeout) == .timedOut {
+            timedOut = true
+            process.terminate()
+
+            if finished.wait(timeout: .now() + 3) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 3)
+            }
+        }
+
+        try? outHandle.close()
+        try? errHandle.close()
+
+        return (
+            (try? Data(contentsOf: outURL)) ?? Data(),
+            String(data: (try? Data(contentsOf: errURL)) ?? Data(), encoding: .utf8) ?? "",
+            timedOut
+        )
+    }
+
+    /// The most recent events the sensor has spooled.
+    ///
+    /// Read through `ids:events` rather than out of the spool's SQLite file.
+    /// The spool owns its schema, its decryption and its redaction, and a
+    /// second reader that opened the file directly would be a second
+    /// implementation of all three — one that keeps working, quietly wrongly,
+    /// the day any of them changes.
+    static func events(limit: Int = 240) -> [AgentEvent] {
+        guard let result = invoke(["artisan", "ids:events", "--json", "--limit=\(limit)"]),
+              let json = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
+              let rows = json["events"] as? [[String: Any]]
+        else { return [] }
+
+        return rows.compactMap { row in
+            guard let ts = int(row["ts"]) else { return nil }
+
+            return AgentEvent(
+                at: Date(timeIntervalSince1970: TimeInterval(ts)),
+                action: row["action"] as? String ?? "unknown",
+                severity: row["severity"] as? String,
+                path: row["path"] as? String ?? "",
+                pid: int(row["pid"]),
+                user: row["user"] as? String ?? "",
+                deliver: (row["deliver"] as? Bool) ?? false,
+                sent: (row["sent"] as? Bool) ?? false
+            )
+        }
+    }
 
     static func read() -> Snapshot {
         guard let php = resolvePHP() else {
@@ -365,6 +483,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var refreshing = false
     private var details: DetailWindow?
+    private var console: ConsoleWindow?
 
     /// Print what happened and exit, instead of running.
     var diagnose = false
@@ -487,6 +606,19 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.snapshot = next
                 self?.render()
                 self?.details?.update(next)
+
+                // Only fetched when something is showing it: the event feed is
+                // a second agent invocation, and paying for it to keep a
+                // closed window current would be a cost for nothing.
+                if self?.console?.isOpen == true {
+                    DispatchQueue.global(qos: .utility).async {
+                        let events = AgentReader.events()
+
+                        DispatchQueue.main.async {
+                            self?.console?.update(next, events: events)
+                        }
+                    }
+                }
             }
         }
     }
@@ -588,6 +720,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(dim(age < 60 ? "Updated just now" : "Updated \(age / 60) min ago"))
         }
 
+        menu.addItem(action("Console…", #selector(showConsole)))
         menu.addItem(action("Agent details…", #selector(showDetails)))
         menu.addItem(action("Open full report", #selector(openReport)))
         menu.addItem(action("Refresh now", #selector(refreshNow)))
@@ -655,6 +788,28 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: actions
+
+    @objc private func showConsole() {
+        if console == nil {
+            console = ConsoleWindow(onRefresh: { [weak self] in self?.refresh() })
+        }
+
+        let current = snapshot
+        console?.present(current, events: [])
+
+        // Opened before the events arrive, on purpose. Reading them takes a
+        // second or two, and a window that appears immediately and fills is
+        // easier to trust than one that appears only once everything is ready.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let events = AgentReader.events()
+
+            DispatchQueue.main.async {
+                self?.console?.update(current, events: events)
+            }
+        }
+
+        refresh()
+    }
 
     @objc private func showDetails() {
         if details == nil {
@@ -1468,6 +1623,680 @@ final class DetailWindow: NSObject, NSWindowDelegate {
         line.boxType = .separator
         line.translatesAutoresizingMaskIntoConstraints = false
         return line
+    }
+}
+
+
+// MARK: - 3D console
+
+/// The agent as a scene rather than a list.
+///
+/// This is the one view here that is not simply a rendering of the snapshot,
+/// so it is worth being explicit about what it is for. A list answers "what is
+/// the value of this field". A room answers "where is the weight" — which
+/// subsystem is dark, whether the events are one steady drift or a burst, how
+/// much of what the sensor holds is alerting and how much is retro-hunt
+/// material. Those are shape questions, and shape is what an eye is good at.
+///
+/// The rules from the rest of the file still hold and are what keep it from
+/// being decoration: colour comes from the agent's own state and nowhere else,
+/// a subsystem the agent could not determine is grey rather than green, and
+/// nothing is drawn that was not measured. An event the console invented would
+/// be worse than an empty scene.
+final class ConsoleWindow: NSObject, NSWindowDelegate {
+    private var window: NSWindow?
+    private let sceneView = SCNView()
+    private let scene = SCNScene()
+
+    /// Everything that turns with the camera drag lives under here, so the
+    /// scene can be spun as one object without the lights swinging with it.
+    private let world = SCNNode()
+    private let eventField = SCNNode()
+    private let ringNode = SCNNode()
+    private var coreNode = SCNNode()
+
+    private let headline = NSTextField(labelWithString: "")
+    private let subhead = NSTextField(labelWithString: "")
+    private let legend = NSTextField(labelWithString: "")
+    private let footnote = NSTextField(labelWithString: "")
+
+    private let onRefresh: () -> Void
+    private var snapshot = Snapshot()
+    private var events: [AgentEvent] = []
+
+    init(onRefresh: @escaping () -> Void) {
+        self.onRefresh = onRefresh
+        super.init()
+    }
+
+    var isOpen: Bool { window?.isVisible ?? false }
+
+    func present(_ snapshot: Snapshot, events: [AgentEvent]) {
+        self.snapshot = snapshot
+        self.events = events
+
+        if window == nil {
+            build()
+            window?.center()
+        }
+
+        rebuild()
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func update(_ snapshot: Snapshot, events: [AgentEvent]) {
+        self.snapshot = snapshot
+        self.events = events
+        guard isOpen else { return }
+        rebuild()
+    }
+
+    // MARK: scene construction
+
+    /// The palette.
+    ///
+    /// Deliberately narrow and cold. The health colours still carry every
+    /// verdict — that rule does not bend for looks — but everything that is
+    /// not a verdict is drawn in one dim cyan so the coloured things are the
+    /// only coloured things. A scene where the furniture is as loud as the
+    /// signal is a scene you have to read twice.
+    private enum Palette {
+        static let deep = NSColor(calibratedRed: 0.023, green: 0.031, blue: 0.055, alpha: 1)
+        static let horizon = NSColor(calibratedRed: 0.043, green: 0.075, blue: 0.118, alpha: 1)
+        static let structure = NSColor(calibratedRed: 0.25, green: 0.62, blue: 0.78, alpha: 1)
+        static let quiet = NSColor(calibratedRed: 0.30, green: 0.72, blue: 0.85, alpha: 1)
+        static let alert = NSColor(calibratedRed: 1.00, green: 0.35, blue: 0.42, alpha: 1)
+    }
+
+    private func build() {
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 660),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        w.title = "Security One — Console"
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.delegate = self
+        w.isReleasedWhenClosed = false
+        w.minSize = NSSize(width: 760, height: 520)
+
+        scene.background.contents = backdropImage()
+
+        // Metal takes its appearance from what is around it. With no
+        // environment to reflect, a high-metalness chassis renders as a black
+        // silhouette — which is exactly what the first attempt looked like.
+        scene.lightingEnvironment.contents = backdropImage()
+        scene.lightingEnvironment.intensity = 3.4
+
+        // Fog, so distance reads as distance. Without it the far side of the
+        // event shell is exactly as bright as the near side and the whole
+        // thing flattens into a disc of dots.
+        scene.fogColor = Palette.deep
+        scene.fogStartDistance = 30
+        scene.fogEndDistance = 95
+        scene.fogDensityExponent = 1.6
+
+        scene.rootNode.addChildNode(world)
+        world.addChildNode(eventField)
+        world.addChildNode(ringNode)
+
+        let camera = SCNNode()
+        let lens = SCNCamera()
+        lens.fieldOfView = 44
+        lens.zFar = 400
+
+        // HDR and bloom are what separate "emissive material" from "this thing
+        // is glowing". Everything below is lit dimly and allowed to bloom,
+        // rather than being painted bright and looking like plastic.
+        lens.wantsHDR = true
+        lens.bloomIntensity = 0.95
+        lens.bloomThreshold = 0.58
+        lens.bloomBlurRadius = 14
+        lens.wantsExposureAdaptation = false
+        lens.vignettingIntensity = 0.62
+        lens.vignettingPower = 1.35
+        lens.colorFringeStrength = 0.35
+        camera.camera = lens
+        camera.position = SCNVector3(CGFloat(0), CGFloat(11), CGFloat(34))
+        camera.look(at: SCNVector3(CGFloat(0), CGFloat(0), CGFloat(0)))
+        scene.rootNode.addChildNode(camera)
+
+        let ambient = SCNNode()
+        ambient.light = SCNLight()
+        ambient.light?.type = .ambient
+        ambient.light?.intensity = 140
+        ambient.light?.color = NSColor(calibratedRed: 0.35, green: 0.45, blue: 0.60, alpha: 1)
+        scene.rootNode.addChildNode(ambient)
+
+        let lamps: [SCNVector3] = [
+            SCNVector3(CGFloat(12), CGFloat(14), CGFloat(16)),
+            SCNVector3(CGFloat(-14), CGFloat(-4), CGFloat(-10)),
+        ]
+
+        for position in lamps {
+            let lamp = SCNNode()
+            lamp.light = SCNLight()
+            lamp.light?.type = .omni
+            lamp.light?.intensity = 620
+            lamp.light?.color = NSColor(calibratedRed: 0.55, green: 0.72, blue: 0.95, alpha: 1)
+            lamp.position = position
+            scene.rootNode.addChildNode(lamp)
+        }
+
+        eventField.runAction(.repeatForever(
+            .rotateBy(x: 0, y: CGFloat.pi * 2, z: 0, duration: 120)
+        ))
+
+        sceneView.scene = scene
+        sceneView.allowsCameraControl = true
+        sceneView.autoenablesDefaultLighting = false
+        sceneView.antialiasingMode = .multisampling4X
+        sceneView.translatesAutoresizingMaskIntoConstraints = false
+
+        headline.font = .monospacedDigitSystemFont(ofSize: 30, weight: .bold)
+        subhead.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        subhead.textColor = NSColor(calibratedWhite: 0.62, alpha: 1)
+        legend.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        legend.textColor = NSColor(calibratedWhite: 0.52, alpha: 1)
+        footnote.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        footnote.textColor = NSColor(calibratedWhite: 0.36, alpha: 1)
+
+        for field in [headline, subhead, legend, footnote] {
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.drawsBackground = false
+        }
+
+        let rule = NSBox()
+        rule.boxType = .custom
+        rule.borderWidth = 0
+        rule.fillColor = Palette.structure.withAlphaComponent(0.35)
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        rule.widthAnchor.constraint(equalToConstant: 168).isActive = true
+
+        let hud = NSStackView(views: [headline, subhead, rule, legend])
+        hud.orientation = .vertical
+        hud.alignment = .leading
+        hud.spacing = 6
+        hud.setCustomSpacing(9, after: subhead)
+        hud.setCustomSpacing(9, after: rule)
+        hud.translatesAutoresizingMaskIntoConstraints = false
+
+        let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshTapped))
+        refresh.bezelStyle = .rounded
+        refresh.keyEquivalent = "r"
+        refresh.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSView()
+        root.addSubview(sceneView)
+        root.addSubview(hud)
+        root.addSubview(footnote)
+        root.addSubview(refresh)
+
+        NSLayoutConstraint.activate([
+            sceneView.topAnchor.constraint(equalTo: root.topAnchor),
+            sceneView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            sceneView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            sceneView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            hud.topAnchor.constraint(equalTo: root.topAnchor, constant: 42),
+            hud.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
+
+            footnote.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
+            footnote.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
+
+            refresh.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -22),
+            refresh.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
+        ])
+
+        w.contentView = root
+        window = w
+
+        buildFloor()
+    }
+
+    /// A vertical gradient rather than a flat fill: a single colour behind a
+    /// dark scene has no horizon and the scene appears to float in nothing.
+    private func backdropImage() -> NSImage {
+        let size = NSSize(width: 2, height: 512)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        let gradient = NSGradient(colors: [
+            Palette.deep,
+            Palette.horizon,
+            Palette.deep,
+        ], atLocations: [0.0, 0.55, 1.0], colorSpace: .deviceRGB)
+
+        gradient?.draw(in: NSRect(origin: .zero, size: size), angle: 90)
+        image.unlockFocus()
+
+        return image
+    }
+
+    /// Text drawn into an image and hung on a plane.
+    ///
+    /// SCNText extrudes a 3D solid, which at this size reads as chrome
+    /// lettering rather than as a label, and it is expensive per glyph. A flat
+    /// texture stays crisp, costs one quad, and can be dimmed like everything
+    /// else in the scene.
+    private func labelNode(_ text: String, color: NSColor, size: CGFloat) -> SCNNode {
+        let scale: CGFloat = 64
+        let font = NSFont.monospacedDigitSystemFont(ofSize: scale * 0.5, weight: .semibold)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color,
+            .kern: scale * 0.03,
+        ]
+
+        let measured = (text as NSString).size(withAttributes: attributes)
+        let width: CGFloat = ceil(measured.width) + 12
+        let height: CGFloat = ceil(measured.height) + 8
+
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        (text as NSString).draw(at: NSPoint(x: 6, y: 4), withAttributes: attributes)
+        image.unlockFocus()
+
+        let aspect: CGFloat = width / height
+        let plane = SCNPlane(width: size * aspect, height: size)
+        let material = SCNMaterial()
+        material.diffuse.contents = image
+        material.emission.contents = NSColor.clear
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        material.lightingModel = .constant
+        plane.materials = [material]
+
+        let node = SCNNode(geometry: plane)
+        node.constraints = [SCNBillboardConstraint()]
+        return node
+    }
+
+    /// A radial grid under everything.
+    ///
+    /// It carries no data and is not pretending to. It is there because a
+    /// floating object with nothing behind it has no scale and no depth, and
+    /// the eye cannot tell an orbit from a flat circle without one.
+    private func buildFloor() {
+        let floor = SCNNode()
+        floor.position = SCNVector3(CGFloat(0), CGFloat(-5.2), CGFloat(0))
+
+        for step in 1 ... 6 {
+            let radius: CGFloat = CGFloat(step) * 3.4
+            let ring = SCNTorus(ringRadius: radius, pipeRadius: 0.012)
+            ring.ringSegmentCount = 96
+            ring.pipeSegmentCount = 4
+
+            let material = SCNMaterial()
+            let fade: CGFloat = 0.20 - CGFloat(step) * 0.022
+            material.diffuse.contents = Palette.structure.withAlphaComponent(max(0.10, fade * 2))
+            material.emission.contents = Palette.structure.withAlphaComponent(max(0.06, fade))
+            material.lightingModel = .constant
+            material.writesToDepthBuffer = false
+            ring.materials = [material]
+
+            floor.addChildNode(SCNNode(geometry: ring))
+        }
+
+        for spoke in 0 ..< 12 {
+            let angle: CGFloat = (CGFloat(spoke) / 12) * 2 * CGFloat.pi
+            let length: CGFloat = 20.4
+            let bar = SCNCylinder(radius: 0.008, height: length)
+
+            let material = SCNMaterial()
+            material.diffuse.contents = Palette.structure.withAlphaComponent(0.16)
+            material.emission.contents = Palette.structure.withAlphaComponent(0.08)
+            material.lightingModel = .constant
+            material.writesToDepthBuffer = false
+            bar.materials = [material]
+
+            let node = SCNNode(geometry: bar)
+            node.position = SCNVector3(cos(angle) * length / 2, CGFloat(0), sin(angle) * length / 2)
+            node.eulerAngles = SCNVector3(CGFloat.pi / 2, CGFloat(0), -angle + CGFloat.pi / 2)
+            floor.addChildNode(node)
+        }
+
+        world.addChildNode(floor)
+    }
+
+    @objc private func refreshTapped() { onRefresh() }
+
+    // MARK: content
+
+    private func rebuild() {
+        coreNode.removeFromParentNode()
+        eventField.childNodes.forEach { $0.removeFromParentNode() }
+        ringNode.childNodes.forEach { $0.removeFromParentNode() }
+
+        buildCore()
+        buildRing()
+        buildEventField()
+        updateHUD()
+    }
+
+    /// The host, drawn as the thing it is.
+    ///
+    /// A glowing sphere is a logo. This is a rack: a dark metal chassis with
+    /// units in it, vents, and status lamps on the front. Two decisions do all
+    /// the work of not looking like plastic. The body is metal — high
+    /// metalness, low roughness, almost no diffuse colour — so it takes its
+    /// appearance from what is around it rather than from a bright fill. And
+    /// nothing on it is coloured except the lamps, which are pure emission and
+    /// are the only things allowed to bloom.
+    ///
+    /// The top lamp on each unit carries the agent's overall state, because it
+    /// is the one light on a real rack anybody actually looks at.
+    private func buildCore() {
+        let health = snapshot.failure == nil ? snapshot.overall : .unknown
+        let node = SCNNode()
+
+        let units: Int = 5
+        let unitHeight: CGFloat = 0.68
+        let unitGap: CGFloat = 0.08
+        let width: CGFloat = 3.6
+        let depth: CGFloat = 2.6
+        let stack: CGFloat = CGFloat(units) * (unitHeight + unitGap)
+
+        let shell = SCNBox(width: width, height: stack + 0.34, length: depth, chamferRadius: 0.05)
+        let shellMaterial = SCNMaterial()
+        shellMaterial.lightingModel = .physicallyBased
+        shellMaterial.diffuse.contents = NSColor(calibratedWhite: 0.16, alpha: 1)
+        shellMaterial.metalness.contents = 0.72
+        shellMaterial.roughness.contents = 0.28
+        shell.materials = [shellMaterial]
+        node.addChildNode(SCNNode(geometry: shell))
+
+        for index in 0 ..< units {
+            let offset: CGFloat = CGFloat(index) * (unitHeight + unitGap)
+            let y: CGFloat = stack / 2 - offset - unitHeight / 2 - 0.04
+
+            let face = SCNBox(width: width - 0.10, height: unitHeight, length: 0.07, chamferRadius: 0.012)
+            let faceMaterial = SCNMaterial()
+            faceMaterial.lightingModel = .physicallyBased
+            faceMaterial.diffuse.contents = NSColor(calibratedWhite: 0.22, alpha: 1)
+            faceMaterial.metalness.contents = 0.65
+            faceMaterial.roughness.contents = 0.38
+            face.materials = [faceMaterial]
+
+            let faceNode = SCNNode(geometry: face)
+            faceNode.position = SCNVector3(CGFloat(0), y, depth / 2 + 0.02)
+            node.addChildNode(faceNode)
+
+            // Vent slots: cut in as darker inset bars rather than modelled as
+            // holes, which would cost geometry nothing here can see.
+            for slot in 0 ..< 9 {
+                let slotBar = SCNBox(width: 0.11, height: unitHeight * 0.42, length: 0.02, chamferRadius: 0.004)
+                let slotMaterial = SCNMaterial()
+                slotMaterial.lightingModel = .physicallyBased
+                slotMaterial.diffuse.contents = NSColor(calibratedWhite: 0.035, alpha: 1)
+                slotMaterial.metalness.contents = 0.6
+                slotMaterial.roughness.contents = 0.9
+                slotBar.materials = [slotMaterial]
+
+                let bar = SCNNode(geometry: slotBar)
+                let slotX: CGFloat = -0.62 + CGFloat(slot) * 0.155
+                bar.position = SCNVector3(slotX, y, depth / 2 + 0.06)
+                node.addChildNode(bar)
+            }
+
+            // Lamps. The first unit carries the overall verdict; the rest are
+            // activity, dim and cyan, so the verdict lamp is the only coloured
+            // thing on the machine.
+            let lampColour: NSColor = index == 0 ? health.color : Palette.quiet
+            let lampCount: Int = index == 0 ? 2 : 3
+
+            for lamp in 0 ..< lampCount {
+                let bulb = SCNSphere(radius: 0.045)
+                bulb.segmentCount = 10
+                let bulbMaterial = SCNMaterial()
+                bulbMaterial.diffuse.contents = lampColour
+                bulbMaterial.emission.contents = lampColour
+                bulbMaterial.lightingModel = .constant
+                bulbMaterial.writesToDepthBuffer = false
+                bulb.materials = [bulbMaterial]
+
+                let bulbNode = SCNNode(geometry: bulb)
+                let lampX: CGFloat = 1.14 + CGFloat(lamp) * 0.14
+                bulbNode.position = SCNVector3(lampX, y, depth / 2 + 0.08)
+
+                // Activity lamps flicker on their own phase. The verdict lamp
+                // holds steady: a status light that blinks reads as a fault
+                // even when it is green.
+                if index != 0 {
+                    let phase: Double = Double((index * 3 + lamp) % 5) * 0.37
+                    bulbNode.runAction(.sequence([
+                        .wait(duration: phase),
+                        .repeatForever(.sequence([
+                            .fadeOpacity(to: 0.15, duration: 0.5 + Double(lamp) * 0.2),
+                            .fadeOpacity(to: 1.0, duration: 0.4 + Double(index) * 0.15),
+                        ])),
+                    ]))
+                }
+
+                node.addChildNode(bulbNode)
+            }
+        }
+
+        // A faint cage around the rack, at the radius the old sphere occupied,
+        // so the event shell still has something to sit against.
+        let cage = SCNSphere(radius: 2.7)
+        cage.segmentCount = 16
+        let cageMaterial = SCNMaterial()
+        cageMaterial.diffuse.contents = health.color.withAlphaComponent(0.09)
+        cageMaterial.emission.contents = health.color.withAlphaComponent(0.05)
+        cageMaterial.fillMode = .lines
+        cageMaterial.lightingModel = .constant
+        cageMaterial.writesToDepthBuffer = false
+        cage.materials = [cageMaterial]
+
+        let cageNode = SCNNode(geometry: cage)
+        cageNode.runAction(.repeatForever(
+            .rotateBy(x: CGFloat(0), y: CGFloat.pi * 2, z: CGFloat(0), duration: 70)
+        ))
+        node.addChildNode(cageNode)
+
+        // Two inclined rings, the way an instrument draws an axis. They are
+        // furniture, so they are dim.
+        for (index, tilt) in [CGFloat.pi / 2.6, -CGFloat.pi / 3.4].enumerated() {
+            let orbit = SCNTorus(ringRadius: 2.35 + CGFloat(index) * 0.5, pipeRadius: 0.016)
+            orbit.ringSegmentCount = 128
+            orbit.pipeSegmentCount = 6
+
+            let material = SCNMaterial()
+            material.diffuse.contents = health.color.withAlphaComponent(0.42)
+            material.emission.contents = health.color.withAlphaComponent(0.30)
+            material.lightingModel = .constant
+            material.writesToDepthBuffer = false
+            orbit.materials = [material]
+
+            let orbitNode = SCNNode(geometry: orbit)
+            orbitNode.eulerAngles = SCNVector3(tilt, CGFloat(index) * 0.7, CGFloat(0))
+            orbitNode.runAction(.repeatForever(
+                .rotateBy(x: CGFloat(0), y: CGFloat.pi * 2, z: CGFloat(0), duration: 30 + Double(index) * 14)
+            ))
+            node.addChildNode(orbitNode)
+        }
+
+        // The rack itself does not pulse. Breathing hardware reads as a
+        // rendering effect; the lamps are what is alive here.
+        coreNode = node
+        world.addChildNode(node)
+    }
+
+    /// One slim column per subsystem, standing on the grid.
+    private func buildRing() {
+        let rows = snapshot.rows
+        guard !rows.isEmpty else { return }
+
+        let radius: CGFloat = 12.4
+
+        for (index, row) in rows.enumerated() {
+            let fraction: CGFloat = CGFloat(index) / CGFloat(rows.count)
+            let angle: CGFloat = fraction * 2 * CGFloat.pi
+            let x: CGFloat = radius * cos(angle)
+            let z: CGFloat = radius * sin(angle)
+
+            // Every column is the same height. A taller bar for "worse" would
+            // invent a ranking the agent never stated.
+            let column = SCNCylinder(radius: 0.075, height: 3.4)
+            column.radialSegmentCount = 16
+            let material = SCNMaterial()
+            material.diffuse.contents = row.health.color
+            material.emission.contents = row.health.color.withAlphaComponent(0.95)
+            material.lightingModel = .constant
+            column.materials = [material]
+
+            let node = SCNNode(geometry: column)
+            node.position = SCNVector3(x, CGFloat(-3.5), z)
+            ringNode.addChildNode(node)
+
+            // A disc at the foot, so the column is standing on the grid rather
+            // than hovering above it.
+            let pad = SCNTorus(ringRadius: 0.42, pipeRadius: 0.02)
+            pad.ringSegmentCount = 48
+            let padMaterial = SCNMaterial()
+            padMaterial.diffuse.contents = row.health.color.withAlphaComponent(0.7)
+            padMaterial.emission.contents = row.health.color.withAlphaComponent(0.55)
+            padMaterial.lightingModel = .constant
+            padMaterial.writesToDepthBuffer = false
+            pad.materials = [padMaterial]
+
+            let padNode = SCNNode(geometry: pad)
+            padNode.position = SCNVector3(x, CGFloat(-5.18), z)
+            ringNode.addChildNode(padNode)
+
+            let label = labelNode(row.title.uppercased(), color: NSColor(calibratedWhite: 0.80, alpha: 1), size: 0.42)
+            label.position = SCNVector3(x, CGFloat(-1.25), z)
+            ringNode.addChildNode(label)
+
+            let state = labelNode(row.health.rawValue.uppercased(), color: row.health.color.withAlphaComponent(0.9), size: 0.28)
+            state.position = SCNVector3(x, CGFloat(-1.72), z)
+            ringNode.addChildNode(state)
+
+            let beam = SCNCylinder(radius: 0.011, height: radius)
+            let beamMaterial = SCNMaterial()
+            beamMaterial.diffuse.contents = row.health.color.withAlphaComponent(0.30)
+            beamMaterial.emission.contents = row.health.color.withAlphaComponent(0.20)
+            beamMaterial.lightingModel = .constant
+            beamMaterial.writesToDepthBuffer = false
+            beam.materials = [beamMaterial]
+
+            let beamNode = SCNNode(geometry: beam)
+            beamNode.position = SCNVector3(x / 2, CGFloat(-3.5), z / 2)
+            let tilt: CGFloat = CGFloat.pi / 2
+            let spin: CGFloat = -angle + CGFloat.pi / 2
+            beamNode.eulerAngles = SCNVector3(tilt, CGFloat(0), spin)
+            ringNode.addChildNode(beamNode)
+        }
+    }
+
+    /// Every event the sensor holds, one point each, on a Fibonacci shell.
+    ///
+    /// The lattice spaces points evenly instead of clumping them at the poles
+    /// the way naive latitude and longitude does, and radius carries recency —
+    /// newest nearest the core — so a burst arrives as a visible shell rather
+    /// than as a number that went up.
+    private func buildEventField() {
+        guard !events.isEmpty else { return }
+
+        let golden: CGFloat = CGFloat.pi * (3 - sqrt(5.0))
+        let count: Int = events.count
+
+        var geometries: [String: SCNGeometry] = [:]
+
+        func geometry(for event: AgentEvent) -> SCNGeometry {
+            let key: String = event.isAlert ? "alert" : "quiet"
+
+            if let existing = geometries[key] { return existing }
+
+            let colour: NSColor = event.isAlert ? Palette.alert : Palette.quiet
+            let sphere = SCNSphere(radius: event.isAlert ? 0.062 : 0.042)
+            sphere.segmentCount = 10
+
+            let material = SCNMaterial()
+            material.diffuse.contents = colour
+            material.emission.contents = colour
+            material.lightingModel = .constant
+            // Added rather than blended, so overlapping points build up into
+            // brightness. Density becomes something you can see.
+            material.blendMode = .add
+            material.writesToDepthBuffer = false
+            sphere.materials = [material]
+
+            geometries[key] = sphere
+            return sphere
+        }
+
+        for (index, event) in events.enumerated() {
+            let progress: CGFloat = CGFloat(index) / CGFloat(max(1, count - 1))
+            let y: CGFloat = 1 - progress * 2
+            let ringRadius: CGFloat = sqrt(max(0, 1 - y * y))
+            let theta: CGFloat = golden * CGFloat(index)
+            let depth: CGFloat = 6.2 + (CGFloat(index) / CGFloat(count)) * 2.8
+
+            let px: CGFloat = cos(theta) * ringRadius * depth
+            let py: CGFloat = y * depth
+            let pz: CGFloat = sin(theta) * ringRadius * depth
+
+            let node = SCNNode(geometry: geometry(for: event))
+            node.position = SCNVector3(px, py, pz)
+
+            // Alerts breathe. Everything else is still, so the movement means
+            // one specific thing rather than being ambience.
+            if event.isAlert {
+                let phase: Double = Double(index % 7) * 0.16
+                node.runAction(.sequence([
+                    .wait(duration: phase),
+                    .repeatForever(.sequence([
+                        .scale(to: 1.45, duration: 1.3),
+                        .scale(to: 0.9, duration: 1.3),
+                    ])),
+                ]))
+            }
+
+            eventField.addChildNode(node)
+        }
+    }
+
+    private func updateHUD() {
+        let health = snapshot.failure == nil ? snapshot.overall : .unknown
+        headline.stringValue = health.rawValue.uppercased()
+        headline.textColor = health.color
+
+        subhead.stringValue = [snapshot.hostName, snapshot.hostOS]
+            .filter { !$0.isEmpty }
+            .joined(separator: "  ·  ")
+
+        let alerts: Int = events.filter { $0.isAlert }.count
+        let queued: Int = events.filter { $0.deliver && !$0.sent }.count
+        let quiet: Int = events.count - alerts
+
+        // Built in pieces with the types written down. As one interpolated
+        // ternary this expression alone took the type checker past any
+        // reasonable build time.
+        if events.isEmpty {
+            legend.stringValue = "No events spooled yet"
+        } else {
+            var parts: [String] = []
+            parts.append("● " + String(alerts) + " alerting")
+            parts.append("● " + String(quiet) + " retro-hunt")
+            parts.append("↑ " + String(queued) + " queued for Hub")
+            legend.stringValue = parts.joined(separator: "    ")
+        }
+
+        let hint: String = "drag to orbit, scroll to zoom"
+
+        if let oldest = events.last?.at, let newest = events.first?.at {
+            let span: Int = Int(newest.timeIntervalSince(oldest) / 60)
+            let counted: String = String(events.count)
+            footnote.stringValue = counted + " events spanning " + String(span) + " min  ·  " + hint
+        } else {
+            footnote.stringValue = hint
+        }
     }
 }
 

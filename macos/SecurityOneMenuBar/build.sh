@@ -52,6 +52,7 @@ fi
 swiftc -O \
     -target "$(uname -m)-apple-macos11.0" \
     -framework AppKit \
+    -framework SceneKit \
     -o "$BUNDLE/Contents/MacOS/$APP_NAME" \
     "$HERE/main.swift"
 
