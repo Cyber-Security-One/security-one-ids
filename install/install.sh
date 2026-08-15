@@ -381,6 +381,110 @@ if [ "$INSTALL_SURICATA" = "yes" ]; then
     install_suricata || echo -e "${YELLOW}⚠️  Suricata installation skipped${NC}"
 fi
 
+# Suricata log rotation.
+#
+# eve.json records every event Suricata sees, not only the alerts, so it is by
+# a wide margin the fastest-growing file the agent is responsible for. Nothing
+# rotated it and Suricata will not rotate it alone: the host this was written
+# on reached 79 GB of eve.json, 19 GB of fast.log and 7.8 GB of stats.log, and
+# took the disk to 99% full. A sensor that fills the disk it is watching over
+# eventually stops being a sensor.
+#
+# Rotation is by size, not by date, because the growth rate follows the link
+# rather than the calendar — the same config has to hold on a quiet laptop and
+# on a mirrored uplink.
+#
+# Suricata reopens its logs on SIGHUP, so the path stays stable across a
+# rotation. That is required rather than convenient: the agent reads
+# /var/log/suricata/eve.json by that exact name.
+install_log_rotation() {
+    echo -e "\n${CYAN}🔄 Configuring Suricata log rotation...${NC}"
+
+    if [ ! -d /var/log/suricata ]; then
+        echo -e "${YELLOW}⚠️  /var/log/suricata is not present; skipping rotation setup${NC}"
+        return 0
+    fi
+
+    if [ "$OS" = "macos" ]; then
+        mkdir -p /etc/newsyslog.d
+
+        # Two fields here are load-bearing in ways that are not obvious.
+        #
+        # The B flag suppresses the "logfile turned over" line newsyslog would
+        # otherwise write into the file it just created. eve.json is read a
+        # line at a time as JSON, so that line would make the first record of
+        # every rotation unparseable.
+        #
+        # The pid_file field decides who gets signalled. An entry without one
+        # signals syslogd — and Suricata, never told anything happened, would
+        # keep writing into the file that was renamed out from under it, so
+        # eve.json would sit at zero bytes while the disk kept filling.
+        cat > /etc/newsyslog.d/security-one-suricata.conf << 'NEWSYSLOG'
+# Security One IDS — Suricata log rotation
+# logfilename                    [owner:group]  mode  count  size    when  flags [/pid_file] [sig_num]
+/var/log/suricata/eve.json       root:wheel     644   7      512000  *     BZ    /var/log/suricata/suricata.pid 1
+/var/log/suricata/fast.log       root:wheel     644   7      102400  *     BZ    /var/log/suricata/suricata.pid 1
+/var/log/suricata/stats.log      root:wheel     644   5      51200   *     BZ    /var/log/suricata/suricata.pid 1
+/var/log/suricata/suricata.log   root:wheel     644   5      51200   *     BZ    /var/log/suricata/suricata.pid 1
+NEWSYSLOG
+        chmod 644 /etc/newsyslog.d/security-one-suricata.conf
+
+        # Checked now rather than discovered later: a config newsyslog refuses
+        # is indistinguishable, from the outside, from one that is working.
+        if newsyslog -n -f /etc/newsyslog.d/security-one-suricata.conf >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ Log rotation configured (/etc/newsyslog.d/security-one-suricata.conf)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  newsyslog rejected the rotation config; check it by hand${NC}"
+        fi
+    else
+        mkdir -p /etc/logrotate.d
+
+        cat > /etc/logrotate.d/security-one-suricata << 'LOGROTATE'
+# Security One IDS — Suricata log rotation
+/var/log/suricata/eve.json {
+    size 500M
+    rotate 7
+    compress
+    missingok
+    notifempty
+    create 644 root root
+    sharedscripts
+    postrotate
+        [ -f /var/log/suricata/suricata.pid ] && kill -HUP "$(cat /var/log/suricata/suricata.pid)" 2>/dev/null || true
+    endscript
+}
+
+/var/log/suricata/fast.log
+/var/log/suricata/stats.log
+/var/log/suricata/suricata.log {
+    size 100M
+    rotate 5
+    compress
+    missingok
+    notifempty
+    create 644 root root
+    sharedscripts
+    postrotate
+        [ -f /var/log/suricata/suricata.pid ] && kill -HUP "$(cat /var/log/suricata/suricata.pid)" 2>/dev/null || true
+    endscript
+}
+LOGROTATE
+        chmod 644 /etc/logrotate.d/security-one-suricata
+
+        if ! command -v logrotate >/dev/null 2>&1; then
+            echo -e "${YELLOW}⚠️  logrotate is not installed; the config is in place but nothing will run it${NC}"
+        elif logrotate -d /etc/logrotate.d/security-one-suricata >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ Log rotation configured (/etc/logrotate.d/security-one-suricata)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  logrotate rejected the rotation config; check it by hand${NC}"
+        fi
+    fi
+
+    return 0
+}
+
+install_log_rotation || echo -e "${YELLOW}⚠️  Log rotation setup skipped${NC}"
+
 # The endpoint sensor.
 #
 # Linux fetches its own package at runtime, so nothing is needed here. macOS
