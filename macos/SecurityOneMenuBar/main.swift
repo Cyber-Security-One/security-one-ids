@@ -103,6 +103,24 @@ struct AgentEvent {
     var isAlert: Bool { severity != nil }
 }
 
+/// What the console asked for, and what the spool actually holds.
+///
+/// The two are not the same number and the difference matters. A host can hold
+/// half a million events; drawing the most recent few thousand of them is the
+/// only workable thing to do, and saying "5,281 events" while sitting on
+/// 512,904 would misrepresent the size of the haystack in the direction that
+/// makes an investigator stop looking.
+struct EventFeed {
+    var events: [AgentEvent] = []
+    /// Rows in the spool. Nil when the agent could not count them.
+    var held: Int?
+
+    var truncated: Bool {
+        guard let held = held else { return false }
+        return held > events.count
+    }
+}
+
 // MARK: - Reading the agent
 
 enum AgentReader {
@@ -211,13 +229,23 @@ enum AgentReader {
     /// second reader that opened the file directly would be a second
     /// implementation of all three — one that keeps working, quietly wrongly,
     /// the day any of them changes.
-    static func events(limit: Int = 240) -> [AgentEvent] {
+    /// The ceiling on what one console draw will hold.
+    ///
+    /// Not a guess at what looks good: it is the point past which the read
+    /// itself gets slow and the scene stops being legible anyway. When the
+    /// spool holds more, the console says so rather than quietly drawing a
+    /// fraction.
+    static let eventCeiling = 4000
+
+    static func events(limit: Int = eventCeiling) -> EventFeed {
         guard let result = invoke(["artisan", "ids:events", "--json", "--limit=\(limit)"]),
               let json = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
               let rows = json["events"] as? [[String: Any]]
-        else { return [] }
+        else { return EventFeed() }
 
-        return rows.compactMap { row in
+        var feed = EventFeed()
+        feed.held = int(json["held"])
+        feed.events = rows.compactMap { row in
             guard let ts = int(row["ts"]) else { return nil }
 
             return AgentEvent(
@@ -231,6 +259,8 @@ enum AgentReader {
                 sent: (row["sent"] as? Bool) ?? false
             )
         }
+
+        return feed
     }
 
     static func read() -> Snapshot {
@@ -612,10 +642,10 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // closed window current would be a cost for nothing.
                 if self?.console?.isOpen == true {
                     DispatchQueue.global(qos: .utility).async {
-                        let events = AgentReader.events()
+                        let feed = AgentReader.events()
 
                         DispatchQueue.main.async {
-                            self?.console?.update(next, events: events)
+                            self?.console?.update(next, feed: feed)
                         }
                     }
                 }
@@ -795,16 +825,16 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let current = snapshot
-        console?.present(current, events: [])
+        console?.present(current, feed: EventFeed())
 
         // Opened before the events arrive, on purpose. Reading them takes a
         // second or two, and a window that appears immediately and fills is
         // easier to trust than one that appears only once everything is ready.
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let events = AgentReader.events()
+            let feed = AgentReader.events()
 
             DispatchQueue.main.async {
-                self?.console?.update(current, events: events)
+                self?.console?.update(current, feed: feed)
             }
         }
 
@@ -1659,10 +1689,12 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
     private let subhead = NSTextField(labelWithString: "")
     private let legend = NSTextField(labelWithString: "")
     private let footnote = NSTextField(labelWithString: "")
+    private let transmission = NSTextField(labelWithString: "")
 
     private let onRefresh: () -> Void
     private var snapshot = Snapshot()
-    private var events: [AgentEvent] = []
+    private var feed = EventFeed()
+    private var events: [AgentEvent] { feed.events }
 
     init(onRefresh: @escaping () -> Void) {
         self.onRefresh = onRefresh
@@ -1671,9 +1703,9 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
 
     var isOpen: Bool { window?.isVisible ?? false }
 
-    func present(_ snapshot: Snapshot, events: [AgentEvent]) {
+    func present(_ snapshot: Snapshot, feed: EventFeed) {
         self.snapshot = snapshot
-        self.events = events
+        self.feed = feed
 
         if window == nil {
             build()
@@ -1685,9 +1717,9 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
     }
 
-    func update(_ snapshot: Snapshot, events: [AgentEvent]) {
+    func update(_ snapshot: Snapshot, feed: EventFeed) {
         self.snapshot = snapshot
-        self.events = events
+        self.feed = feed
         guard isOpen else { return }
         rebuild()
     }
@@ -1804,7 +1836,10 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         footnote.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         footnote.textColor = NSColor(calibratedWhite: 0.36, alpha: 1)
 
-        for field in [headline, subhead, legend, footnote] {
+        transmission.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        transmission.textColor = NSColor(calibratedWhite: 0.52, alpha: 1)
+
+        for field in [headline, subhead, legend, footnote, transmission] {
             field.translatesAutoresizingMaskIntoConstraints = false
             field.drawsBackground = false
         }
@@ -1817,7 +1852,7 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
         rule.widthAnchor.constraint(equalToConstant: 168).isActive = true
 
-        let hud = NSStackView(views: [headline, subhead, rule, legend])
+        let hud = NSStackView(views: [headline, subhead, rule, legend, transmission])
         hud.orientation = .vertical
         hud.alignment = .leading
         hud.spacing = 6
@@ -1974,6 +2009,8 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
 
         buildCore()
         buildRing()
+        buildInflow()
+        buildUplink()
         buildEventField()
         updateHUD()
     }
@@ -2187,78 +2224,254 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
 
             let beamNode = SCNNode(geometry: beam)
             beamNode.position = SCNVector3(x / 2, CGFloat(-3.5), z / 2)
-            let tilt: CGFloat = CGFloat.pi / 2
-            let spin: CGFloat = -angle + CGFloat.pi / 2
-            beamNode.eulerAngles = SCNVector3(tilt, CGFloat(0), spin)
+            // Aimed, not composed out of Euler angles.
+            //
+            // A cylinder stands along its own +Y, so pointing one at the core
+            // means rotating about two axes at once, and the hand-written pair
+            // above was wrong: the beams did not run from column to core, they
+            // sliced across the whole scene at arbitrary angles and read as
+            // rendering artefacts. look(at:) solves the same problem exactly
+            // and cannot be got subtly wrong.
+            beamNode.look(
+                at: SCNVector3(CGFloat(0), CGFloat(-3.5), CGFloat(0)),
+                up: SCNVector3(CGFloat(0), CGFloat(1), CGFloat(0)),
+                localFront: SCNVector3(CGFloat(0), CGFloat(1), CGFloat(0))
+            )
             ringNode.addChildNode(beamNode)
         }
     }
 
-    /// Every event the sensor holds, one point each, on a Fibonacci shell.
+    /// Every event the sensor is holding, as a distribution over time.
     ///
-    /// The lattice spaces points evenly instead of clumping them at the poles
-    /// the way naive latitude and longitude does, and radius carries recency —
-    /// newest nearest the core — so a burst arrives as a visible shell rather
-    /// than as a number that went up.
+    /// The first version of this was a shell of one dot per event around the
+    /// core. It was accurate and it was unreadable: five hundred points on a
+    /// sphere is a texture, not a reading, and it buried the machine it was
+    /// supposed to be describing.
+    ///
+    /// The question the events actually answer is "when", so they are bucketed
+    /// by time and stood up as bars on the floor — oldest at the back, newest
+    /// at the front. A burst is a spike, a steady drift is a flat run, and the
+    /// alerting share is the lit part of each bar rather than a separate
+    /// colour of dot mixed in among the rest. Every event is still counted;
+    /// none of them is drawn twice.
     private func buildEventField() {
         guard !events.isEmpty else { return }
 
-        let golden: CGFloat = CGFloat.pi * (3 - sqrt(5.0))
-        let count: Int = events.count
+        let buckets: Int = 36
+        var totals = [Int](repeating: 0, count: buckets)
+        var alerting = [Int](repeating: 0, count: buckets)
 
-        var geometries: [String: SCNGeometry] = [:]
+        // events arrive newest first
+        let newest: Date = events.first?.at ?? Date()
+        let oldest: Date = events.last?.at ?? newest
+        let span: Double = max(1, newest.timeIntervalSince(oldest))
 
-        func geometry(for event: AgentEvent) -> SCNGeometry {
-            let key: String = event.isAlert ? "alert" : "quiet"
+        for event in events {
+            let age: Double = newest.timeIntervalSince(event.at)
+            let slot: Int = min(buckets - 1, max(0, Int((age / span) * Double(buckets - 1))))
+            totals[slot] += 1
 
-            if let existing = geometries[key] { return existing }
-
-            let colour: NSColor = event.isAlert ? Palette.alert : Palette.quiet
-            let sphere = SCNSphere(radius: event.isAlert ? 0.062 : 0.042)
-            sphere.segmentCount = 10
-
-            let material = SCNMaterial()
-            material.diffuse.contents = colour
-            material.emission.contents = colour
-            material.lightingModel = .constant
-            // Added rather than blended, so overlapping points build up into
-            // brightness. Density becomes something you can see.
-            material.blendMode = .add
-            material.writesToDepthBuffer = false
-            sphere.materials = [material]
-
-            geometries[key] = sphere
-            return sphere
+            if event.isAlert {
+                alerting[slot] += 1
+            }
         }
 
-        for (index, event) in events.enumerated() {
-            let progress: CGFloat = CGFloat(index) / CGFloat(max(1, count - 1))
-            let y: CGFloat = 1 - progress * 2
-            let ringRadius: CGFloat = sqrt(max(0, 1 - y * y))
-            let theta: CGFloat = golden * CGFloat(index)
-            let depth: CGFloat = 6.2 + (CGFloat(index) / CGFloat(count)) * 2.8
+        let peak: Int = max(1, totals.max() ?? 1)
+        let radius: CGFloat = 5.4
+        let tallest: CGFloat = 3.2
 
-            let px: CGFloat = cos(theta) * ringRadius * depth
-            let py: CGFloat = y * depth
-            let pz: CGFloat = sin(theta) * ringRadius * depth
+        for slot in 0 ..< buckets {
+            let fraction: CGFloat = CGFloat(slot) / CGFloat(buckets)
+            let angle: CGFloat = fraction * 2 * CGFloat.pi
+            let x: CGFloat = radius * cos(angle)
+            let z: CGFloat = radius * sin(angle)
 
-            let node = SCNNode(geometry: geometry(for: event))
-            node.position = SCNVector3(px, py, pz)
+            // A bucket with nothing in it still gets a mark.
+            //
+            // Skipping them left a gap in the ring wherever the sensor had
+            // been down, and a gap reads as "not drawn" rather than as
+            // "measured, and it was none" — which is the same confusion
+            // between absent and unknown that the rest of this console works
+            // to avoid. The tick is the floor of the chart, so a quiet stretch
+            // is visibly quiet instead of visibly missing.
+            guard totals[slot] > 0 else {
+                let tick = SCNBox(width: 0.16, height: 0.03, length: 0.16, chamferRadius: 0.01)
+                let tickMaterial = SCNMaterial()
+                tickMaterial.diffuse.contents = Palette.structure.withAlphaComponent(0.30)
+                tickMaterial.emission.contents = Palette.structure.withAlphaComponent(0.18)
+                tickMaterial.lightingModel = .constant
+                tick.materials = [tickMaterial]
 
-            // Alerts breathe. Everything else is still, so the movement means
-            // one specific thing rather than being ambience.
-            if event.isAlert {
-                let phase: Double = Double(index % 7) * 0.16
-                node.runAction(.sequence([
-                    .wait(duration: phase),
-                    .repeatForever(.sequence([
-                        .scale(to: 1.45, duration: 1.3),
-                        .scale(to: 0.9, duration: 1.3),
-                    ])),
-                ]))
+                let tickNode = SCNNode(geometry: tick)
+                tickNode.position = SCNVector3(x, CGFloat(-5.19), z)
+                eventField.addChildNode(tickNode)
+                continue
             }
 
+            let share: CGFloat = CGFloat(totals[slot]) / CGFloat(peak)
+            let height: CGFloat = 0.12 + share * tallest
+
+            let alertShare: CGFloat = CGFloat(alerting[slot]) / CGFloat(totals[slot])
+            let colour: NSColor = alertShare > 0.5 ? Palette.alert : Palette.quiet
+
+            let bar = SCNBox(width: 0.16, height: height, length: 0.16, chamferRadius: 0.02)
+            let material = SCNMaterial()
+            material.diffuse.contents = colour.withAlphaComponent(0.75)
+            material.emission.contents = colour.withAlphaComponent(0.55 + alertShare * 0.4)
+            material.lightingModel = .constant
+            bar.materials = [material]
+
+            let node = SCNNode(geometry: bar)
+            node.position = SCNVector3(x, CGFloat(-5.2) + height / 2, z)
             eventField.addChildNode(node)
+        }
+    }
+
+    /// Telemetry arriving at the agent.
+    ///
+    /// The counterpart to buildUplink(): the sensors feed the rack, the rack
+    /// feeds the Hub, and between them that is the whole path a piece of
+    /// evidence takes on this host.
+    ///
+    /// Only a subsystem that is actually up sends anything, and the endpoint
+    /// sensor only sends if it has spooled something. A console that animates
+    /// a dead sensor delivering telemetry would be inventing the exact fact
+    /// this product exists to report — and it would look completely
+    /// convincing, which is what makes it worth spelling out.
+    private func buildInflow() {
+        let radius: CGFloat = 8.2
+        let sources: Set<String> = ["Endpoint sensor", "Suricata"]
+
+        for (index, row) in snapshot.rows.enumerated() {
+            guard sources.contains(row.title) else { continue }
+            guard row.health == .ok || row.health == .warming else { continue }
+
+            if row.title == "Endpoint sensor", events.isEmpty { continue }
+
+            let fraction: CGFloat = CGFloat(index) / CGFloat(snapshot.rows.count)
+            let angle: CGFloat = fraction * 2 * CGFloat.pi
+            let origin = SCNVector3(radius * cos(angle), CGFloat(-1.8), radius * sin(angle))
+            let core = SCNVector3(CGFloat(0), CGFloat(0), CGFloat(0))
+
+            // Three per source, staggered. The count is a rhythm, not a rate:
+            // the agent does not report a per-second figure, so the console
+            // must not appear to.
+            let packets: Int = 3
+            let flight: Double = 2.1
+
+            for slot in 0 ..< packets {
+                let packet = SCNSphere(radius: 0.06)
+                packet.segmentCount = 8
+                let material = SCNMaterial()
+                material.diffuse.contents = row.health.color
+                material.emission.contents = row.health.color.withAlphaComponent(0.85)
+                material.lightingModel = .constant
+                material.writesToDepthBuffer = false
+                packet.materials = [material]
+
+                let node = SCNNode(geometry: packet)
+                node.position = origin
+                node.opacity = 0
+
+                let stagger: Double = (flight / Double(packets)) * Double(slot)
+
+                node.runAction(.sequence([
+                    .wait(duration: stagger),
+                    .repeatForever(.sequence([
+                        .fadeIn(duration: 0.16),
+                        .move(to: core, duration: flight),
+                        .fadeOut(duration: 0.2),
+                        .move(to: origin, duration: 0),
+                    ])),
+                ]))
+
+                ringNode.addChildNode(node)
+            }
+        }
+    }
+
+    /// Traffic going up the wire to the Hub.
+    ///
+    /// Driven by the agent's own delivery record rather than by the fact that
+    /// a console looks better with something moving in it. If nothing has been
+    /// delivered and nothing is queued, nothing flies: a scene that animates
+    /// traffic on a dead link is lying in the most convincing way available to
+    /// it, and this is the one view where that would be easiest to get away
+    /// with.
+    ///
+    /// The packets carry the Hub's own colour, so a link that is backing off
+    /// sends amber up the same wire rather than green.
+    private func buildUplink() {
+        guard let hubIndex = snapshot.rows.firstIndex(where: { $0.title == "Hub" }) else { return }
+
+        guard let hub = snapshot.raw["hub"] as? [String: Any],
+              let record = hub["transmission"] as? [String: Any],
+              (record["observed"] as? Bool) == true
+        else { return }
+
+        let delivered: Int = AgentReader.int(record["delivered"]) ?? 0
+        let failures: Int = AgentReader.int(record["failures"]) ?? 0
+        let queued: Int = events.filter { $0.deliver && !$0.sent }.count
+
+        guard delivered > 0 || failures > 0 || queued > 0 else { return }
+
+        let health = snapshot.rows[hubIndex].health
+        let radius: CGFloat = 8.2
+        let fraction: CGFloat = CGFloat(hubIndex) / CGFloat(snapshot.rows.count)
+        let angle: CGFloat = fraction * 2 * CGFloat.pi
+        let target = SCNVector3(radius * cos(angle), CGFloat(-1.9), radius * sin(angle))
+
+        // A thin standing line the packets run along, so the route is legible
+        // even between them.
+        let wire = SCNCylinder(radius: 0.014, height: radius)
+        let wireMaterial = SCNMaterial()
+        wireMaterial.diffuse.contents = health.color.withAlphaComponent(0.30)
+        wireMaterial.emission.contents = health.color.withAlphaComponent(0.28)
+        wireMaterial.lightingModel = .constant
+        wireMaterial.writesToDepthBuffer = false
+        wire.materials = [wireMaterial]
+
+        let wireNode = SCNNode(geometry: wire)
+        wireNode.position = SCNVector3(target.x / 2, target.y / 2, target.z / 2)
+        wireNode.look(
+            at: target,
+            up: SCNVector3(CGFloat(0), CGFloat(1), CGFloat(0)),
+            localFront: SCNVector3(CGFloat(0), CGFloat(1), CGFloat(0))
+        )
+        ringNode.addChildNode(wireNode)
+
+        // Four in flight, staggered. Enough to read as a stream, few enough
+        // that the count is not mistaken for a measurement of throughput.
+        let packets: Int = 4
+        let flight: Double = failures > 0 ? 2.6 : 1.7
+
+        for index in 0 ..< packets {
+            let packet = SCNSphere(radius: 0.075)
+            packet.segmentCount = 10
+            let material = SCNMaterial()
+            material.diffuse.contents = health.color
+            material.emission.contents = health.color.withAlphaComponent(0.9)
+            material.lightingModel = .constant
+            material.writesToDepthBuffer = false
+            packet.materials = [material]
+
+            let node = SCNNode(geometry: packet)
+            node.position = SCNVector3(CGFloat(0), CGFloat(0), CGFloat(0))
+            node.opacity = 0
+
+            let stagger: Double = (flight / Double(packets)) * Double(index)
+
+            node.runAction(.sequence([
+                .wait(duration: stagger),
+                .repeatForever(.sequence([
+                    .group([.fadeIn(duration: 0.18), .scale(to: 1.0, duration: 0.18)]),
+                    .move(to: target, duration: flight),
+                    .fadeOut(duration: 0.22),
+                    .move(to: SCNVector3(CGFloat(0), CGFloat(0), CGFloat(0)), duration: 0),
+                ])),
+            ]))
+
+            ringNode.addChildNode(node)
         }
     }
 
@@ -2275,28 +2488,90 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         let queued: Int = events.filter { $0.deliver && !$0.sent }.count
         let quiet: Int = events.count - alerts
 
-        // Built in pieces with the types written down. As one interpolated
-        // ternary this expression alone took the type checker past any
-        // reasonable build time.
         if events.isEmpty {
             legend.stringValue = "No events spooled yet"
         } else {
             var parts: [String] = []
             parts.append("● " + String(alerts) + " alerting")
             parts.append("● " + String(quiet) + " retro-hunt")
-            parts.append("↑ " + String(queued) + " queued for Hub")
+            parts.append("↑ " + String(queued) + " queued")
             legend.stringValue = parts.joined(separator: "    ")
         }
 
+        transmission.stringValue = hubLine()
+        transmission.textColor = hubTroubled()
+            ? NSColor.systemYellow.withAlphaComponent(0.9)
+            : NSColor(calibratedWhite: 0.52, alpha: 1)
+
+        footnote.stringValue = footerLine()
+    }
+
+    /// What the Hub link has actually been doing.
+    ///
+    /// The instantaneous state says "ok" between failures, which on a link
+    /// that fails and recovers all day is true every time it is asked and
+    /// useless. The agent's rolling record is what makes an unreliable link
+    /// visible, so it is what this line shows.
+    private func hubLine() -> String {
+        guard let hub = snapshot.raw["hub"] as? [String: Any] else { return "" }
+
+        let host = hub["url"] as? String ?? "not configured"
+
+        guard let record = hub["transmission"] as? [String: Any],
+              (record["observed"] as? Bool) == true
+        else { return "HUB  " + host + "  ·  no delivery attempted yet" }
+
+        let attempts = AgentReader.int(record["attempts"]) ?? 0
+        let failures = AgentReader.int(record["failures"]) ?? 0
+        let delivered = AgentReader.int(record["delivered"]) ?? 0
+
+        var line = "HUB  " + host + "  ·  24h "
+        line += String(attempts - failures) + "/" + String(attempts) + " ok"
+        line += "  ·  " + AgentReader.format(delivered) + " delivered"
+
+        if failures > 0 {
+            line += "  ·  " + String(failures) + " failed"
+
+            if let reason = record["last_error"] as? String, !reason.isEmpty {
+                line += " (" + reason + ")"
+            }
+        }
+
+        return line
+    }
+
+    private func hubTroubled() -> Bool {
+        guard let hub = snapshot.raw["hub"] as? [String: Any],
+              let record = hub["transmission"] as? [String: Any]
+        else { return false }
+
+        return (AgentReader.int(record["failures"]) ?? 0) > 0
+    }
+
+    /// Says what is not on screen.
+    ///
+    /// A scene that draws four thousand of half a million points and reports
+    /// only the four thousand is the same failure as a status that paints
+    /// unknown green: it reads as complete when it is a sample.
+    private func footerLine() -> String {
         let hint: String = "drag to orbit, scroll to zoom"
+
+        guard !events.isEmpty else { return hint }
+
+        var line = String(events.count)
+
+        if feed.truncated, let held = feed.held {
+            line += " of " + AgentReader.format(held) + " held"
+        } else {
+            line += " events"
+        }
 
         if let oldest = events.last?.at, let newest = events.first?.at {
             let span: Int = Int(newest.timeIntervalSince(oldest) / 60)
-            let counted: String = String(events.count)
-            footnote.stringValue = counted + " events spanning " + String(span) + " min  ·  " + hint
-        } else {
-            footnote.stringValue = hint
+            line += "  ·  spanning " + String(span) + " min"
         }
+
+        return line + "  ·  " + hint
     }
 }
 
