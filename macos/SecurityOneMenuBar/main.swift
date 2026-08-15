@@ -119,49 +119,104 @@ enum AgentReader {
             return s
         }
 
+        // Collected through temporary files rather than pipes.
+        //
+        // A pipe reaches end-of-file only when every copy of its write end has
+        // been closed, and `php artisan` is not guaranteed to be the last one
+        // holding it: anything it spawns inherits the same descriptor and can
+        // outlive it. That is not a hypothetical. The agent's Suricata stats
+        // used to leave an orphaned `grep` scanning a 79 GB log for hours, and
+        // for as long as one lived, `readDataToEndOfFile()` on this side sat
+        // waiting for it. The console stayed running with a dot that never
+        // resolved and a menu that never filled, blocked on a process it had
+        // never heard of and could not name.
+        //
+        // A file has no such rule. Once php exits, what it wrote is there to
+        // read, and a straggler still holding the descriptor is not this
+        // program's problem.
+        let scratch = FileManager.default.temporaryDirectory
+        let stamp = "\(ProcessInfo.processInfo.processIdentifier)-\(UInt64.random(in: 0 ..< .max))"
+        let outURL = scratch.appendingPathComponent("securityone-status-\(stamp).out")
+        let errURL = scratch.appendingPathComponent("securityone-status-\(stamp).err")
+
+        defer {
+            try? FileManager.default.removeItem(at: outURL)
+            try? FileManager.default.removeItem(at: errURL)
+        }
+
+        let files = FileManager.default
+        guard files.createFile(atPath: outURL.path, contents: nil),
+              files.createFile(atPath: errURL.path, contents: nil),
+              let outHandle = try? FileHandle(forWritingTo: outURL),
+              let errHandle = try? FileHandle(forWritingTo: errURL)
+        else {
+            var s = Snapshot()
+            s.failure = "Could not open a scratch file in \(scratch.path)."
+            return s
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: php)
         process.arguments = ["artisan", "ids:status", "--json"]
         process.currentDirectoryURL = URL(fileURLWithPath: installPath)
+        process.standardOutput = outHandle
+        process.standardError = errHandle
 
-        let out = Pipe()
-        let err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
+        // Set before run(), so a command that exits immediately cannot signal
+        // before there is anything listening.
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
 
         do {
             try process.run()
         } catch {
+            try? outHandle.close()
+            try? errHandle.close()
             var s = Snapshot()
             s.failure = "Could not run the agent: \(error.localizedDescription)"
             return s
         }
 
-        // Terminate it if it overruns. Killing the process closes the pipes,
-        // which is what unblocks the reads below — so the timeout is enforced
-        // without a second thread having to share state with this one.
-        let killer = DispatchWorkItem { [weak process] in process?.terminate() }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + readTimeout, execute: killer)
+        // Bounded, because the answer can legitimately be slow and can also
+        // never come: the command shells out to osqueryd and systemctl, each
+        // with its own idea of how long to wait.
+        //
+        // Terminating php is not by itself enough to free a reader blocked on
+        // a pipe — a grandchild keeps the descriptor it inherited, which is
+        // the bug this replaced. With the output in files there is nothing to
+        // free: once the process is gone, what it wrote is readable.
+        var timedOut = false
+        if finished.wait(timeout: .now() + readTimeout) == .timedOut {
+            timedOut = true
+            process.terminate()
 
-        // Read before waiting: a pipe that fills while nobody drains it
-        // deadlocks, and the JSON is comfortably larger than the buffer.
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        let errorText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        process.waitUntilExit()
-        killer.cancel()
-
-        if process.terminationReason == .uncaughtSignal {
-            var s = Snapshot()
-            s.failure = "The agent did not answer within \(Int(readTimeout))s — `php artisan ids:status` is hanging."
-            return s
+            if finished.wait(timeout: .now() + 3) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 3)
+            }
         }
+
+        try? outHandle.close()
+        try? errHandle.close()
+
+        let data = (try? Data(contentsOf: outURL)) ?? Data()
+        let errorText = String(
+            data: (try? Data(contentsOf: errURL)) ?? Data(),
+            encoding: .utf8
+        ) ?? ""
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             var s = Snapshot()
             let trimmed = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
-            s.failure = trimmed.isEmpty
-                ? "The agent returned nothing readable."
-                : String(trimmed.prefix(300))
+
+            if timedOut {
+                s.failure = "The agent did not answer within \(Int(readTimeout))s — `php artisan ids:status` is hanging."
+            } else {
+                s.failure = trimmed.isEmpty
+                    ? "The agent returned nothing readable."
+                    : String(trimmed.prefix(300))
+            }
+
             return s
         }
 
