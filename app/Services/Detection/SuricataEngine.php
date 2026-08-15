@@ -1352,33 +1352,93 @@ YAML;
     /**
      * Count alerts from today in eve.json
      */
+    /**
+     * How much of the end of eve.json countAlertsToday() will look at.
+     *
+     * eve.json carries every event Suricata emits, not only alerts, so on a
+     * busy sensor it grows by gigabytes a day; the host this was found on had
+     * reached 79 GB. Any full scan of it has to be bounded by something, and
+     * a timeout is not something: see countAlertsToday().
+     */
+    private const ALERT_SCAN_BYTES = 33554432; // 32 MiB
+
+    /**
+     * Count today's alert and drop events near the end of eve.json.
+     *
+     * This reads a fixed window from the end of the file. What it replaced ran
+     * `grep -cE ... eve.json` under `Process::timeout(10)`, which on a file
+     * this size failed in a way that was worse than not running at all. The
+     * timeout stopped the shell but not the grep underneath it, so every call
+     * left behind an orphaned full-file scan: 424 of them had accumulated on
+     * that host, the oldest three days old, load average in the hundreds. Each
+     * one also held the stdout it had inherited, which is what made the macOS
+     * console hang — it was waiting for end-of-file on a pipe kept open by a
+     * process it had never heard of.
+     *
+     * And it never worked even once: the timeout arrived as an exception, so
+     * the function returned 0 on every call it had ever made.
+     *
+     * A window is a ceiling on work, so this returns a floor rather than a
+     * total — if today is busier than the window, it counts what is in the
+     * window. That is the honest shape of the answer, it arrives in
+     * milliseconds, and it leaves nothing running behind it.
+     */
     private function countAlertsToday(): int
     {
         if (!file_exists($this->alertLogPath)) {
             return 0;
         }
 
-        $today = date('Y-m-d');
+        $size = @filesize($this->alertLogPath);
+        if ($size === false || $size === 0) {
+            return 0;
+        }
+
+        $handle = @fopen($this->alertLogPath, 'rb');
+        if ($handle === false) {
+            return 0;
+        }
 
         try {
-            // Use grep for performance
-            // Note: Suricata eve.json may use either compact or spaced JSON format
-            // e.g., "event_type":"alert" or "event_type": "alert"
-            $result = Process::timeout(10)->run(
-                "grep -cE '\"event_type\"\\s*:\\s*\"(alert|drop)\"' " . escapeshellarg($this->alertLogPath) . " 2>/dev/null"
-            );
-            $total = (int) trim($result->output());
+            if ($size > self::ALERT_SCAN_BYTES) {
+                fseek($handle, -self::ALERT_SCAN_BYTES, SEEK_END);
+                fgets($handle); // discard the partial line the seek landed in
+            }
 
-            // For a more accurate today count, filter by date
-            $result = Process::timeout(10)->run(
-                "grep -E '\"event_type\"\\s*:\\s*\"(alert|drop)\"' " . escapeshellarg($this->alertLogPath) .
-                " | grep -c '\"timestamp\".*" . $today . "' 2>/dev/null"
-            );
-            $count = (int) trim($result->output());
+            $today = preg_quote(date('Y-m-d'), '/');
+            $matched = 0;
+            $dated = 0;
+            $sawTimestamp = false;
 
-            return $count > 0 ? $count : $total;
-        } catch (\Exception $e) {
-            return 0;
+            while (($line = fgets($handle)) !== false) {
+                if (strpos($line, '"event_type"') === false) {
+                    continue;
+                }
+
+                if (preg_match('/"event_type"\s*:\s*"(?:alert|drop)"/', $line) !== 1) {
+                    continue;
+                }
+
+                $matched++;
+
+                if (strpos($line, '"timestamp"') === false) {
+                    continue;
+                }
+
+                $sawTimestamp = true;
+
+                if (preg_match('/"timestamp"\s*:\s*"' . $today . '/', $line) === 1) {
+                    $dated++;
+                }
+            }
+
+            // If nothing in the window carried a timestamp at all, the format
+            // has changed rather than the traffic having stopped. Reporting
+            // the window's alert count says something true about a different
+            // question, which beats reporting "none today" about this one.
+            return $sawTimestamp ? $dated : $matched;
+        } finally {
+            fclose($handle);
         }
     }
 
