@@ -19,6 +19,9 @@ class SuricataEngine
 
     private string $suricataPath;
     private string $configPath;
+    /// errno for "operation not permitted" — see isProcessRunning().
+    private const EPERM = 1;
+
     private string $alertLogPath;
     private string $pidFile;
     private string $logDir;
@@ -1562,7 +1565,17 @@ YAML;
             }
         }
 
-        return posix_kill($pid, 0);
+        if (posix_kill($pid, 0)) {
+            return true;
+        }
+
+        // EPERM is not "no such process". It is the kernel confirming the
+        // process exists and declining to let us signal it, and it is the
+        // ordinary case here rather than the exotic one: Suricata runs as
+        // root while the agent's console runs unprivileged. Reading it as
+        // absence reported a running sensor as down and told the operator to
+        // start a second copy of it.
+        return posix_get_last_error() === self::EPERM;
     }
 
     private function isSuricataProcessActive(): bool
@@ -1578,7 +1591,14 @@ YAML;
             // regex anchored on the binary path so we match both shapes
             // (`/usr/bin/suricata ...` and `/opt/homebrew/bin/suricata ...`)
             // without catching grep / editor windows containing the word.
-            $result = Process::run("pgrep -f '(^|/)suricata(-Main)?\\b' 2>/dev/null");
+            //
+            // The trailing boundary is a POSIX class rather than `\b`, which
+            // is a GNU extension: BSD regex does not know it, so on macOS the
+            // pattern matched nothing at all and this fallback — the one that
+            // covers the case where the pid file cannot be trusted — silently
+            // never fired. `suricata-update` stays excluded either way.
+            $pattern = '(^|/)suricata(-Main)?([[:space:]]|$)';
+            $result = Process::run('pgrep -f ' . escapeshellarg($pattern) . ' 2>/dev/null');
             return !empty(trim($result->output()));
         } catch (\Exception $e) {
             return false;

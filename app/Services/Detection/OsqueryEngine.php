@@ -108,6 +108,12 @@ class OsqueryEngine
             '/opt/osquery/bin/osqueryd',
             '/usr/bin/osqueryd',
             '/usr/local/bin/osqueryd',
+            // macOS. The cask keeps the daemon inside an app bundle and
+            // symlinks only osqueryi and osqueryctl into /usr/local/bin, so
+            // every path above misses it — and the sensor then reports "not
+            // installed", with an instruction to install it, on a host where
+            // it is already installed.
+            '/opt/osquery/lib/osquery.app/Contents/MacOS/osqueryd',
         ] as $candidate) {
             if (is_file($candidate) && is_executable($candidate)) {
                 return $candidate;
@@ -144,60 +150,22 @@ class OsqueryEngine
         return $this->logDir . '/osqueryd.results.log';
     }
 
-    /**
-     * The binary's version, remembered until the binary itself changes.
-     *
-     * Probing costs a process spawn, and on macOS it has been measured at the
-     * full 15 second timeout — every status call, from every caller, for a
-     * string that only changes when the binary is replaced. Keying the cache
-     * on the path and mtime means an upgrade invalidates it for free and
-     * nothing else does.
-     *
-     * The timeout stays generous for the miss, but a failed probe is cached
-     * briefly too: a binary that hangs will hang again in five minutes, and
-     * paying fifteen seconds each time to rediscover that is how a status
-     * command becomes something nobody is willing to run.
-     */
     public function getVersion(): ?string
     {
         if (!$this->isInstalled()) {
             return null;
         }
 
-        $key = 'osquery_version:' . md5($this->binaryPath . ':' . (string) @filemtime($this->binaryPath));
-
-        // The cache store is root-owned, and this is read by unprivileged
-        // callers — the macOS console among them. A cache is an optimisation;
-        // it must never be the reason a status probe fails. Both halves are
-        // allowed to be unavailable, and the only cost is probing again.
-        try {
-            $cached = cache()->get($key);
-
-            if ($cached !== null) {
-                return $cached === '' ? null : (string) $cached;
-            }
-        } catch (\Throwable $e) {
-            Log::debug('[Osquery] Version cache unreadable: ' . $e->getMessage());
-        }
-
-        $version = null;
-
         try {
             $result = Process::timeout(15)->run(escapeshellarg($this->binaryPath) . ' --version 2>&1');
             if ($result->successful() && preg_match('/version\s+([0-9][0-9.]*)/i', $result->output(), $m)) {
-                $version = $m[1];
+                return $m[1];
             }
         } catch (\Exception $e) {
             Log::debug('[Osquery] Version probe failed: ' . $e->getMessage());
         }
 
-        try {
-            cache()->put($key, $version ?? '', $version !== null ? 86400 : 300);
-        } catch (\Throwable $e) {
-            Log::debug('[Osquery] Version cache unwritable: ' . $e->getMessage());
-        }
-
-        return $version;
+        return null;
     }
 
     /* ------------------------------------------------------------------ */
