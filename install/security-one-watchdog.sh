@@ -158,8 +158,45 @@ ensure_suricata_installed() {
     fi
 }
 
+
+# Start the endpoint sensor if it is installed but not running.
+#
+# Installing osqueryd and running it are two different things, and nothing did
+# the second one — not the installer, not this watchdog. A fresh install left
+# the sensor installed, supported, and permanently down, while the status
+# command politely told the operator to run the start command by hand. Suricata
+# already gets looked after above; the sensor that produces the process
+# telemetry deserves it at least as much.
+#
+# Checked once per watchdog start rather than on a loop: the daemon carries
+# KeepAlive, so boot is the moment that actually matters.
+ensure_edr_running() {
+    local status
+    status=$("$PHP_BIN" "$INSTALL_DIR/artisan" ids:sync-edr --status 2>/dev/null) || return 0
+
+    if echo "$status" | grep -qE '^[[:space:]]*running[[:space:]]+yes'; then
+        log_message "INFO" "[EDR] Endpoint sensor already running"
+        return 0
+    fi
+
+    if ! echo "$status" | grep -qE '^[[:space:]]*installed[[:space:]]+yes'; then
+        log_message "INFO" "[EDR] Endpoint sensor not installed; nothing to start"
+        return 0
+    fi
+
+    log_message "INFO" "[EDR] Installed but not running - starting it"
+    if run_artisan "ids:sync-edr --start" 120; then
+        log_message "INFO" "[EDR] Endpoint sensor started"
+    else
+        log_message "WARNING" "[EDR] Endpoint sensor failed to start"
+    fi
+}
+
 # Auto-install Suricata if not present
 ensure_suricata_installed
+
+# Start the endpoint sensor if it is installed but idle
+ensure_edr_running
 
 
 # Cleanup all child processes on exit

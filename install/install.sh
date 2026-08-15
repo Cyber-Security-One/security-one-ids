@@ -888,6 +888,25 @@ EOF
     echo -e "${GREEN}✅ Systemd service created with auto-recovery watchdog${NC}"
 fi
 
+# Start the endpoint sensor.
+#
+# It is installed further up, but installing osqueryd and running it are not
+# the same thing, and nothing here ever did the second one. A one-line install
+# finished with the sensor installed, supported and down, and the status
+# command telling the operator to start it by hand — which is precisely the
+# work a one-line installer exists to remove.
+#
+# This runs here rather than beside the install because it needs the app: the
+# repository and its dependencies do not exist yet at that point in the script.
+echo -e "\n${CYAN}🛰️  Starting endpoint sensor...${NC}"
+cd "$INSTALL_DIR"
+if php artisan ids:sync-edr --start; then
+    echo -e "${GREEN}✅ Endpoint sensor started${NC}"
+else
+    echo -e "${YELLOW}⚠️  Endpoint sensor did not start. Check with:${NC}"
+    echo -e "    ${CYAN}cd $INSTALL_DIR && php artisan ids:sync-edr --status${NC}"
+fi
+
 # Register with WAF Hub
 echo -e "\n${CYAN}📡 Registering with WAF Hub...${NC}"
 cd "$INSTALL_DIR"
