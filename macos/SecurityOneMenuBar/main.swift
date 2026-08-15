@@ -1704,7 +1704,7 @@ final class DetailWindow: NSObject, NSWindowDelegate {
 /// a subsystem the agent could not determine is grey rather than green, and
 /// nothing is drawn that was not measured. An event the console invented would
 /// be worse than an empty scene.
-final class ConsoleWindow: NSObject, NSWindowDelegate {
+final class ConsoleWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private var window: NSWindow?
     private let sceneView = SCNView()
     private let scene = SCNScene()
@@ -1722,6 +1722,16 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
     private let footnote = NSTextField(labelWithString: "")
     private let transmission = NSTextField(labelWithString: "")
     private let sourceLine = NSTextField(labelWithString: "")
+
+    /// The scene answers "what shape is this". The table answers "what
+    /// actually happened, in order, with the fields an operator would paste
+    /// into a ticket". Neither substitutes for the other, and a console that
+    /// offered only the first would be a picture of evidence rather than
+    /// evidence.
+    private let table = NSTableView()
+    private let selection = NSTextField(labelWithString: "")
+    private var visible: [AgentEvent] = []
+    private var filter: (source: String, bucket: Int)?
 
     private let onRefresh: () -> Void
     private var snapshot = Snapshot()
@@ -1860,6 +1870,9 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         sceneView.antialiasingMode = .multisampling4X
         sceneView.translatesAutoresizingMaskIntoConstraints = false
 
+        let click = NSClickGestureRecognizer(target: self, action: #selector(sceneClicked(_:)))
+        sceneView.addGestureRecognizer(click)
+
         headline.font = .monospacedDigitSystemFont(ofSize: 30, weight: .bold)
         subhead.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         subhead.textColor = NSColor(calibratedWhite: 0.62, alpha: 1)
@@ -1900,26 +1913,71 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         refresh.keyEquivalent = "r"
         refresh.translatesAutoresizingMaskIntoConstraints = false
 
+        buildTable()
+
+        let tableScroll = NSScrollView()
+        tableScroll.documentView = table
+        tableScroll.hasVerticalScroller = true
+        tableScroll.drawsBackground = false
+        tableScroll.borderType = .noBorder
+        tableScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        selection.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        selection.textColor = NSColor(calibratedWhite: 0.62, alpha: 1)
+        selection.translatesAutoresizingMaskIntoConstraints = false
+        selection.drawsBackground = false
+
+        let clear = NSButton(title: "Show all", target: self, action: #selector(clearFilter))
+        clear.bezelStyle = .inline
+        clear.controlSize = .small
+        clear.translatesAutoresizingMaskIntoConstraints = false
+
+        let tableBar = NSStackView(views: [selection, NSView(), clear])
+        tableBar.orientation = .horizontal
+        tableBar.spacing = 8
+        tableBar.edgeInsets = NSEdgeInsets(top: 4, left: 18, bottom: 2, right: 18)
+        tableBar.translatesAutoresizingMaskIntoConstraints = false
+
+        let divider = NSBox()
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+
         let root = NSView()
         root.addSubview(sceneView)
         root.addSubview(hud)
         root.addSubview(footnote)
         root.addSubview(refresh)
+        root.addSubview(divider)
+        root.addSubview(tableBar)
+        root.addSubview(tableScroll)
 
         NSLayoutConstraint.activate([
             sceneView.topAnchor.constraint(equalTo: root.topAnchor),
             sceneView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             sceneView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            sceneView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            sceneView.bottomAnchor.constraint(equalTo: divider.topAnchor),
+
+            divider.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            divider.bottomAnchor.constraint(equalTo: tableBar.topAnchor),
+
+            tableBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tableBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            tableBar.bottomAnchor.constraint(equalTo: tableScroll.topAnchor),
+
+            tableScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tableScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            tableScroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            tableScroll.heightAnchor.constraint(equalToConstant: 210),
 
             hud.topAnchor.constraint(equalTo: root.topAnchor, constant: 42),
             hud.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
 
             footnote.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 28),
-            footnote.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
+            footnote.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -16),
 
             refresh.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -22),
-            refresh.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
+            refresh.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -16),
         ])
 
         w.contentView = root
@@ -2033,15 +2091,99 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         world.addChildNode(floor)
     }
 
+    private func buildTable() {
+        table.dataSource = self
+        table.delegate = self
+        table.backgroundColor = .clear
+        table.usesAlternatingRowBackgroundColors = false
+        table.gridStyleMask = []
+        table.rowHeight = 17
+        table.intercellSpacing = NSSize(width: 8, height: 2)
+        table.headerView = NSTableHeaderView()
+
+        let columns: [(String, String, CGFloat)] = [
+            ("time", "Time", 72),
+            ("source", "Source", 58),
+            ("severity", "Severity", 66),
+            ("action", "Action", 92),
+            ("detail", "Detail", 600),
+        ]
+
+        for (key, title, width) in columns {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(key))
+            column.title = title
+            column.width = width
+            table.addTableColumn(column)
+        }
+    }
+
     @objc private func refreshTapped() { onRefresh() }
 
     // MARK: content
+
+    @objc private func clearFilter() {
+        filter = nil
+        applyFilter()
+    }
+
+    /// Clicking a bar narrows the table to the events that bar is made of.
+    ///
+    /// The bars are aggregates, so without this the scene can show a spike
+    /// that nothing on screen can explain. The node names carry the bucket
+    /// they were built from, which keeps the mapping in one place rather than
+    /// recomputing the layout maths at hit-test time and hoping the two agree.
+    @objc private func sceneClicked(_ gesture: NSClickGestureRecognizer) {
+        let point = gesture.location(in: sceneView)
+        let hits = sceneView.hitTest(point, options: [.searchMode: SCNHitTestSearchMode.closest.rawValue])
+
+        guard let name = hits.first?.node.name, name.hasPrefix("bar:") else { return }
+
+        let parts = name.split(separator: ":")
+
+        guard parts.count == 3, let bucket = Int(parts[2]) else { return }
+
+        filter = (String(parts[1]), bucket)
+        applyFilter()
+    }
+
+    private func applyFilter() {
+        guard let filter = filter else {
+            visible = events
+            selection.stringValue = events.isEmpty
+                ? ""
+                : String(events.count) + " events, newest first"
+            table.reloadData()
+            return
+        }
+
+        let newest: Date = events.first?.at ?? Date()
+        let oldest: Date = events.last?.at ?? newest
+        let span: Double = max(1, newest.timeIntervalSince(oldest))
+        let buckets: Int = 36
+
+        visible = events.filter { event in
+            guard event.source == filter.source else { return false }
+
+            let age: Double = newest.timeIntervalSince(event.at)
+            let slot: Int = min(buckets - 1, max(0, Int((age / span) * Double(buckets - 1))))
+
+            return slot == filter.bucket
+        }
+
+        let minutes: Int = Int((span / Double(buckets)) * Double(filter.bucket) / 60)
+        selection.stringValue = filter.source.uppercased() + "  ·  "
+            + String(visible.count) + " events  ·  about "
+            + String(minutes) + " min ago"
+
+        table.reloadData()
+    }
 
     private func rebuild() {
         coreNode.removeFromParentNode()
         eventField.childNodes.forEach { $0.removeFromParentNode() }
         ringNode.childNodes.forEach { $0.removeFromParentNode() }
 
+        applyFilter()
         buildCore()
         buildRing()
         buildInflow()
@@ -2366,6 +2508,7 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
 
             let node = SCNNode(geometry: bar)
             node.position = SCNVector3(x, floorY + height / 2, z)
+            node.name = "bar:" + source + ":" + String(slot)
             eventField.addChildNode(node)
         }
 
@@ -2575,6 +2718,64 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
             : NSColor(calibratedWhite: 0.52, alpha: 1)
 
         footnote.stringValue = footerLine()
+    }
+
+    // MARK: table
+
+    func numberOfRows(in tableView: NSTableView) -> Int { visible.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < visible.count, let column = tableColumn?.identifier.rawValue else { return nil }
+
+        let event = visible[row]
+        let field = NSTextField(labelWithString: "")
+        field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        field.lineBreakMode = .byTruncatingTail
+        field.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
+        field.isSelectable = true
+
+        switch column {
+        case "time":
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            field.stringValue = formatter.string(from: event.at)
+            field.textColor = NSColor(calibratedWhite: 0.55, alpha: 1)
+        case "source":
+            field.stringValue = event.source.uppercased()
+            field.textColor = NSColor(calibratedWhite: 0.62, alpha: 1)
+        case "severity":
+            // Blank rather than "none": most of the spool is retro-hunt
+            // material by design, and printing a word there would make the
+            // ordinary case look like a finding.
+            field.stringValue = event.severity ?? ""
+            field.textColor = event.isAlert ? Palette.alert : NSColor(calibratedWhite: 0.45, alpha: 1)
+        case "action":
+            field.stringValue = event.action
+        default:
+            var detail = event.path
+
+            if let pid = event.pid, pid > 0 {
+                detail += "   pid " + String(pid)
+            }
+
+            if !event.user.isEmpty {
+                detail += "   " + event.user
+            }
+
+            field.stringValue = detail
+        }
+
+        let cell = NSTableCellView()
+        cell.addSubview(field)
+        field.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
+            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+
+        return cell
     }
 
     /// What the Hub link has actually been doing.
