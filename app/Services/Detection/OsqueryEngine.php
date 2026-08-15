@@ -608,13 +608,25 @@ class OsqueryEngine
         // way to tell that osqueryd had never been exec'd at all. Every macOS
         // host reported the sensor installed, supported, and permanently down.
         //
-        // nohup with a closed stdin already detaches from the parent there;
-        // the separate session is what setsid adds, and it can only be added
-        // where it exists.
-        $detach = $this->hasSetsid() ? 'setsid nohup' : 'nohup';
+        // Without setsid, nohup is dropped too rather than used alone. macOS
+        // nohup tries to detach from the controlling terminal, and from the
+        // way this is spawned — a pipe, no tty — that ioctl fails and nohup
+        // exits before it ever execs osqueryd:
+        //
+        //     nohup: can't detach from console: Inappropriate ioctl for device
+        //
+        // which lands in the sensor's own log and reaches the caller as the
+        // same unhelpful "osqueryd did not come up" that setsid produced.
+        //
+        // Nothing is lost by dropping it. What nohup would provide is immunity
+        // from SIGHUP, and osqueryd --daemonize forks into a session of its
+        // own, which provides the same thing and is the mechanism setsid was
+        // standing in for. stdin, stdout and stderr are redirected explicitly
+        // on this line, so there is no console left to be detached from.
+        $detach = $this->hasSetsid() ? 'setsid nohup ' : '';
 
         $cmd = sprintf(
-            '%s %s --flagfile=/dev/null --config_path=%s --database_path=%s --logger_path=%s --pidfile=%s --daemonize < /dev/null >> %s 2>&1 &',
+            '%s%s --flagfile=/dev/null --config_path=%s --database_path=%s --logger_path=%s --pidfile=%s --daemonize < /dev/null >> %s 2>&1 &',
             $detach,
             escapeshellarg($this->binaryPath),
             escapeshellarg($this->configPath),
