@@ -327,6 +327,26 @@ class OsqueryEngine
      *                        cpu_limit       — osquery watchdog CPU ceiling (percent)
      *                        memory_limit_mb — osquery watchdog RSS ceiling
      */
+    /**
+     * Whether setsid(1) is available.
+     *
+     * It belongs to util-linux: present on Linux, absent on macOS.
+     */
+    private function hasSetsid(): bool
+    {
+        foreach (['/usr/bin/setsid', '/bin/setsid'] as $path) {
+            if (is_executable($path)) {
+                return true;
+            }
+        }
+
+        try {
+            return Process::timeout(5)->run('command -v setsid')->successful();
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
     public function writeConfig(array $options = []): bool
     {
         $backend = $this->resolveBackend();
@@ -579,8 +599,23 @@ class OsqueryEngine
         // --daemonize alone still dies with the artisan process that spawned
         // it, so the sensor would come up on every sync cycle and be gone
         // before the next one. A new session detaches it for good.
+        //
+        // setsid is util-linux and macOS does not ship it, so on macOS this
+        // line died at its first word. The failure was invisible from outside:
+        // `sh: setsid: command not found` went to the sensor's own stdout log,
+        // because that is where this command redirects, leaving the caller
+        // with "osqueryd did not come up" and an empty output field — and no
+        // way to tell that osqueryd had never been exec'd at all. Every macOS
+        // host reported the sensor installed, supported, and permanently down.
+        //
+        // nohup with a closed stdin already detaches from the parent there;
+        // the separate session is what setsid adds, and it can only be added
+        // where it exists.
+        $detach = $this->hasSetsid() ? 'setsid nohup' : 'nohup';
+
         $cmd = sprintf(
-            'setsid nohup %s --flagfile=/dev/null --config_path=%s --database_path=%s --logger_path=%s --pidfile=%s --daemonize < /dev/null >> %s 2>&1 &',
+            '%s %s --flagfile=/dev/null --config_path=%s --database_path=%s --logger_path=%s --pidfile=%s --daemonize < /dev/null >> %s 2>&1 &',
+            $detach,
             escapeshellarg($this->binaryPath),
             escapeshellarg($this->configPath),
             escapeshellarg($this->databasePath),
