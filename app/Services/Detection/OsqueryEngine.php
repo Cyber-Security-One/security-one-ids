@@ -283,13 +283,50 @@ class OsqueryEngine
 
     public function getPid(): ?int
     {
-        if (!file_exists($this->pidFile)) {
-            return null;
+        if (file_exists($this->pidFile)) {
+            $raw = @file_get_contents($this->pidFile);
+
+            if ($raw !== false) {
+                $pid = (int) trim((string) $raw);
+
+                if ($pid > 0) {
+                    return $pid;
+                }
+            }
         }
 
-        $pid = (int) trim((string) @file_get_contents($this->pidFile));
+        // The pidfile is osqueryd's own and it writes it 0600 as root, so an
+        // unprivileged reader cannot open it — and the console that asks this
+        // question runs unprivileged by design. Treating unreadable as absent
+        // reported a sensor that was running, and filling its results log, as
+        // down, and told the operator to start the copy already running.
+        //
+        // The process table is readable by everyone, so it is asked instead.
+        return $this->pidFromProcessTable();
+    }
 
-        return $pid > 0 ? $pid : null;
+    /**
+     * Find our osqueryd in the process table.
+     *
+     * Matched on the config path, not on the name: this sensor is deliberately
+     * not the customer's own packaged osqueryd, and claiming theirs as ours
+     * would be a worse answer than none.
+     */
+    private function pidFromProcessTable(): ?int
+    {
+        $out = (string) @shell_exec('ps -axo pid=,command= 2>/dev/null');
+
+        foreach (explode("\n", $out) as $line) {
+            if (!str_contains($line, 'osqueryd') || !str_contains($line, $this->configPath)) {
+                continue;
+            }
+
+            if (preg_match('/^\s*(\d+)\s/', $line, $m) === 1) {
+                return (int) $m[1] > 0 ? (int) $m[1] : null;
+            }
+        }
+
+        return null;
     }
 
     public function isRunning(): bool
