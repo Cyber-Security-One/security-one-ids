@@ -2,7 +2,10 @@
 
 namespace App\Console\Commands;
 
+use App\Services\ClamavService;
+use App\Services\Detection\SuricataEngine;
 use App\Services\EdrEventSpool;
+use App\Services\Response\FileQuarantine;
 use Illuminate\Console\Command;
 
 /**
@@ -28,12 +31,17 @@ class EdrEvents extends Command
     protected $signature = 'ids:events
         {--json : Emit JSON}
         {--limit=200 : How many of the most recent events to return}
-        {--alerts : Only events that carry a severity}';
+        {--alerts : Only events that carry a severity}
+        {--source=all : all, edr, ids, ips or av}';
 
     protected $description = 'List recent endpoint sensor events';
 
-    public function handle(EdrEventSpool $spool): int
-    {
+    public function handle(
+        EdrEventSpool $spool,
+        SuricataEngine $suricata,
+        ClamavService $clamav,
+        FileQuarantine $quarantine
+    ): int {
         if (!$spool->isAvailable()) {
             $payload = [
                 'available' => false,
@@ -96,6 +104,82 @@ class EdrEvents extends Command
             // Reported by the status snapshot; not worth failing this for.
         }
 
+        foreach ($events as &$row) {
+            $row['source'] = 'edr';
+        }
+
+        unset($row);
+
+        $sources = [
+            'edr' => ['available' => true, 'returned' => count($events), 'held' => $held],
+        ];
+
+        $wanted = (string) $this->option('source');
+        $want = static fn (string $name): bool => $wanted === 'all' || $wanted === $name;
+
+        if (!$want('edr')) {
+            $events = [];
+            $sources['edr']['returned'] = 0;
+        }
+
+        // Suricata carries both roles in one log: an `alert` was seen and
+        // reported, a `drop` was seen and stopped. They are the difference
+        // between an IDS and an IPS, so they are reported as separate sources
+        // rather than merged into "network".
+        foreach ($this->suricataEvents($suricata, $limit) as $alert) {
+            if (!$want($alert['source'])) {
+                continue;
+            }
+
+            $events[] = $alert;
+            $sources[$alert['source']]['available'] = true;
+            $sources[$alert['source']]['returned'] = ($sources[$alert['source']]['returned'] ?? 0) + 1;
+        }
+
+        foreach (['ids', 'ips'] as $role) {
+            $sources[$role] = $sources[$role] ?? ['available' => true, 'returned' => 0];
+        }
+
+        // Antivirus is the honest gap here. ClamAV keeps no detection history
+        // — a detection exists only inside the return value of the scan that
+        // found it — so the only durable record on this host is what was
+        // quarantined as a result. That is reported as what it is rather than
+        // dressed up as a detection feed, because an empty AV row that means
+        // "nothing kept" must not read as "nothing found".
+        $av = $this->quarantineEvents($quarantine, $limit);
+
+        if ($want('av')) {
+            $events = array_merge($events, $av);
+        }
+
+        $sources['av'] = [
+            'available' => true,
+            'returned' => $want('av') ? count($av) : 0,
+            'note' => 'Quarantined files only. ClamAV keeps no detection history to read.',
+        ];
+
+        usort($events, static fn (array $a, array $b): int => ($b['ts'] ?? 0) <=> ($a['ts'] ?? 0));
+
+        // Counted after the cut, not before.
+        //
+        // Every source is read up to the limit and then the merged list is
+        // trimmed to it, so a noisy source crowds a quiet one out of the tail:
+        // 400 Suricata alerts and 400 spool rows go in, 371 and 29 come out.
+        // Reporting what went in would tell the console it is drawing events
+        // that are not in the payload it was handed.
+        $read = array_map(static fn (array $source): int => (int) ($source['returned'] ?? 0), $sources);
+        $events = array_slice($events, 0, $limit);
+
+        foreach ($sources as $name => $source) {
+            $sources[$name]['read'] = $read[$name] ?? 0;
+            $sources[$name]['returned'] = 0;
+        }
+
+        foreach ($events as $event) {
+            $name = (string) ($event['source'] ?? 'edr');
+            $sources[$name]['returned'] = ($sources[$name]['returned'] ?? 0) + 1;
+        }
+
         $timestamps = array_column($events, 'ts');
 
         $payload = [
@@ -103,6 +187,7 @@ class EdrEvents extends Command
             'generated_at' => date('c'),
             'returned' => count($events),
             'held' => $held,
+            'sources' => $sources,
             'limit' => $limit,
             'window' => [
                 'from' => $timestamps === [] ? null : date('c', min($timestamps)),
@@ -133,5 +218,86 @@ class EdrEvents extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Suricata alerts and drops, normalised to the shape above.
+     */
+    private function suricataEvents(SuricataEngine $suricata, int $limit): array
+    {
+        $events = [];
+
+        try {
+            foreach ($suricata->parseAlerts($limit) as $alert) {
+                $stamp = strtotime((string) ($alert['timestamp'] ?? '')) ?: 0;
+
+                if ($stamp === 0) {
+                    continue;
+                }
+
+                $blocked = ($alert['action'] ?? 'alert') === 'drop';
+
+                $events[] = [
+                    'ts' => $stamp,
+                    'source' => $blocked ? 'ips' : 'ids',
+                    'action' => $blocked ? 'blocked' : 'detected',
+                    'sensor' => 'suricata',
+                    'pid' => null,
+                    'ppid' => null,
+                    'user' => null,
+                    // The signature is what an operator reads; the addresses
+                    // are what they pivot on, so both are kept in one line.
+                    'path' => trim(sprintf(
+                        '%s  %s → %s',
+                        (string) ($alert['signature'] ?? 'Unknown'),
+                        (string) ($alert['source_ip'] ?? '?'),
+                        (string) ($alert['destination_ip'] ?? '?')
+                    )),
+                    'severity' => $alert['severity'] ?? null,
+                    'deliver' => true,
+                    'sent' => false,
+                ];
+            }
+        } catch (\Throwable $e) {
+            // A console is not worth failing the whole command for.
+        }
+
+        return $events;
+    }
+
+    /**
+     * Files taken out of circulation — the durable half of the AV story.
+     */
+    private function quarantineEvents(FileQuarantine $quarantine, int $limit): array
+    {
+        $events = [];
+
+        try {
+            foreach (array_slice($quarantine->listQuarantined(), 0, $limit) as $entry) {
+                $stamp = (int) ($entry['quarantined_at'] ?? 0);
+
+                if ($stamp === 0 && isset($entry['quarantined_at'])) {
+                    $stamp = strtotime((string) $entry['quarantined_at']) ?: 0;
+                }
+
+                $events[] = [
+                    'ts' => $stamp,
+                    'source' => 'av',
+                    'action' => 'quarantined',
+                    'sensor' => 'clamav',
+                    'pid' => null,
+                    'ppid' => null,
+                    'user' => null,
+                    'path' => (string) ($entry['original_path'] ?? $entry['path'] ?? ''),
+                    'severity' => 'high',
+                    'deliver' => true,
+                    'sent' => false,
+                ];
+            }
+        } catch (\Throwable $e) {
+            // Same.
+        }
+
+        return $events;
     }
 }

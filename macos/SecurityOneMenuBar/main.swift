@@ -89,6 +89,8 @@ struct Snapshot {
 /// redaction would be.
 struct AgentEvent {
     let at: Date
+    /// Which detector produced this. One of edr, ids, ips, av.
+    let source: String
     let action: String
     let severity: String?
     let path: String
@@ -110,10 +112,25 @@ struct AgentEvent {
 /// only workable thing to do, and saying "5,281 events" while sitting on
 /// 512,904 would misrepresent the size of the haystack in the direction that
 /// makes an investigator stop looking.
+/// What one detector contributed, and what it was asked for.
+///
+/// `read` and `returned` differ whenever a noisy detector crowds a quiet one
+/// out of the merged tail, which is most of the time: Suricata alerts arrive
+/// far faster than spool rows. Carrying both means the console can say which
+/// happened rather than presenting a trimmed list as the whole story.
+struct EventSource {
+    var returned: Int = 0
+    var read: Int = 0
+    var held: Int?
+    var note: String?
+}
+
 struct EventFeed {
     var events: [AgentEvent] = []
     /// Rows in the spool. Nil when the agent could not count them.
     var held: Int?
+    /// Keyed by detector: edr, ids, ips, av.
+    var sources: [String: EventSource] = [:]
 
     var truncated: Bool {
         guard let held = held else { return false }
@@ -245,11 +262,25 @@ enum AgentReader {
 
         var feed = EventFeed()
         feed.held = int(json["held"])
+
+        if let sources = json["sources"] as? [String: Any] {
+            for (name, raw) in sources {
+                guard let entry = raw as? [String: Any] else { continue }
+
+                feed.sources[name] = EventSource(
+                    returned: int(entry["returned"]) ?? 0,
+                    read: int(entry["read"]) ?? 0,
+                    held: int(entry["held"]),
+                    note: entry["note"] as? String
+                )
+            }
+        }
         feed.events = rows.compactMap { row in
             guard let ts = int(row["ts"]) else { return nil }
 
             return AgentEvent(
                 at: Date(timeIntervalSince1970: TimeInterval(ts)),
+                source: row["source"] as? String ?? "edr",
                 action: row["action"] as? String ?? "unknown",
                 severity: row["severity"] as? String,
                 path: row["path"] as? String ?? "",
@@ -1690,6 +1721,7 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
     private let legend = NSTextField(labelWithString: "")
     private let footnote = NSTextField(labelWithString: "")
     private let transmission = NSTextField(labelWithString: "")
+    private let sourceLine = NSTextField(labelWithString: "")
 
     private let onRefresh: () -> Void
     private var snapshot = Snapshot()
@@ -1839,7 +1871,10 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         transmission.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         transmission.textColor = NSColor(calibratedWhite: 0.52, alpha: 1)
 
-        for field in [headline, subhead, legend, footnote, transmission] {
+        sourceLine.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        sourceLine.textColor = NSColor(calibratedWhite: 0.52, alpha: 1)
+
+        for field in [headline, subhead, legend, footnote, transmission, sourceLine] {
             field.translatesAutoresizingMaskIntoConstraints = false
             field.drawsBackground = false
         }
@@ -1852,7 +1887,7 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         rule.heightAnchor.constraint(equalToConstant: 1).isActive = true
         rule.widthAnchor.constraint(equalToConstant: 168).isActive = true
 
-        let hud = NSStackView(views: [headline, subhead, rule, legend, transmission])
+        let hud = NSStackView(views: [headline, subhead, rule, legend, sourceLine, transmission])
         hud.orientation = .vertical
         hud.alignment = .leading
         hud.spacing = 6
@@ -2241,32 +2276,44 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Every event the sensor is holding, as a distribution over time.
+    /// Every detector's events, one ring each, sharing one clock.
     ///
-    /// The first version of this was a shell of one dot per event around the
-    /// core. It was accurate and it was unreadable: five hundred points on a
-    /// sphere is a texture, not a reading, and it buried the machine it was
-    /// supposed to be describing.
+    /// EDR innermost, then IDS, then IPS, then AV. The rings are bucketed over
+    /// the same span, so a given angle is the same moment on all four and a
+    /// burst that shows on two of them lines up.
     ///
-    /// The question the events actually answer is "when", so they are bucketed
-    /// by time and stood up as bars on the floor — oldest at the back, newest
-    /// at the front. A burst is a spike, a steady drift is a flat run, and the
-    /// alerting share is the lit part of each bar rather than a separate
-    /// colour of dot mixed in among the rest. Every event is still counted;
-    /// none of them is drawn twice.
+    /// A detector with nothing to report still gets its ring and its label,
+    /// drawn as the bare floor. That is the point of the layout rather than a
+    /// side effect: "Suricata dropped nothing" and "nobody asked Suricata" are
+    /// different facts, and a missing ring cannot tell them apart. On this
+    /// host AV reports nothing because ClamAV keeps no detection history at
+    /// all — only what was quarantined survives — and a console that quietly
+    /// omitted the row would be hiding a gap in coverage rather than showing
+    /// it.
     private func buildEventField() {
-        guard !events.isEmpty else { return }
+        let layout: [(String, String, CGFloat)] = [
+            ("edr", "EDR", 3.7),
+            ("ids", "IDS", 5.0),
+            ("ips", "IPS", 6.3),
+            ("av", "AV", 7.4),
+        ]
 
-        let buckets: Int = 36
-        var totals = [Int](repeating: 0, count: buckets)
-        var alerting = [Int](repeating: 0, count: buckets)
-
-        // events arrive newest first
+        // One clock for all four, taken from everything on screen.
         let newest: Date = events.first?.at ?? Date()
         let oldest: Date = events.last?.at ?? newest
         let span: Double = max(1, newest.timeIntervalSince(oldest))
 
-        for event in events {
+        for (key, title, radius) in layout {
+            ring(source: key, title: title, radius: radius, newest: newest, span: span)
+        }
+    }
+
+    private func ring(source: String, title: String, radius: CGFloat, newest: Date, span: Double) {
+        let buckets: Int = 36
+        var totals = [Int](repeating: 0, count: buckets)
+        var alerting = [Int](repeating: 0, count: buckets)
+
+        for event in events where event.source == source {
             let age: Double = newest.timeIntervalSince(event.at)
             let slot: Int = min(buckets - 1, max(0, Int((age / span) * Double(buckets - 1))))
             totals[slot] += 1
@@ -2277,8 +2324,8 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         }
 
         let peak: Int = max(1, totals.max() ?? 1)
-        let radius: CGFloat = 5.4
-        let tallest: CGFloat = 3.2
+        let tallest: CGFloat = 2.4
+        let floorY: CGFloat = -5.2
 
         for slot in 0 ..< buckets {
             let fraction: CGFloat = CGFloat(slot) / CGFloat(buckets)
@@ -2286,45 +2333,51 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
             let x: CGFloat = radius * cos(angle)
             let z: CGFloat = radius * sin(angle)
 
-            // A bucket with nothing in it still gets a mark.
-            //
-            // Skipping them left a gap in the ring wherever the sensor had
-            // been down, and a gap reads as "not drawn" rather than as
-            // "measured, and it was none" — which is the same confusion
-            // between absent and unknown that the rest of this console works
-            // to avoid. The tick is the floor of the chart, so a quiet stretch
-            // is visibly quiet instead of visibly missing.
+            // An empty bucket still gets a mark. A gap in the ring reads as
+            // "not drawn" rather than as "measured, and it was none".
             guard totals[slot] > 0 else {
-                let tick = SCNBox(width: 0.16, height: 0.03, length: 0.16, chamferRadius: 0.01)
+                let tick = SCNBox(width: 0.14, height: 0.03, length: 0.14, chamferRadius: 0.01)
                 let tickMaterial = SCNMaterial()
-                tickMaterial.diffuse.contents = Palette.structure.withAlphaComponent(0.30)
-                tickMaterial.emission.contents = Palette.structure.withAlphaComponent(0.18)
+                tickMaterial.diffuse.contents = Palette.structure.withAlphaComponent(0.26)
+                tickMaterial.emission.contents = Palette.structure.withAlphaComponent(0.15)
                 tickMaterial.lightingModel = .constant
                 tick.materials = [tickMaterial]
 
                 let tickNode = SCNNode(geometry: tick)
-                tickNode.position = SCNVector3(x, CGFloat(-5.19), z)
+                tickNode.position = SCNVector3(x, floorY + 0.015, z)
                 eventField.addChildNode(tickNode)
                 continue
             }
 
             let share: CGFloat = CGFloat(totals[slot]) / CGFloat(peak)
             let height: CGFloat = 0.12 + share * tallest
-
             let alertShare: CGFloat = CGFloat(alerting[slot]) / CGFloat(totals[slot])
+
+            // Colour still carries the verdict, not the detector. Which ring a
+            // bar stands on is what says where it came from.
             let colour: NSColor = alertShare > 0.5 ? Palette.alert : Palette.quiet
 
-            let bar = SCNBox(width: 0.16, height: height, length: 0.16, chamferRadius: 0.02)
+            let bar = SCNBox(width: 0.15, height: height, length: 0.15, chamferRadius: 0.02)
             let material = SCNMaterial()
             material.diffuse.contents = colour.withAlphaComponent(0.75)
-            material.emission.contents = colour.withAlphaComponent(0.55 + alertShare * 0.4)
+            material.emission.contents = colour.withAlphaComponent(0.5 + alertShare * 0.4)
             material.lightingModel = .constant
             bar.materials = [material]
 
             let node = SCNNode(geometry: bar)
-            node.position = SCNVector3(x, CGFloat(-5.2) + height / 2, z)
+            node.position = SCNVector3(x, floorY + height / 2, z)
             eventField.addChildNode(node)
         }
+
+        let counted: Int = events.filter { $0.source == source }.count
+        let caption: String = counted > 0 ? title + "  " + String(counted) : title + "  none"
+        let colour: NSColor = counted > 0
+            ? NSColor(calibratedWhite: 0.78, alpha: 1)
+            : NSColor(calibratedWhite: 0.42, alpha: 1)
+
+        let label = labelNode(caption, color: colour, size: 0.34)
+        label.position = SCNVector3(radius, floorY + 0.5, CGFloat(0))
+        eventField.addChildNode(label)
     }
 
     /// Telemetry arriving at the agent.
@@ -2489,7 +2542,7 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
         let quiet: Int = events.count - alerts
 
         if events.isEmpty {
-            legend.stringValue = "No events spooled yet"
+            legend.stringValue = "No events yet"
         } else {
             var parts: [String] = []
             parts.append("● " + String(alerts) + " alerting")
@@ -2497,6 +2550,24 @@ final class ConsoleWindow: NSObject, NSWindowDelegate {
             parts.append("↑ " + String(queued) + " queued")
             legend.stringValue = parts.joined(separator: "    ")
         }
+
+        var detectors: [String] = []
+
+        for (key, title) in [("edr", "EDR"), ("ids", "IDS"), ("ips", "IPS"), ("av", "AV")] {
+            let entry = feed.sources[key]
+            let drawn = entry?.returned ?? 0
+            let read = entry?.read ?? 0
+
+            // Says when a detector was read and then crowded out of the tail,
+            // which is otherwise indistinguishable from it having nothing.
+            if drawn < read {
+                detectors.append(title + " " + String(drawn) + "/" + String(read))
+            } else {
+                detectors.append(title + " " + String(drawn))
+            }
+        }
+
+        sourceLine.stringValue = detectors.joined(separator: "    ")
 
         transmission.stringValue = hubLine()
         transmission.textColor = hubTroubled()
