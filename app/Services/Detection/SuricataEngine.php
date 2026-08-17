@@ -1815,16 +1815,23 @@ POWERSHELL;
             // that, so order is checked separately and repaired by removing the
             // queue rules and letting the apply above reinstate them at the
             // right position.
-            $order = $this->inspectRuleOrder();
+            foreach (['INPUT', 'OUTPUT'] as $chain) {
+                $order = $this->inspectRuleOrder($chain);
 
-            if (!$order['ordered']) {
+                if ($order['ordered']) {
+                    continue;
+                }
+
                 Log::warning('[Suricata] NFQUEUE rules sit after the conntrack bypass, repositioning', [
+                    'chain' => $chain,
                     'queue_positions' => $order['queue_positions'],
                     'bypass_position' => $order['bypass_position'],
                 ]);
 
                 $this->removeQueueRules();
                 $this->applyInlineNetfilter($mode);
+
+                break;
             }
         } else {
             // Leaving NFQUEUE rules behind after a switch to plain IDS would
@@ -1853,27 +1860,31 @@ POWERSHELL;
      * touch anything else: tearing down the bypass rules as well would briefly
      * route established traffic through a queue during the repair.
      */
-    private function removeQueueRules(string $chain = 'INPUT'): int
+    private function removeQueueRules(): int
     {
         $ipt = $this->iptablesCommand();
         $removed = 0;
 
-        // Delete by spec rather than by line number: line numbers shift as
-        // each delete lands, and a stale index removes the wrong rule.
-        foreach (self::INSPECT_PORTS as $port) {
-            $spec = '-p tcp --dport ' . (int) $port
-                . ' -j NFQUEUE --queue-balance 0:3 --queue-bypass'
-                . ' -m comment --comment ' . escapeshellarg(self::NFQ_COMMENT);
+        // The request direction is matched on the destination port and the
+        // reply direction on the source port, so each chain needs its own spec.
+        foreach ([['INPUT', 'dport'], ['OUTPUT', 'sport']] as [$chain, $portMatch]) {
+            foreach (self::INSPECT_PORTS as $port) {
+                $spec = '-p tcp --' . $portMatch . ' ' . (int) $port
+                    . ' -j NFQUEUE --queue-balance 0:3 --queue-bypass'
+                    . ' -m comment --comment ' . escapeshellarg(self::NFQ_COMMENT);
 
-            // A duplicate set is possible, so delete until the spec is gone.
-            for ($attempt = 0; $attempt < 8; $attempt++) {
-                $result = Process::run("{$ipt} -D {$chain} {$spec} 2>/dev/null");
+                // Delete by spec rather than by line number: line numbers shift
+                // as each delete lands, and a stale index removes the wrong
+                // rule. Repeated because a duplicate set is possible.
+                for ($attempt = 0; $attempt < 8; $attempt++) {
+                    $result = Process::run("{$ipt} -D {$chain} {$spec} 2>/dev/null");
 
-                if (!$result->successful()) {
-                    break;
+                    if (!$result->successful()) {
+                        break;
+                    }
+
+                    $removed++;
                 }
-
-                $removed++;
             }
         }
 
@@ -1946,14 +1957,25 @@ POWERSHELL;
     public function countQueueRules(): int
     {
         $ipt = $this->iptablesCommand();
+        $total = 0;
 
-        $result = Process::run("{$ipt} -n -L INPUT 2>/dev/null");
+        // Both directions, because a host with only the request direction
+        // installed looks half-configured and inspects nothing usable.
+        foreach (['INPUT', 'OUTPUT'] as $chain) {
+            $result = Process::run("{$ipt} -S {$chain} 2>/dev/null");
 
-        if (!$result->successful()) {
-            return -1;
+            if (!$result->successful()) {
+                return -1;
+            }
+
+            foreach (preg_split('/\R/', $result->output()) ?: [] as $line) {
+                if (str_starts_with($line, "-A {$chain} ") && str_contains($line, 'NFQUEUE')) {
+                    $total++;
+                }
+            }
         }
 
-        return substr_count($result->output(), 'NFQUEUE');
+        return $total;
     }
 
     private function applyInlineNetfilter(string $mode): void
@@ -2006,6 +2028,40 @@ POWERSHELL;
                 }
             } else {
                 Log::warning("[Suricata] Failed to add NFQUEUE rule for :{$port}: " . trim($add->output() . $add->errorOutput()));
+            }
+        }
+
+        // OUTPUT: the reply direction, matched on the source port.
+        //
+        // Without this Suricata sees one half of every connection and cannot do
+        // anything with it. Measured on this host with the inbound rules alone:
+        // tcp.syn 2,630 and tcp.synack 0, so no session ever reached
+        // established state, and app_layer tx was http=0 tls=0 dns=0 — zero
+        // application-layer transactions parsed. The only alerts that fired were
+        // stream anomalies like "Packet with invalid ack", which are artefacts of
+        // seeing one direction rather than detections. Every signature that
+        // needs request or response content could never match.
+        //
+        // Matched on --sport so it catches replies from the protected services
+        // and nothing else. The agent's own outbound traffic to the Hub has an
+        // ephemeral source port and a destination of 443, so it does not match
+        // here, and the Hub's replies arrive with dport ephemeral so they do not
+        // match the INPUT rules either.
+        foreach (self::INSPECT_PORTS as $port) {
+            $spec = "-p tcp --sport {$port} -j {$target} {$comment}";
+            $check = Process::run("{$ipt} -C OUTPUT {$spec} 2>/dev/null");
+
+            if ($check->successful()) {
+                continue;
+            }
+
+            $add = Process::run("{$ipt} -A OUTPUT {$spec} 2>&1");
+
+            if (!$add->successful()) {
+                Log::warning('[Suricata] Could not install the reply-direction NFQUEUE rule', [
+                    'port' => $port,
+                    'error' => trim($add->errorOutput() . ' ' . $add->output()),
+                ]);
             }
         }
 
