@@ -32,7 +32,52 @@ class EdrRuleEngine
         'www-data', 'nginx', 'apache', 'apache2', 'httpd', 'nobody',
         'php-fpm', 'www', 'lighttpd', 'caddy',
         '_www', '_httpd', '_appserver', '_devicemgr',
+        // Windows. IIS's built-in identities only; the per-pool accounts
+        // cannot be listed here — see WEB_ACCOUNT_PREFIXES.
+        'iusr', 'iwam', 'network service', 'nt authority\\network service',
+        'defaultapppool', 'apppoolidentity',
     ];
+
+    /**
+     * Account name prefixes that mean "a web server".
+     *
+     * IIS mints one identity per application pool, named after the pool:
+     * `IIS APPPOOL\Contoso`, `IIS APPPOOL\Payments`, one per site. A fixed
+     * list can only ever contain the default, so on any real IIS deployment
+     * the highest-value detection in the product would match nothing at all —
+     * and would go on reporting itself as active while doing so.
+     */
+    private const WEB_ACCOUNT_PREFIXES = ['iis apppool\\'];
+
+    /**
+     * Is this account a web server's?
+     *
+     * Case-insensitive because Windows account names are, and the same
+     * identity arrives spelled differently depending on which API reported
+     * it. A comparison that is exact on a platform where the name is not
+     * would fail on the difference between `NETWORK SERVICE` and
+     * `Network Service`, which is no difference at all.
+     */
+    private function isWebAccount(string $user): bool
+    {
+        if ($user === '') {
+            return false;
+        }
+
+        $folded = strtolower($user);
+
+        if (in_array($folded, self::WEB_ACCOUNTS, true)) {
+            return true;
+        }
+
+        foreach (self::WEB_ACCOUNT_PREFIXES as $prefix) {
+            if (str_starts_with($folded, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /**
      * Binaries that have no business being a web server's child at all.

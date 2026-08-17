@@ -1508,6 +1508,21 @@ class WafSyncService
             // mode. Without this, flipping `suricata_mode` in the Hub from
             // `ids` to `ips` is a no-op: the old IDS daemon keeps running
             // with `--af-packet` and can only alert, never drop.
+            // Reconcile the netfilter state whether or not the process needs
+            // restarting. Without this, a host running Suricata in the correct
+            // mode never re-applied the NFQUEUE rules that feed it — and when
+            // the install had failed once, nothing ever retried. Measured
+            // consequence: 2.26 days of an IPS with decoder.pkts 0, reporting
+            // healthy the whole time.
+            $netfilter = $suricata->reconcileInlineNetfilter($mode);
+
+            if (!empty($netfilter['applied'])) {
+                $this->reportAgentEvent(
+                    'suricata_started',
+                    "Suricata inline 規則已重新套用（{$mode} 模式，NFQUEUE 規則 {$netfilter['queued_rules']} 條）"
+                );
+            }
+
             $runningMode = $suricata->getRunningMode();
             if ($runningMode !== null && $runningMode !== $mode) {
                 Log::info("[Suricata] Mode mismatch (running={$runningMode}, desired={$mode}), restarting...");

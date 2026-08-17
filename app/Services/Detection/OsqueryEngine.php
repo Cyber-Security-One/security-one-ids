@@ -15,14 +15,22 @@ use Illuminate\Support\Facades\Process;
  * instance (or their auditd rules) would be hostile. We run our own daemon
  * with our own config, database and log directory.
  *
- * Telemetry source, in order of preference:
- *   1. eBPF  (bpf_process_events)   — kernel >= 5.8 with BTF. No auditd conflict.
- *   2. audit (process_events)        — fallback, only when auditd is NOT active,
- *                                      because osquery must own the audit netlink
- *                                      socket and would otherwise fight auditd.
+ * Telemetry source, by platform:
  *
- * Linux only for now. macOS needs an Endpoint Security entitlement and Windows
- * needs ETW; both are tracked separately and report unsupported here.
+ *   Linux    1. eBPF  (bpf_process_events)  — kernel >= 5.8 with BTF.
+ *            2. audit (process_events)      — only when auditd is NOT active,
+ *                                             because osquery must own the audit
+ *                                             netlink socket or the two fight.
+ *   macOS       EndpointSecurity (es_process_events) — needs Apple's entitlement
+ *                                             and Full Disk Access, neither of
+ *                                             which this agent can grant itself.
+ *   Windows     ETW (process_etw_events)    — osquery >= 5.5, daemon elevated.
+ *
+ * What each platform cannot answer is a reported value rather than an absent
+ * branch — see EdrPlatformProfile's containerVisibility() and
+ * persistenceVisibility(). A detection that quietly never fires still counts
+ * itself as coverage, and that is the failure this codebase spends its time
+ * hunting.
  */
 class OsqueryEngine
 {
@@ -31,55 +39,13 @@ class OsqueryEngine
     /** Minimum kernel version for the eBPF publisher. */
     private const MIN_BPF_KERNEL = '5.8';
 
-    /**
-     * Default file-integrity watch list.
-     *
-     * Deliberately narrow. inotify places a watch per directory, and a
-     * recursive watch on somewhere like /tmp or /var on a busy host costs
-     * both kernel memory and a flood of events that buries anything real.
-     * These are the paths where a change is nearly always worth a look:
-     * account and privilege state, the ways a machine starts things, and the
-     * places persistence is installed.
-     *
-     * Web roots are absent on purpose — they are site-specific and come from
-     * the Hub, because guessing wrong means either no coverage or watching a
-     * directory with a hundred thousand files in it.
-     */
-    private const DEFAULT_FILE_PATHS = [
-        'accounts' => [
-            '/etc/passwd',
-            '/etc/shadow',
-            '/etc/group',
-            '/etc/sudoers',
-            '/etc/sudoers.d/%%',
-        ],
-        'ssh' => [
-            '/etc/ssh/%%',
-            '/root/.ssh/%%',
-        ],
-        'scheduling' => [
-            '/etc/crontab',
-            '/etc/cron.d/%%',
-            '/etc/cron.hourly/%%',
-            '/etc/cron.daily/%%',
-            '/var/spool/cron/%%',
-        ],
-        'startup' => [
-            '/etc/systemd/system/%%',
-            '/etc/rc.local',
-            '/etc/profile.d/%%',
-            '/etc/ld.so.preload',
-        ],
-    ];
+    /** osquery release that first shipped the ETW process publisher. */
+    private const MIN_ETW_OSQUERY = '5.5.0';
 
-    /**
-     * Noise that would otherwise dominate the stream. Each of these is a file
-     * the system rewrites constantly for reasons that are never an intrusion.
-     */
-    private const DEFAULT_FILE_EXCLUDES = [
-        '/etc/ssh/ssh_host_%%',
-        '/var/spool/cron/atjobs/%%',
-    ];
+    // The file-integrity watch list moved to EdrPlatformProfile. It is
+    // platform vocabulary — /etc/passwd means nothing on Windows — and leaving
+    // a Unix-only copy here would let one of the two drift out of date
+    // silently, which is the failure this whole profile exists to prevent.
 
     private string $binaryPath;
     private string $baseDir;
@@ -104,6 +70,34 @@ class OsqueryEngine
 
     private function detectBinaryPath(): string
     {
+        if ($this->isWindows()) {
+            // is_executable() is unreliable on Windows — it answers from the
+            // file extension rather than a permission bit — so existence plus
+            // the .exe suffix is the honest test. ProgramW6432 and the (x86)
+            // variant are read from the environment rather than hardcoded,
+            // because a machine whose system drive is not C: would otherwise
+            // report osquery as not installed while it sat there working.
+            $roots = array_filter([
+                getenv('ProgramFiles') ?: null,
+                getenv('ProgramW6432') ?: null,
+                getenv('ProgramFiles(x86)') ?: null,
+                'C:\\Program Files',
+            ]);
+
+            foreach (array_unique($roots) as $root) {
+                foreach ([
+                    $root . '\\osquery\\osqueryd\\osqueryd.exe',
+                    $root . '\\osquery\\osqueryd.exe',
+                ] as $candidate) {
+                    if (is_file($candidate)) {
+                        return $candidate;
+                    }
+                }
+            }
+
+            return '';
+        }
+
         foreach ([
             '/opt/osquery/bin/osqueryd',
             '/usr/bin/osqueryd',
@@ -125,6 +119,18 @@ class OsqueryEngine
 
     private function detectLogDir(): string
     {
+        if ($this->isWindows()) {
+            // No /var/log to prefer. ProgramData is where a Windows service is
+            // expected to keep state that outlives a user session.
+            $base = (getenv('ProgramData') ?: 'C:\\ProgramData') . '\\SecurityOne\\osquery';
+
+            if (is_dir($base) || @mkdir($base, 0750, true)) {
+                return $base;
+            }
+
+            return storage_path('app/osquery/log');
+        }
+
         // Prefer the agent's own /var/log tree so logrotate policy and disk
         // accounting sit next to the rest of the product.
         $preferred = '/var/log/security-one-ids/osquery';
@@ -228,6 +234,10 @@ class OsqueryEngine
      */
     public function resolveBackend(): string
     {
+        if ($this->isWindows()) {
+            return $this->supportsEtw() ? 'etw' : '';
+        }
+
         if ($this->isDarwin()) {
             return $this->supportsEndpointSecurity() ? 'endpointsecurity' : '';
         }
@@ -236,7 +246,7 @@ class OsqueryEngine
             return 'bpf';
         }
 
-        if (!$this->isWindows() && !$this->auditdIsActive()) {
+        if (!$this->auditdIsActive()) {
             return 'audit';
         }
 
@@ -245,11 +255,43 @@ class OsqueryEngine
 
     /**
      * macOS is supported through EndpointSecurity, Linux through eBPF or
-     * audit. Windows is not: ETW needs a different sensor entirely.
+     * audit, Windows through ETW.
      */
     public function isSupportedPlatform(): bool
     {
-        return !$this->isWindows();
+        return true;
+    }
+
+    /**
+     * Is osquery's ETW process publisher usable here?
+     *
+     * Two conditions, and only one of them is about the operating system.
+     *
+     * The publisher landed in osquery 5.5, so an older build has the table
+     * missing entirely rather than empty — and a scheduled query against a
+     * table that does not exist logs an error every interval and returns
+     * nothing, which reads like a broken sensor rather than a version that
+     * cannot answer. The version is checked for that reason.
+     *
+     * The daemon must also run as SYSTEM or an administrator to subscribe to
+     * the kernel process provider. That cannot be checked reliably from here
+     * — a non-elevated PHP process cannot tell what the service will be able
+     * to do — so it is left to the installer, which runs elevated and knows.
+     */
+    public function supportsEtw(): bool
+    {
+        if (!$this->isWindows() || !$this->isInstalled()) {
+            return false;
+        }
+
+        $version = $this->getVersion();
+
+        // Unknown version, installed binary: assume it works rather than
+        // declaring the platform unsupported. The failure mode of guessing
+        // wrong here is a table error in the log; the failure mode of
+        // guessing wrong the other way is a host that silently collects
+        // nothing while reporting that it is unsupported.
+        return $version === null || version_compare($version, self::MIN_ETW_OSQUERY, '>=');
     }
 
     public function isDarwin(): bool
@@ -329,8 +371,101 @@ class OsqueryEngine
         return null;
     }
 
+    /**
+     * Start the sensor service, and say plainly when it is not ours to start.
+     *
+     * The service is created by the installer, not here, and that split is
+     * deliberate: registering a service and granting it SYSTEM requires
+     * elevation this process does not have and should not ask for. What this
+     * can do is tell the difference between "stopped" and "never installed",
+     * because those need different commands from the operator and reporting
+     * both as a failure to start sends them to the wrong one.
+     */
+    private function startWindowsService(string $backend): array
+    {
+        $state = $this->serviceState();
+
+        if ($state === '') {
+            return [
+                'success' => false,
+                'error' => 'The ' . self::WINDOWS_SERVICE . ' service is not installed. '
+                    . 'Run install\\install.ps1 from an elevated PowerShell.',
+            ];
+        }
+
+        try {
+            Process::timeout(60)->run('sc start ' . escapeshellarg(self::WINDOWS_SERVICE));
+        } catch (\Exception $e) {
+            return ['success' => false, 'error' => 'Start failed: ' . $e->getMessage()];
+        }
+
+        // sc returns as soon as the SCM accepts the request, not when the
+        // service is up, so the state has to be polled rather than trusted.
+        for ($i = 0; $i < 20; $i++) {
+            if ($this->serviceState() === 'running') {
+                Log::info('[Osquery] Sensor service started', ['backend' => $backend]);
+
+                return ['success' => true, 'backend' => $backend, 'service' => self::WINDOWS_SERVICE];
+            }
+
+            usleep(250_000);
+        }
+
+        return [
+            'success' => false,
+            'error' => 'The service was asked to start and did not. Check '
+                . $this->logDir . '\\osqueryd.results.log and the Windows event log.',
+        ];
+    }
+
+    /**
+     * The Windows service this agent runs its sensor as.
+     *
+     * Deliberately not `osqueryd`, which is the name the official MSI uses.
+     * A customer may already run osquery for inventory, and taking over their
+     * service — its config, its database, its schedule — is the Windows
+     * spelling of hijacking their auditd, which this class refuses to do on
+     * Linux for the same reason.
+     */
+    public const WINDOWS_SERVICE = 'SecurityOneSensor';
+
+    /**
+     * 'running', 'stopped', or '' when there is no such service.
+     *
+     * The distinction between stopped and absent matters: one is started, the
+     * other has to be installed by something elevated, and reporting both as
+     * "not running" sends the operator to a command that cannot help.
+     */
+    public function serviceState(): string
+    {
+        if (!$this->isWindows()) {
+            return '';
+        }
+
+        $out = (string) @shell_exec('sc query ' . escapeshellarg(self::WINDOWS_SERVICE) . ' 2>NUL');
+
+        if (trim($out) === '' || stripos($out, 'does not exist') !== false) {
+            return '';
+        }
+
+        return stripos($out, 'RUNNING') !== false ? 'running' : 'stopped';
+    }
+
     public function isRunning(): bool
     {
+        // Windows does not have a pidfile to read.
+        //
+        // Both `--daemonize` and `--pidfile` are POSIX-only flags in osquery,
+        // so the entire pidfile mechanism this class is built around does not
+        // apply: there is nothing to write one, and a missing file would read
+        // as "not running" forever. The service is the source of truth
+        // instead, which is also what has to be true for ETW — subscribing to
+        // the kernel process provider requires SYSTEM, and only a service
+        // gets that.
+        if ($this->isWindows()) {
+            return $this->serviceState() === 'running';
+        }
+
         $pid = $this->getPid();
         if ($pid === null) {
             return false;
@@ -402,7 +537,8 @@ class OsqueryEngine
         // Table names are a property of the platform and its publisher, so
         // they come from the profile rather than a conditional here — the same
         // reason every other platform fact does.
-        $tables = \App\Services\Platform\EdrPlatformProfile::current()->sensorTables($backend);
+        $profile = \App\Services\Platform\EdrPlatformProfile::current();
+        $tables = $profile->sensorTables($backend);
         $processTable = $tables['process'];
         $socketTable = $tables['socket'];
 
@@ -480,7 +616,12 @@ class OsqueryEngine
         $fileExcludes = [];
 
         if ($wantFiles) {
-            $filePaths = self::DEFAULT_FILE_PATHS;
+            // From the profile, because the watch list is platform
+            // vocabulary. Watching /etc/passwd on Windows is not a smaller
+            // amount of coverage — it is a config full of paths that cannot
+            // exist, a publisher that starts cleanly, and a file-integrity
+            // module that reports itself enabled while watching nothing.
+            $filePaths = $profile->fileWatchPaths();
 
             // Hub-supplied categories, typically the site's web roots.
             foreach ((array) ($options['file_paths'] ?? []) as $category => $paths) {
@@ -494,7 +635,7 @@ class OsqueryEngine
             }
 
             $fileExcludes = array_merge(
-                self::DEFAULT_FILE_EXCLUDES,
+                $profile->fileWatchExcludes(),
                 array_values(array_filter(
                     (array) ($options['file_excludes'] ?? []),
                     static fn ($p): bool => is_string($p) && $p !== ''
@@ -522,6 +663,15 @@ class OsqueryEngine
                 'audit_allow_config' => $backend === 'audit',
                 'audit_allow_process_events' => $backend === 'audit',
                 'audit_allow_sockets' => $backend === 'audit' && $wantSockets,
+                // ETW is Windows's publisher. Both flags are required: the
+                // first turns the publisher on, the second subscribes it to
+                // the kernel's process provider. Setting only the first gives
+                // a publisher that starts cleanly and produces no rows —
+                // a working sensor that sees nothing, which is the failure
+                // this codebase keeps having to unlearn.
+                'enable_process_etw_events' => $backend === 'etw',
+                'enable_windows_events_publisher' => $backend === 'etw',
+                'enable_windows_events_subscriber' => $backend === 'etw',
                 'events_expiry' => 3600,
                 'events_max' => 50000,
                 'logger_plugin' => 'filesystem',
@@ -594,10 +744,6 @@ class OsqueryEngine
 
     public function start(array $options = []): array
     {
-        if (!$this->isSupportedPlatform()) {
-            return ['success' => false, 'error' => 'Endpoint sensor is Linux-only in this release'];
-        }
-
         if (!$this->isInstalled()) {
             return ['success' => false, 'error' => 'osqueryd not installed'];
         }
@@ -610,12 +756,18 @@ class OsqueryEngine
         if ($backend === '') {
             return [
                 'success' => false,
-                'error' => 'No usable telemetry backend (kernel lacks BTF/eBPF and auditd owns the audit socket)',
+                'error' => $this->isWindows()
+                    ? 'osquery is too old for the ETW process publisher (needs ' . self::MIN_ETW_OSQUERY . '+)'
+                    : 'No usable telemetry backend (kernel lacks BTF/eBPF and auditd owns the audit socket)',
             ];
         }
 
         if (!$this->writeConfig($options)) {
             return ['success' => false, 'error' => 'Failed to write sensor config'];
+        }
+
+        if ($this->isWindows()) {
+            return $this->startWindowsService($backend);
         }
 
         // A stale pidfile from a killed daemon blocks startup.
@@ -702,6 +854,31 @@ class OsqueryEngine
 
     public function stop(): bool
     {
+        if ($this->isWindows()) {
+            // `kill` does not exist and there is no pid to send it to. The
+            // SCM owns the lifecycle, and asking it to stop a service that is
+            // already stopped — or absent — is a success, not an error.
+            if ($this->serviceState() !== 'running') {
+                return true;
+            }
+
+            try {
+                Process::timeout(30)->run('sc stop ' . escapeshellarg(self::WINDOWS_SERVICE));
+            } catch (\Exception $e) {
+                Log::warning('[Osquery] Service stop failed: ' . $e->getMessage());
+            }
+
+            for ($i = 0; $i < 20; $i++) {
+                if ($this->serviceState() !== 'running') {
+                    return true;
+                }
+
+                usleep(250_000);
+            }
+
+            return false;
+        }
+
         $pid = $this->getPid();
         if ($pid === null || !$this->isRunning()) {
             @unlink($this->pidFile);
