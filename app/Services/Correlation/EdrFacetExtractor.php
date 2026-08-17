@@ -104,6 +104,15 @@ final class EdrFacetExtractor
         return self::$containerPatterns;
     }
 
+    private static function platform(): \App\Services\Platform\EdrPlatformProfile
+    {
+        if (self::$profile === null) {
+            self::usePlatform(\App\Services\Platform\EdrPlatformProfile::current());
+        }
+
+        return self::$profile;
+    }
+
     /* Argument-shape bits. Stable numbering: these end up in persisted facet
      * values, so renumbering them silently invalidates every host's baseline. */
     public const ARG_PIPE = 1;
@@ -254,6 +263,14 @@ final class EdrFacetExtractor
      */
     public static function normalisePath(string $path): string
     {
+        // Fold first, so everything downstream — prefix matching, facet
+        // values, the signature — sees one spelling of a given path. On
+        // Windows that means lowercase with forward slashes: the filesystem
+        // treats C:\WINDOWS\ and c:\windows\ as one directory, and carrying
+        // both through would mint two facet values for one fact and halve the
+        // familiarity count of each.
+        $path = self::platform()->foldPath($path);
+
         foreach (self::containerPatterns() as $pattern => $replacement) {
             $path = preg_replace($pattern, $replacement, $path, 1) ?? $path;
         }
@@ -288,12 +305,29 @@ final class EdrFacetExtractor
         // and /rootkit does not.
         $probe = rtrim($path, '/') . '/';
 
+        // Longest prefix wins, not first.
+        //
+        // The classes overlap by nature — c:/windows/temp/ sits inside
+        // c:/windows/, /Library/WebServer/ inside /Library/ — and first-match
+        // meant the answer depended on which order the profile happened to
+        // list them in. That is a silent misclassification, and it lands
+        // precisely on the cases worth seeing: a binary in c:/windows/temp/ is
+        // interesting *because* it is user-writable, and reporting it as the
+        // system directory says the opposite of the truth.
+        $best = '';
+        $bestClass = null;
+
         foreach (self::dirPrefixes() as $class => $prefixes) {
             foreach ($prefixes as $prefix) {
-                if (str_starts_with($probe, $prefix)) {
-                    return $class;
+                if (strlen($prefix) > strlen($best) && str_starts_with($probe, $prefix)) {
+                    $best = $prefix;
+                    $bestClass = $class;
                 }
             }
+        }
+
+        if ($bestClass !== null) {
+            return $bestClass;
         }
 
         return 'other';

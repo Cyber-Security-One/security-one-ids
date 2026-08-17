@@ -836,6 +836,10 @@ class EdrEventCollector
 
         $isSocket = str_contains($name, 'socket');
 
+        if ($this->platform()->isWindows()) {
+            return $this->normalizeEtwEvent($row, $columns, $isSocket);
+        }
+
         $uid = isset($columns['uid']) ? (int) $columns['uid'] : -1;
 
         $flushedAt = (int) ($row['unixTime'] ?? time());
@@ -889,6 +893,105 @@ class EdrEventCollector
         // detection value — osquery emits these when the BPF probe loses the
         // string buffer under load.
         if ($event['action'] === 'exec' && $event['path'] === '' && $event['cmdline'] === '') {
+            return null;
+        }
+
+        return $event;
+    }
+
+    /**
+     * Map an ETW process event into the shared event shape.
+     *
+     * Windows shares almost none of the column vocabulary the Unix publishers
+     * use, and every difference is one that would fail quietly rather than
+     * loudly if it were left to the generic path:
+     *
+     *  - **No `uid`.** Identity on Windows is a SID, and the sensor reports
+     *    the account name directly. The generic path would read a missing
+     *    `uid` as -1 and then resolve it through a user map that is empty by
+     *    design, so every event would be attributed to nobody — and the actor
+     *    key, which is built from the uid, would collapse every account on the
+     *    host into one actor.
+     *  - **No `ntime`.** The timestamp is already wall clock. The generic path
+     *    would see a zero and fall back to the flush time, discarding a
+     *    per-event clock that is right there and stamping whole batches with
+     *    one value.
+     *  - **`parent_pid`, not `parent`.** A missing parent is a zero, and a
+     *    zero parent breaks lineage silently: every process becomes an orphan,
+     *    every orphan gets its own actor, and the correlator sees a host on
+     *    which nothing is ever descended from anything.
+     *  - **`type`, not `syscall`.** ProcessStop rows are not executions and
+     *    would otherwise be counted as such, roughly doubling the exec volume
+     *    and inventing a second launch for every process that ever exits.
+     */
+    private function normalizeEtwEvent(array $row, array $columns, bool $isSocket): ?array
+    {
+        $flushedAt = (int) ($row['unixTime'] ?? time());
+
+        // ProcessStart is the only kind that is an execution. Stop rows are
+        // kept out entirely rather than mapped to an 'exit' action, because
+        // nothing downstream consumes one and admitting them would double the
+        // event volume for no detection value.
+        $type = (string) ($columns['type'] ?? 'ProcessStart');
+
+        if ($type !== '' && strcasecmp($type, 'ProcessStart') !== 0) {
+            return null;
+        }
+
+        // ETW timestamps are wall clock already. Still bounded against the
+        // flush time: a clock that disagrees with the flush by more than a
+        // flush lag can account for is a clock that has been changed, and
+        // trusting it would file events under a date that never happened.
+        $eventTs = (int) ($columns['time'] ?? 0);
+
+        if ($eventTs <= 0 || $eventTs > $flushedAt + 60 || $eventTs < $flushedAt - 900) {
+            $eventTs = $flushedAt;
+        }
+
+        $username = trim((string) ($columns['username'] ?? ''));
+
+        $event = [
+            'ts' => $eventTs,
+            // No boot-relative clock exists on this platform; the field is
+            // kept in the shape and left at zero rather than filled with the
+            // wall clock, which would be a different quantity under the same
+            // name.
+            'ntime_boot_ns' => 0,
+            'flushed_at' => $flushedAt,
+            'host' => (string) ($row['hostIdentifier'] ?? gethostname()),
+            'action' => $isSocket ? 'connect' : 'exec',
+            'sensor' => 'osquery',
+            'pid' => (int) ($columns['pid'] ?? 0),
+            'ppid' => (int) ($columns['parent_pid'] ?? $columns['ppid'] ?? 0),
+            // -1 is "this platform has no numeric id", not "lookup failed".
+            'uid' => -1,
+            'gid' => -1,
+            'username' => $username,
+            'path' => (string) ($columns['path'] ?? ''),
+            'cmdline' => (string) ($columns['cmdline'] ?? ''),
+            'cwd' => (string) ($columns['cwd'] ?? ''),
+            'exit_code' => null,
+            'container_id' => '',
+            'syscall' => 'ProcessStart',
+        ];
+
+        // Elevation is the Windows spelling of a privilege transition, and it
+        // is the one signal here that has no Unix equivalent to fall back on.
+        // A full token where the parent had a limited one is a UAC elevation;
+        // a System integrity level on a process whose lineage starts at a web
+        // worker is the thing the PRIVESC class exists to catch.
+        $elevation = (string) ($columns['token_elevation_type'] ?? '');
+        $integrity = (string) ($columns['mandatory_label'] ?? '');
+
+        if ($elevation !== '') {
+            $event['elevation'] = $elevation;
+        }
+
+        if ($integrity !== '') {
+            $event['integrity_level'] = $integrity;
+        }
+
+        if ($event['path'] === '' && $event['cmdline'] === '') {
             return null;
         }
 
