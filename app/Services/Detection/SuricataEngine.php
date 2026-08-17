@@ -1750,6 +1750,212 @@ POWERSHELL;
      */
     private const INSPECT_PORTS = [80, 443];
 
+    /**
+     * Bring the netfilter state into line with the desired mode, on every cycle.
+     *
+     * Public and idempotent because the alternative left a two-day outage
+     * undetected. `start()` applies this state and says so in a long comment,
+     * but `start()` is only reached when Suricata is not running or is running
+     * in the wrong mode. On a host where it is up and in the right mode —
+     * the normal, healthy case — nothing ever re-applied the rules.
+     *
+     * That mattered because the install could fail. It did: every invocation
+     * used a bare `iptables` while the watchdog's PATH lacks /usr/sbin, so the
+     * one moment the rules would have been installed failed silently, and
+     * nothing retried for 2.26 days. Suricata sat with its queues bound and
+     * empty — decoder.pkts 0, decoder.bytes 0 — while every health check the
+     * agent makes reported it running in IPS mode.
+     *
+     * Two defects, either of which alone was survivable: an install that could
+     * fail quietly, and no reconciliation to notice. This is the second half.
+     *
+     * @return array{mode:string, applied:bool, queued_rules:int}
+     */
+    public function reconcileInlineNetfilter(string $mode): array
+    {
+        // Serialised across processes. The watchdog dispatches four concurrent
+        // task groups, and two of them reconciling at once beat the `iptables
+        // -C` existence guard: both checked, both saw nothing, both inserted.
+        // Observed on the restoration run — four NFQUEUE rules where two were
+        // wanted, and a duplicated conntrack bypass. Harmless in effect, since
+        // the first matching rule terminates evaluation, but it is a race that
+        // writes to the host firewall and it should not be left in place.
+        $lock = @fopen(sys_get_temp_dir() . '/security-one-suricata-netfilter.lock', 'c');
+
+        if ($lock !== false && !flock($lock, LOCK_EX | LOCK_NB)) {
+            // Another process is already doing it; there is nothing useful to
+            // add by waiting, and blocking here would stall a sync thread.
+            fclose($lock);
+
+            return ['mode' => $mode, 'applied' => false, 'queued_rules' => $this->countQueueRules()];
+        }
+
+        try {
+            return $this->reconcileInlineNetfilterLocked($mode);
+        } finally {
+            if ($lock !== false) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
+    }
+
+    /**
+     * @return array{mode:string, applied:bool, queued_rules:int}
+     */
+    private function reconcileInlineNetfilterLocked(string $mode): array
+    {
+        $before = $this->countQueueRules();
+
+        if ($mode === 'ips') {
+            $this->applyInlineNetfilter($mode);
+
+            // Presence is not enough; the queue rules have to precede the
+            // conntrack bypass or they inspect handshakes only. `-C` cannot see
+            // that, so order is checked separately and repaired by removing the
+            // queue rules and letting the apply above reinstate them at the
+            // right position.
+            $order = $this->inspectRuleOrder();
+
+            if (!$order['ordered']) {
+                Log::warning('[Suricata] NFQUEUE rules sit after the conntrack bypass, repositioning', [
+                    'queue_positions' => $order['queue_positions'],
+                    'bypass_position' => $order['bypass_position'],
+                ]);
+
+                $this->removeQueueRules();
+                $this->applyInlineNetfilter($mode);
+            }
+        } else {
+            // Leaving NFQUEUE rules behind after a switch to plain IDS would
+            // route production traffic at a queue nothing is reading. The
+            // --queue-bypass flag makes that survivable rather than harmless.
+            $this->removeInlineNetfilter();
+        }
+
+        $after = $this->countQueueRules();
+
+        if ($after !== $before) {
+            Log::warning('[Suricata] Inline netfilter state reconciled', [
+                'mode' => $mode,
+                'queue_rules_before' => $before,
+                'queue_rules_after' => $after,
+            ]);
+        }
+
+        return ['mode' => $mode, 'applied' => $after !== $before, 'queued_rules' => $after];
+    }
+
+    /**
+     * Remove only the NFQUEUE rules, leaving the bypass rules in place.
+     *
+     * Used to reposition rather than to disable, so it deliberately does not
+     * touch anything else: tearing down the bypass rules as well would briefly
+     * route established traffic through a queue during the repair.
+     */
+    private function removeQueueRules(string $chain = 'INPUT'): int
+    {
+        $ipt = $this->iptablesCommand();
+        $removed = 0;
+
+        // Delete by spec rather than by line number: line numbers shift as
+        // each delete lands, and a stale index removes the wrong rule.
+        foreach (self::INSPECT_PORTS as $port) {
+            $spec = '-p tcp --dport ' . (int) $port
+                . ' -j NFQUEUE --queue-balance 0:3 --queue-bypass'
+                . ' -m comment --comment ' . escapeshellarg(self::NFQ_COMMENT);
+
+            // A duplicate set is possible, so delete until the spec is gone.
+            for ($attempt = 0; $attempt < 8; $attempt++) {
+                $result = Process::run("{$ipt} -D {$chain} {$spec} 2>/dev/null");
+
+                if (!$result->successful()) {
+                    break;
+                }
+
+                $removed++;
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * Whether every NFQUEUE rule sits ahead of the conntrack bypass.
+     *
+     * The ordering requirement is stated in `applyInlineNetfilter()` and was
+     * defeated by that method's own idempotency guard. `-C` skips a rule that
+     * already exists anywhere in the chain, while `installBypassRules()` inserts
+     * the conntrack ESTABLISHED,RELATED accept at position 1 every time. So once
+     * the NFQUEUE rules exist, any later bypass insert jumps ahead of them and
+     * nothing ever moves them back.
+     *
+     * Observed on this host: conntrack at position 2, NFQUEUE at 12 and 13. In
+     * that order every packet of an already-established flow — including the
+     * PSH+ACK carrying the HTTP request body — is accepted before it can be
+     * queued, so Suricata sees handshakes and no content. The IDS looks alive
+     * and inspects nothing that matters, which is the same outcome as the
+     * missing rules it just recovered from, reached a different way.
+     *
+     * @return array{ordered:bool, queue_positions:array<int,int>, bypass_position:?int}
+     */
+    public function inspectRuleOrder(string $chain = 'INPUT'): array
+    {
+        $ipt = $this->iptablesCommand();
+        $result = Process::run("{$ipt} -S {$chain} 2>/dev/null");
+
+        if (!$result->successful()) {
+            return ['ordered' => true, 'queue_positions' => [], 'bypass_position' => null];
+        }
+
+        $queue = [];
+        $bypass = null;
+        $position = 0;
+
+        foreach (preg_split('/\R/', $result->output()) ?: [] as $line) {
+            if (!str_starts_with($line, "-A {$chain} ")) {
+                continue;
+            }
+
+            $position++;
+
+            if (str_contains($line, 'NFQUEUE')) {
+                $queue[] = $position;
+                continue;
+            }
+
+            if ($bypass === null && str_contains($line, 'conntrack') && str_contains($line, 'ESTABLISHED')) {
+                $bypass = $position;
+            }
+        }
+
+        // No bypass rule means nothing can be short-circuited, so any position
+        // is fine. No queue rules means there is nothing to order.
+        $ordered = $bypass === null || $queue === [] || max($queue) < $bypass;
+
+        return ['ordered' => $ordered, 'queue_positions' => $queue, 'bypass_position' => $bypass];
+    }
+
+    /**
+     * How many NFQUEUE rules are installed, or -1 when that cannot be read.
+     *
+     * -1 rather than 0 on purpose: a host where iptables cannot be queried must
+     * not report the same number as a host with no rules, or the reconcile above
+     * would log a change on every cycle and mean nothing by it.
+     */
+    public function countQueueRules(): int
+    {
+        $ipt = $this->iptablesCommand();
+
+        $result = Process::run("{$ipt} -n -L INPUT 2>/dev/null");
+
+        if (!$result->successful()) {
+            return -1;
+        }
+
+        return substr_count($result->output(), 'NFQUEUE');
+    }
+
     private function applyInlineNetfilter(string $mode): void
     {
         $ipt = $this->iptablesCommand();
