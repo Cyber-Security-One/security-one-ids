@@ -52,6 +52,45 @@ class SuricataEngine
     /**
      * Check if Suricata is installed on this system
      */
+    /**
+     * Absolute locations to look for iptables, in order.
+     *
+     * Resolved rather than trusted to PATH, and this one was not a precaution.
+     * Measured on this host: the root watchdog runs with
+     * PATH=/usr/local/bin:/usr/bin:/bin, iptables lives at /usr/sbin/iptables,
+     * and every invocation in `applyInlineNetfilter()` used the bare name. So
+     * the NFQUEUE rules that feed inline IPS could never be installed from the
+     * path that runs every cycle — the existence check returned exit 127 with
+     * stderr redirected to /dev/null, and the insert that followed failed the
+     * same way.
+     *
+     * The consequence was total, not partial. With no NFQUEUE rule, Suricata's
+     * queues sit bound and empty: `decoder.pkts: 0` and `decoder.bytes: 0` over
+     * an uptime of 195,275 seconds, and the last alert of any kind was 2.26 days
+     * earlier. The IDS was running, reporting healthy, and inspecting nothing.
+     */
+    private const IPTABLES_PATHS = [
+        '/usr/sbin/iptables',
+        '/sbin/iptables',
+        '/usr/bin/iptables',
+        '/bin/iptables',
+    ];
+
+    /**
+     * The iptables binary, by absolute path, falling back to the bare name so a
+     * host that keeps it elsewhere still works when PATH happens to cover it.
+     */
+    public function iptablesCommand(): string
+    {
+        foreach (self::IPTABLES_PATHS as $candidate) {
+            if (@is_executable($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return 'iptables';
+    }
+
     public function isInstalled(): bool
     {
         return !empty($this->suricataPath) && file_exists($this->suricataPath);
@@ -1713,6 +1752,7 @@ POWERSHELL;
 
     private function applyInlineNetfilter(string $mode): void
     {
+        $ipt = $this->iptablesCommand();
         if ($mode !== 'ips' || $this->isWindows() || PHP_OS === 'Darwin') {
             return;
         }
@@ -1742,13 +1782,13 @@ POWERSHELL;
         $insertPos = $this->findConntrackBypassLineNo('INPUT');
         foreach (self::INSPECT_PORTS as $port) {
             $spec = "-p tcp --dport {$port} -j {$target} {$comment}";
-            $check = Process::run("iptables -C INPUT {$spec} 2>/dev/null");
+            $check = Process::run("{$ipt} -C INPUT {$spec} 2>/dev/null");
             if ($check->successful()) {
                 continue;
             }
             $cmd = $insertPos !== null
-                ? "iptables -I INPUT {$insertPos} {$spec} 2>&1"
-                : "iptables -A INPUT {$spec} 2>&1";
+                ? "{$ipt} -I INPUT {$insertPos} {$spec} 2>&1"
+                : "{$ipt} -A INPUT {$spec} 2>&1";
             $add = Process::run($cmd);
             if ($add->successful()) {
                 Log::info("[Suricata] Added NFQUEUE rule to INPUT :{$port}" . ($insertPos !== null ? " at line {$insertPos}" : ""));
@@ -1768,9 +1808,9 @@ POWERSHELL;
         // container-to-container goes through the bridge and never hits
         // iptables unless br_netfilter is loaded.
         $forwardSpec = "-j {$target} {$comment}";
-        $check = Process::run("iptables -C FORWARD {$forwardSpec} 2>/dev/null");
+        $check = Process::run("{$ipt} -C FORWARD {$forwardSpec} 2>/dev/null");
         if (!$check->successful()) {
-            $add = Process::run("iptables -A FORWARD {$forwardSpec} 2>&1");
+            $add = Process::run("{$ipt} -A FORWARD {$forwardSpec} 2>&1");
             if ($add->successful()) {
                 Log::info("[Suricata] Added NFQUEUE rule to FORWARD");
             } else {
@@ -1781,6 +1821,7 @@ POWERSHELL;
 
     private function removeInlineNetfilter(): void
     {
+        $ipt = $this->iptablesCommand();
         if ($this->isWindows() || PHP_OS === 'Darwin') {
             return;
         }
@@ -1790,7 +1831,7 @@ POWERSHELL;
         // catch-all on FORWARD, and older versions used --queue-num 0).
         foreach (['INPUT', 'FORWARD'] as $chain) {
             for ($i = 0; $i < 10; $i++) {
-                $result = Process::run("iptables -L {$chain} -n --line-numbers 2>/dev/null");
+                $result = Process::run("{$ipt} -L {$chain} -n --line-numbers 2>/dev/null");
                 $lines = explode("\n", $result->output());
                 $targetLine = null;
                 foreach ($lines as $line) {
@@ -1802,7 +1843,7 @@ POWERSHELL;
                 if ($targetLine === null) {
                     break;
                 }
-                $del = Process::run("iptables -D {$chain} {$targetLine} 2>/dev/null");
+                $del = Process::run("{$ipt} -D {$chain} {$targetLine} 2>/dev/null");
                 if (!$del->successful()) {
                     break;
                 }
@@ -1818,6 +1859,7 @@ POWERSHELL;
 
     private function installBypassRules(): void
     {
+        $ipt = $this->iptablesCommand();
         $rules = [
             // Loopback — never inspect localhost (breaks language_server,
             // docker-proxy, unix-socket-over-TCP IPC).
@@ -1858,14 +1900,14 @@ POWERSHELL;
 
         foreach ($rules as $match) {
             $commentArg = "-m comment --comment " . escapeshellarg(self::BYPASS_COMMENT);
-            $check = Process::run("iptables -C INPUT {$match} -j ACCEPT {$commentArg} 2>/dev/null");
+            $check = Process::run("{$ipt} -C INPUT {$match} -j ACCEPT {$commentArg} 2>/dev/null");
             if ($check->successful()) {
                 continue;
             }
             // -I 1 so bypass rules always sit above our NFQUEUE rule at
             // the bottom. Order among bypass rules doesn't matter — they
             // all terminally ACCEPT.
-            $add = Process::run("iptables -I INPUT 1 {$match} -j ACCEPT {$commentArg} 2>&1");
+            $add = Process::run("{$ipt} -I INPUT 1 {$match} -j ACCEPT {$commentArg} 2>&1");
             if ($add->successful()) {
                 Log::info("[Suricata] Installed iptables bypass: INPUT {$match}");
             } else {
@@ -1882,7 +1924,8 @@ POWERSHELL;
      */
     private function findConntrackBypassLineNo(string $chain): ?int
     {
-        $result = Process::run("iptables -L {$chain} -n --line-numbers 2>/dev/null");
+        $ipt = $this->iptablesCommand();
+        $result = Process::run("{$ipt} -L {$chain} -n --line-numbers 2>/dev/null");
         if (!$result->successful()) {
             return null;
         }
